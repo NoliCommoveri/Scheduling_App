@@ -1,0 +1,312 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Packet",
+  "description": "Interchange_Contract.md §1 — normative. Where this schema and the prose disagree, this schema wins.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "childId",
+    "childName",
+    "semesterLabel",
+    "generatedAt",
+    "coversFrom",
+    "coversTo",
+    "days"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "childId": {
+      "type": "string"
+    },
+    "childName": {
+      "type": "string"
+    },
+    "semesterLabel": {
+      "type": "string"
+    },
+    "generatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "coversFrom": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "coversTo": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "days": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/day"
+      }
+    }
+  },
+  "definitions": {
+    "day": {
+      "type": "object",
+      "required": [
+        "date",
+        "activities",
+        "chores",
+        "events"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "date": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "activities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/activityEntry"
+          }
+        },
+        "chores": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/choreEntry"
+          }
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/eventEntry"
+          }
+        }
+      }
+    },
+    "payload": {
+      "type": "object",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "pageRange"
+            },
+            "pageRangeStart": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "pageRangeEnd": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "pageRangeStart",
+            "pageRangeEnd"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "reference"
+            },
+            "reference": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind",
+            "reference"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "none"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "freeText"
+            },
+            "text": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "activityEntry": {
+      "type": "object",
+      "required": [
+        "id",
+        "activityType",
+        "title",
+        "required",
+        "payload",
+        "difficultyTier",
+        "rewardCategoryId",
+        "courseName",
+        "capturesGrade"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9]+-[A-Za-z0-9]+-[A-Za-z0-9]+-[A-Za-z0-9]+$"
+        },
+        "activityType": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "payload": {
+          "$ref": "#/definitions/payload"
+        },
+        "difficultyTier": {
+          "type": "string"
+        },
+        "rewardCategoryId": {
+          "type": "string"
+        },
+        "courseName": {
+          "type": "string"
+        },
+        "capturesGrade": {
+          "type": "boolean"
+        },
+        "expectedDurationMin": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "blockHint": {
+          "type": "string"
+        },
+        "sequenceNumber": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "lessonTitle": {
+          "type": "string"
+        },
+        "instructions": {
+          "type": "string"
+        }
+      }
+    },
+    "choreEntry": {
+      "type": "object",
+      "required": [
+        "id",
+        "choreType",
+        "title",
+        "date",
+        "difficultyTier",
+        "rewardCategoryId",
+        "required"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^CHR-[A-Za-z0-9]+-\\d{8}$"
+        },
+        "choreType": {
+          "type": "string",
+          "enum": [
+            "Pet Care",
+            "Car Care",
+            "Kitchen/Dining",
+            "Bathroom",
+            "Living/Main Area",
+            "Playroom",
+            "Bedroom",
+            "Parent's Room",
+            "Porch",
+            "Floors",
+            "Miscellaneous"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "date": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "difficultyTier": {
+          "type": "string"
+        },
+        "rewardCategoryId": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean",
+          "const": true
+        },
+        "notes": {
+          "type": "string"
+        },
+        "blockHint": {
+          "type": "string"
+        }
+      }
+    },
+    "eventEntry": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "startDate",
+        "endDate"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^EVT-[A-Za-z0-9]+$"
+        },
+        "title": {
+          "type": "string"
+        },
+        "startDate": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "endDate": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "time": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
