@@ -614,6 +614,7 @@ const Packet = (() => {
     });
 
     const abandonBtn = document.createElement('button');
+    abandonBtn.className = 'secondary';
     abandonBtn.textContent = 'Abandon (write nothing)';
     abandonBtn.addEventListener('click', () => {
       session = null;

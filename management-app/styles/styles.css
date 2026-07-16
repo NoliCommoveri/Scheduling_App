@@ -118,10 +118,27 @@ fieldset {
   border-radius: 4px;
 }
 
-.activity-type-option {
+/* Checkbox-and-label pickers sit inline (days of week, child lists, types). */
+.activity-type-option, .day-option, .child-option {
   flex-direction: row;
   align-items: center;
   gap: 0.4rem;
+}
+
+/* Lay a fieldset's option labels out in a wrapping row, legend on its own line. */
+fieldset {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+  align-items: center;
+  padding: 0.5rem 0.75rem;
+}
+
+fieldset legend {
+  flex-basis: 100%;
+  padding: 0 0.25rem;
+  font-size: 0.85rem;
+  color: #555;
 }
 
 .dev-tools-list li {
@@ -134,4 +151,134 @@ fieldset {
 
 .dev-tools-list button {
   background: var(--color-error);
+}
+
+code {
+  font-family: ui-monospace, monospace;
+  font-size: 0.78rem;
+  color: #555;
+  background: var(--color-bg);
+  padding: 0.05rem 0.3rem;
+  border-radius: 3px;
+}
+
+button.secondary {
+  background: #6b6b6b;
+}
+
+/* ---- Pacing Configuration (Module 05) ---- */
+.pacing-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.pacing-card {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 1rem;
+  background: #fff;
+}
+
+.pacing-card h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+}
+
+.pacing-progress {
+  margin: 0 0 0.75rem;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+  color: #555;
+  background: var(--color-bg);
+  border-radius: 4px;
+}
+
+.pacing-form {
+  margin-bottom: 0;
+}
+
+.pacing-form .reserved {
+  opacity: 0.5;
+}
+
+/* ---- Packet Generation & Export (Module 08) ---- */
+.propose-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.propose-bar h2 {
+  flex-basis: 100%;
+  margin: 0 0 0.25rem;
+  font-size: 1.05rem;
+}
+
+.pending-box {
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 1rem;
+  border: 1px dashed var(--color-border);
+  border-radius: 6px;
+  background: #fbfaf8;
+}
+
+.pending-box h3 {
+  margin: 0.25rem 0 0.5rem;
+  font-size: 0.95rem;
+}
+
+.pending-box > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.2rem 0;
+}
+
+.day-section {
+  margin-bottom: 1.25rem;
+}
+
+.day-section h3 {
+  margin: 0 0 0.25rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 2px solid var(--color-accent);
+  font-size: 1rem;
+}
+
+.day-section h3 em {
+  font-weight: 400;
+  font-size: 0.85rem;
+  color: #888;
+}
+
+.item-activity, .item-chore, .item-event {
+  border-left: 3px solid transparent;
+  padding-left: 0.5rem;
+}
+
+.item-activity { border-left-color: var(--color-accent); }
+.item-chore { border-left-color: #c08a2d; }
+.item-event { border-left-color: #3a5a8a; }
+
+.item-activity > span, .item-chore > span, .item-event > span {
+  flex: 1;
+  min-width: 12rem;
+}
+
+.item-activity em, .item-chore em, .item-event em {
+  font-size: 0.78rem;
+  color: #888;
+}
+
+.day-section li button, .pending-box button {
+  padding: 0.25rem 0.55rem;
+  font-size: 0.8rem;
 }
