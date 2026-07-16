@@ -754,7 +754,6 @@ const Children = (() => {
         );
         if (!warned) return;
         await deleteInstanceActivity(a.id);
-        await Courses.recompactActivityOrder(lesson.id);
         render(root);
       });
       list.appendChild(item);

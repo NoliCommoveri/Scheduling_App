@@ -135,7 +135,10 @@ const Courses = (() => {
       courseCode = codeResult.code;
     }
 
-    const record = buildCourseRecord(id, fields, courseCode);
+    // Preserve every field the edit form doesn't manage (curriculumId,
+    // subject, description, coreElective, defaultPacingHint) — only name
+    // and courseCode are ever overwritten here.
+    const record = { ...existing, name: fields.name.trim(), courseCode };
     await Storage.put('courses', record);
     return { record };
   }
@@ -351,18 +354,6 @@ const Courses = (() => {
       const store = t.objectStore('activities');
       store.put({ ...a, order: b.order });
       store.put({ ...b, order: a.order });
-    });
-  }
-
-  async function recompactActivityOrder(lessonId) {
-    const sorted = (await Storage.getAllByIndex('activities', 'by_lessonId', lessonId)).sort(
-      (a, b) => a.order - b.order
-    );
-    await Storage.runTransaction(['activities'], 'readwrite', (t) => {
-      const store = t.objectStore('activities');
-      sorted.forEach((a, index) => {
-        if (a.order !== index) store.put({ ...a, order: index });
-      });
     });
   }
 
@@ -603,7 +594,6 @@ const Courses = (() => {
       });
       item.querySelector('[data-action="delete"]').addEventListener('click', async () => {
         await deleteActivity(a.id);
-        await recompactActivityOrder(lesson.id);
         render(root);
       });
       list.appendChild(item);
@@ -716,7 +706,6 @@ const Courses = (() => {
     editActivity,
     deleteActivity,
     moveActivity,
-    recompactActivityOrder,
     listCourseTemplates,
     hasActivitiesBeneathCourse,
     hasActivitiesUnderLesson,
