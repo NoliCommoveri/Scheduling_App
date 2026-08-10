@@ -1,6 +1,17 @@
 # Software Requirements Specification — Child App
 ## Module 8: Completion CSV Export
 
+> ## ⚠️ RETIRED AS TRANSPORT — 2026-08-10.
+>
+> Completions now reach the parent through `POST /api/completions` and are read back with
+> `GET /api/assignments`. CSV is no longer how data crosses between the apps.
+> Controlling design: **`docs/TDS_Slice_Online_Revamp.md`** §5.5, §11.
+>
+> `export-core.js` survives, repurposed: CSV becomes a convenience report for a parent who
+> wants a spreadsheet. The `exported` flag, the export-gated wipe carve-out, and the
+> reminder behaviour specified below are **repealed** — nothing depends on an export
+> having happened.
+
 *Written against Domain Model §4.2 (Completion CSV — the single authoritative column list), §3.6 (Activity Record, including `exported`), §5.4 ("child owns the export"), §3.6a (the completed/exported wipe carve-out), Architecture Evaluation §9 (Reporting & export) and §13 ("Child owns the completion export, with reminder").*
 
 ---

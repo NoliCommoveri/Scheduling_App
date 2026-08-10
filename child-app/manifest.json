@@ -1,7 +1,7 @@
 {
   "name": "Daily Plan",
   "short_name": "Daily Plan",
-  "description": "Offline daily planner for homeschool activities and chores.",
+  "description": "Daily planner for homeschool activities and chores.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

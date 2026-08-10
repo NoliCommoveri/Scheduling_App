@@ -1,9 +1,23 @@
-/* Module: sync.js — Cloudflare D1 durable mirror, client side.
- * Per TDS_Slice_D1_Sync_Management_App.md §6.
+/* Module: sync.js — Cloudflare D1 curriculum backup, client side.
+ * Per TDS_Slice_D1_Sync_Management_App.md §6, as narrowed by
+ * TDS_Slice_Online_Revamp.md §3.1.
  *
- * IndexedDB remains the source of truth (§0). Nothing in this file is ever
- * awaited by an authoring path: if the network is down, writes still commit
- * locally and the outbox simply grows. Offline-first is preserved in full.
+ * ROLE CHANGED 2026-08-10. This file used to be described as a mirror behind an
+ * offline-first app whose IndexedDB was the source of truth. That is no longer
+ * the architecture: D1 is the system of record for the project. What this file
+ * still does, unchanged, is back up the *parent's curriculum authoring stores*
+ * as opaque blobs in `records` — courses, lessons, activities, tiers and the
+ * rest, which only this app interprets.
+ *
+ * It does NOT carry assignments, completions, or reward entries. Those are
+ * relational tables written through their own endpoints (Revamp §3.3-§3.6).
+ *
+ * Still non-blocking by design: nothing here is awaited by an authoring path,
+ * so a dropped network grows the outbox instead of failing a write.
+ *
+ * KNOWN GAP: the outbox only captures writes made after a sync token was set.
+ * Curriculum authored before that has never reached D1 and there is no backfill
+ * yet. See Revamp §12 Phase 0 — highest-priority item in the project.
  */
 
 const Sync = (() => {

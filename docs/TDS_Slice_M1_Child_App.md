@@ -1,6 +1,17 @@
 # Technical Design Specification — Slice
 ## M1 Scope: Startup Wizard, Packet Import, Daily Planner (Child App)
 
+> **⚠️ Partially superseded — 2026-08-10 by `TDS_Slice_Online_Revamp.md`.** Read that first.
+>
+> **Repealed here:** packet import as the acquisition path (§5); the `CHR-{choreToken}-{YYYYMMDD}`
+> deterministic ID scheme and its reserved-prefix validation (§219–227) — IDs are now
+> server-minted opaque UUIDs; `plannerMeta` as a store — its fields are columns on
+> `assignments`; the `activities`/`chores`/`events` stores.
+>
+> **Still accurate:** the planner's rendering model, the School/Chores/Events day structure,
+> and the wizard flow. `DB.loadState()`'s return shape is deliberately preserved by the
+> revamp (§8.2) so the planner UI built here survives the data-layer replacement.
+
 *This is a deliberately narrow TDS slice — it covers only what's needed to build the Build Roadmap's M1 milestone: "startup wizard, IndexedDB, packet import (hand-authored packet), daily view with School/Chores/Events." It does not cover completion/logging (M2), the Reward Ledger, Streak, Deferment/Waive, theming, the wipe, or any Management App schema — those are separate TDS work, done when their milestone is reached. Written against SRS Modules 1/2/3, the Interchange Contract, and Domain Model §2.5/§2.6/§2.7/§3.1–§3.5b/§4.1 — and now reconciled against the normative fixtures: `packet_schema.json`, `packet_sample.json`, `completions_sample.csv`.*
 
 ---

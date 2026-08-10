@@ -18,13 +18,19 @@ Turns a Child's paced School content, recurring Chores, and in-range Family Even
 
 **2.3 — `daysOfWeek[]` is an explicit weekday set, consulted directly.** School-day determination checks a date's weekday against the Instance's `daysOfWeek[]` and `skipDates[]` — no anchor-day or ordering logic once it is an explicit set. (Review may override this per item — FR-7 relocate — but the *proposal* honors it.)
 
-**2.4 — Export destination is a swappable back end**, mirroring Packet Import (Child Module 2 §2.1). This module specifies the Packet's content and structure (§4); *where* the committed file is written — manual save, Drive-backed picker, or both — is a swappable front end with zero effect on aggregation or merge logic. The manual file-save path is permanent, kept even after Drive integration ships (Architecture Evaluation §1: neither app depends on a network call to function).
+**2.4 — Export destination is a swappable back end**, mirroring Packet Import (Child Module 2 §2.1). This module specifies the assignment content and structure (§4); *where* Commit writes is a swappable back end with zero effect on the Propose/Review logic above it.
+
+> **Amended 2026-08-10.** This clause was written anticipating a Drive picker. What actually
+> landed is the substitution it allowed for: **Commit posts rows to `POST /api/assignments`**
+> (`TDS_Slice_Online_Revamp.md` §6.1). There is no committed *file*, so the "manual file-save
+> path is permanent" guarantee is repealed along with the constraint that justified it.
+> Propose and Review are untouched — only Commit's final act changed.
 
 **2.5 — Each Course Instance paces independently against its own Pacing Profile; there is no shared cross-instance daily cap.** A child with two active Instances can have both contribute Activities to the same School day, each governed only by its own `daysOfWeek[]`/`pacingMode`/budget, never combined into one shared per-day ceiling.
 
 **2.6 — Chores have no `skipDates[]` equivalent.** `skipDates[]` belongs to the Pacing Profile (School-only, Domain Model §2.9). A Chore's `daysOfWeek[]` recurrence has no standing exclusion mechanism — the one way to suppress a single chore date is a Review **drop** (FR-7), which is per-occurrence and does not touch recurrence.
 
-**2.7 — Generation is manually triggered, per (child, range); no scheduled or automatic generation exists.** The parent explicitly selects a child and a range each time. Nothing here proposes a recurring/background job — that would be a distinct, larger decision (touching the zero-cost/offline constraints, Architecture Evaluation §1) not asked for by any user story.
+**2.7 — Generation is manually triggered, per (child, range); no scheduled or automatic generation exists.** The parent explicitly selects a child and a range each time. Still true, and still a deliberate choice: `TDS_Slice_Online_Revamp.md` §0 keeps the pacing engine in the parent's browser for this round, so assignments materialize only when the Management App is open. Scheduled server-side generation is deferred, not forbidden — the schema is built to accept it without a migration.
 
 **2.8 — Three distinct removals, never conflated.** Taking an Activity out of a day at Review is not one action but a choice among three, and the difference is the whole point:
 

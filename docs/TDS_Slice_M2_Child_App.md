@@ -1,6 +1,17 @@
 # Technical Design Specification — Slice
 ## M2 Scope: Activity & Chore Completion, Deferment/Waive, Reward Ledger (earn), Streak, Completion CSV Export, Wipe (Child App)
 
+> **⚠️ Partially superseded — 2026-08-10 by `TDS_Slice_Online_Revamp.md`.** Read that first.
+>
+> **Repealed here:** the **N=100 reward ledger fold** (§4) — an IndexedDB size hack that
+> SQLite does not need; `rewardLedgerSnapshot`/`rewardLedgerTail` as stores; `activityRecords`
+> as a store (now `status`/`completed_at`/`grade` columns); the `exported` flag and the
+> export-gated wipe carve-out (§7) — nothing depends on an export having happened; Completion
+> CSV as transport.
+>
+> **Still accurate:** the completion and waive state transitions, the earn rules, and the
+> streak qualification logic. Those move to server-backed storage unchanged.
+
 *This is a deliberately narrow TDS slice — it covers only what's needed to build the Build Roadmap's M2 milestone: "complete/log activities and chores, Activity Records, deferment/waive, Reward Ledger earning (checkpointed) + Streak counter, completion CSV export with end-of-week reminder and recovery-note companion file, manual wipe (preserving pending work + ledger + streak)." It does not cover theming, reward *display*, or the parent-PIN spend/repair UI (all M3) — those are separate TDS work, done when their milestone is reached. Written against SRS Modules 4/5/6 (earn only)/7/8/9, the Interchange Contract, and Domain Model §3.6/§3.6a/§3.6b/§3.7/§3.8/§4.2 — reconciled against `packet_sample.json` and `completions_sample.csv`. Builds directly on top of `TDS_Slice_M1_Child_App.md` Rev 5; nothing in this document changes an M1 store shape, ID format, or validation rule.*
 
 ---

@@ -2,6 +2,15 @@
 ## Module 9: Completion Import
 ### Deferred Build — Phase 4 (milestone M10)
 
+> ## ⚠️ CANCELLED — 2026-08-10. Never built; will not be.
+>
+> This module existed to reconcile a CSV coming back across the air gap. Completions are now
+> rows the child writes directly into the shared `assignments` table, so there is nothing to
+> import and nothing to reconcile — `GET /api/assignments` reads them directly.
+> Controlling design: **`docs/TDS_Slice_Online_Revamp.md`** §5.2, §9.
+>
+> Reporting (Module 10) keeps its analysis; only its input changes.
+
 *Written against Domain Model §4.2 (Completion CSV — the locked eleven-column source), §4.3 (Reconciliation — deferred build, designed now), §2.12 (Imported Completion Record), Architecture Evaluation §9 ("Once completion import ships, [Master Reports] consolidate every child's completion data"), Roadmap §3/§5. Per Roadmap §5, this module's *build* is Phase 4 — after both apps' Phase 1–3 work — but per Domain Model §4.3's own framing ("deferred build, designed now"), its contract is specified here, same treatment already given to the CSV format itself back when nothing consumed it yet.*
 
 ---
