@@ -1,5 +1,11 @@
-// Child App service worker — app-shell cache for offline install/reload.
+// Child App service worker — app-shell cache for install/reload.
 // Bump CACHE_NAME on any shell file change so clients pick up the new set.
+//
+// KNOWN DEFECT, do not ship the online revamp without fixing this:
+// the fetch handler below is cache-first for EVERY GET, which will serve a
+// stale plan indefinitely once the app reads /api/plan. Required change per
+// TDS_Slice_Online_Revamp.md §8.5: cache-first for the precached shell only,
+// network-only for /api/*, and never cache an API response.
 const CACHE_NAME = "daily-plan-shell-v1";
 
 const APP_SHELL = [

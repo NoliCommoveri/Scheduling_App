@@ -6,13 +6,15 @@
 
 > **This project must be designed, built, and maintained at essentially zero cost.**
 
-Both apps must:
-- Run completely offline.
-- Require no server, no paid hosting, no paid developer.
-- Be maintainable by one reasonably technical parent using AI assistance.
-- Run by opening `index.html`.
+*Amended 2026-08-10 by `TDS_Slice_Online_Revamp.md`. Zero cost was always the real constraint; "offline" was the means, chosen when a free backend was not known to be available. Cloudflare's free tier serves the same goal, so the means changed and the constraint did not.*
 
-Google Drive is used as a **convenience transport** for moving files between the parent device and the kids' devices. It is not an architectural dependency — the same files could move by USB, cable, or email. Neither app makes a network call to function.
+Both apps must:
+- Be reachable from a browser with no install and no CLI.
+- Cost nothing to run — Cloudflare Workers + D1 free tier, no paid hosting, no paid developer.
+- Be maintainable by one reasonably technical parent using AI assistance.
+- Tolerate a lost connection on the child's device without losing work.
+
+The kids' devices are served the same origin as the API, so there is no file transport to arrange. Google Drive as a convenience transport is **abandoned** — it solved the problem of moving packets between devices, and there are no packets.
 
 Every architectural decision favors simplicity over sophistication.
 
@@ -354,7 +356,7 @@ Each phase functions without depending on future phases. The child app is usable
 - **Parent-added custom Activity Type payload — a single generic free-text field ("reference / instructions"), regardless of `structurePattern`.** Only the 10 canonical types carry hand-specified structured payload shapes.
 - **`sequenceNumber` is a Completion CSV column** (§9) — carried directly rather than left to a later lookup that could fail if the source Instance is deleted.
 - **Project structure is fixed at one file per SRS module, no shared `ui.js`** (§7).
-- **Manual file selection is a permanent fallback on both sides of the interchange**, never superseded once Drive integration ships — required by §1's own promise that neither app depends on a network call to function.
+- ~~**Manual file selection is a permanent fallback on both sides of the interchange**, never superseded once Drive integration ships.~~ **Repealed 2026-08-10** — there is no interchange to have a fallback for. CSV survives only as a report export a parent may want for a spreadsheet, on no critical path.
 - **Reward Ledger spend ceiling is hard** — a child can never spend past their current balance; no negative/"owed" balance state exists.
 - **Generation Log — one row per decision, keyed `(childId, itemId)`, `{ childId, instanceId?, itemId, assignedDate, disposition (sent|dropped), generatedAt }`, written only at Commit by Packet Generation** (Domain Model §2.10a). Both Master Reporting's Roster source and the generator's own completeness record (there is no pacing cursor); covered automatically by Settings & Backup's structural backup scope.
 - **Family Event wipe rule — clears once its date is strictly before device-local today** (§9/§12); one dated today or later always survives.

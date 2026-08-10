@@ -2,7 +2,21 @@
 
 One-time setup, ~10 minutes. Everything here stays inside Cloudflare's free tier.
 
-Design and rationale: `docs/TDS_Slice_D1_Sync_Management_App.md`.
+> **Partially superseded — 2026-08-10.** `docs/TDS_Slice_Online_Revamp.md` makes D1 the
+> system of record and puts both apps behind one Worker. Two things in this guide change
+> when that lands:
+>
+> - **Step 3 (creating tables by pasting SQL into the D1 console) goes away.** Schema arrives
+>   as numbered files in `/migrations`, applied by clicking **Apply** in Settings → Database
+>   or at `/admin/migrations`. No console, no CLI. See Revamp §3.7.
+> - **`[assets] directory` widens to `./`** so the Child App is served from the same origin,
+>   and a repo-root `.assetsignore` becomes load-bearing. See Revamp §10.
+>
+> Everything else below — the git connection, the repo-root `wrangler.toml`, the
+> `SYNC_TOKEN` secret, the troubleshooting section — is unchanged and still correct.
+
+Design and rationale: `docs/TDS_Slice_Online_Revamp.md` (current),
+`docs/TDS_Slice_D1_Sync_Management_App.md` (superseded, kept for the deploy history).
 
 ---
 
@@ -53,6 +67,11 @@ writing somewhere unexpected.
 > let the two drift. The repo config above is the only place this belongs.
 
 ## 3. Create the table
+
+> **This step is retired once the migration runner lands** (Revamp §3.7). From then on the
+> schema applies itself from the browser and you never touch the console again. Until then,
+> the manual path below is how the `records` table got created, kept here because the live
+> database was built this way.
 
 Open the database, go to the **Console** tab, and run these two statements **one at
 a time**:
@@ -260,8 +279,10 @@ commit or hit **Retry deployment**.
 
 ## Things worth knowing
 
-- **The Child App is untouched.** It stays on GitHub Pages, fully offline, exactly
-  as before. This is a management-side change only.
+- **The Child App is untouched *by this guide*.** It is still on GitHub Pages as written
+  here. `TDS_Slice_Online_Revamp.md` §10 moves it onto this Worker so it is same-origin
+  with the API — at which point the kids re-add their home-screen icon once, and the
+  "fully offline" description stops being true (it becomes online-first, offline-tolerant).
 - **Deletes are tombstoned,** not removed, so a stale device cannot resurrect a
   record you deleted elsewhere. `SELECT` with `deleted = 0` to see live rows.
 - **One authoring device is the intended shape.** Conflict handling is

@@ -1,6 +1,15 @@
 # Software Requirements Specification — Child App
 ## Module 2: Packet Import
 
+> ## ⚠️ RETIRED — 2026-08-10.
+>
+> Packet import is replaced by `GET /api/plan`. The Child App reads assignments from
+> Cloudflare D1 over HTTP; there is no packet to import and no file to select.
+> Controlling design: **`docs/TDS_Slice_Online_Revamp.md`** §5.5, §8.
+>
+> Retained as a historical record. §2.1's "acquisition is a swappable front door" is the one
+> idea that survives — it anticipated exactly this substitution.
+
 *Written against Domain Model §3.3/§4.1, Architecture Evaluation, Documentation Roadmap.*
 
 ---

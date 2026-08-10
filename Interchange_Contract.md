@@ -1,5 +1,20 @@
 # Interchange Contract — Management App ⇄ Child App
 
+> ## ⚠️ SUPERSEDED — 2026-08-10. Historical record only.
+>
+> **There is no longer an interchange format.** The packet JSON and the completion CSV
+> were reconciliation protocol between two air-gapped databases. Both apps now read and
+> write one shared Cloudflare D1 database over HTTP, so nothing crosses between them that
+> needs a contract.
+>
+> **Controlling design: `docs/TDS_Slice_Online_Revamp.md`** — §3.3 for the shared
+> `assignments` table, §5 for the API that replaces this document.
+>
+> Kept because it is the clearest surviving description of the packet-era data shapes, which
+> the migration off that model still has to read. **Do not build against it.** Do not
+> "restore consistency" between this file and the code — the code is moving away from it on
+> purpose.
+
 *Extracted from Domain Model §4, with supporting field-level detail pulled from Management SRS Module 08 (Packet Generation & Export), Child SRS Module 02 (Packet Import), Child SRS Module 08 (Completion CSV Export), and Management SRS Module 09 (Completion Import). This is the single source of truth for anything that crosses between the two apps.*
 
 *Companion artifacts, normative: `packet_schema.json`, `packet_sample.json`, `completions_sample.csv`. Where prose and schema disagree, **the schema wins** — that is the point of having it.*

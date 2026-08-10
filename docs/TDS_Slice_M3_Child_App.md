@@ -1,6 +1,15 @@
 # Technical Design Specification — Slice
 ## M3 Scope: Theming, Reward *Display* + Spend, Settings + Repair Form (Child App)
 
+> **⚠️ Partially superseded — 2026-08-10 by `TDS_Slice_Online_Revamp.md`.** Read that first.
+>
+> **Repealed here:** balances read from a local snapshot-plus-tail — a balance is now
+> `SUM(amount)` over the append-only `reward_entries` table; the recovery-note repair flow,
+> whose purpose was reconstructing state that only ever existed on one device.
+>
+> **Still accurate:** the whole theming system, the per-Reward-Category display mapping, and
+> the spend ceiling (no negative balances). Spends become negative `reward_entries` rows.
+
 *This is a deliberately narrow TDS slice — it covers only what's needed to build the Build Roadmap's M3 milestone: "theming + reward display" — the CSS-variable theme system, the palette and signature themes, the per-Reward-Category display mapping with generic-default fallback, the parent-PIN spend/deduct UI, and the PIN-gated repair form (balance adjust + streak set). It is the **final Child App milestone**: after M3 the Child App SRS is fully realised (Modules 1–11), and everything remaining (M4+) is Management App, out of this app's scope entirely. Written against SRS Modules 6 (display + spend), 10 (Theming), and 11 (Settings), the Interchange Contract, and Domain Model §3.7/§3.7a/§3.8/§3.9. Builds directly on top of `TDS_Slice_M2_Child_App.md` Rev 1 and `TDS_Slice_M1_Child_App.md` Rev 5; **nothing in this document changes an M1 or M2 store shape, key path, ID format, or validation rule**, and — as §2 shows — it introduces no new IndexedDB store and no schema version bump at all.*
 
 ---

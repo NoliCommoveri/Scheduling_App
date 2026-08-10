@@ -15,7 +15,14 @@ First-run setup for the Child App. Runs exactly once per device profile, before 
 
 **2.2 — PIN storage.** The parent PIN's home is `pin` on Child (Domain Model §3.2), alongside `name`. A separate, independent Management App PIN (`launchPin`, Domain Model §2.11) also gates the entire Management App at launch — a different credential on a different app/device, not related to this module.
 
-The parent PIN is stored in plaintext in the device's IndexedDB. No encryption or hashing is applied; this app runs entirely offline on a parent-controlled device. Encryption is not a security measure for this environment.
+The parent PIN is stored in plaintext in the device's IndexedDB. No encryption or hashing is applied; it is a device-local speed bump on a family device, not a security boundary.
+
+> **Amended 2026-08-10.** The original justification — "this app runs entirely offline" — is
+> obsolete. The reasoning that replaces it: the PIN is **never transmitted and never
+> mirrored** (`appSettings` is excluded from sync), so it remains device-local even though
+> the app is now networked. What *does* leave the device is the child device token, and that
+> is hashed at rest server-side (`TDS_Slice_Online_Revamp.md` §3.6). Do not extend the
+> plaintext-is-fine reasoning to any credential that reaches the network.
 
 ## 3. User stories
 
@@ -66,7 +73,12 @@ The parent PIN is stored in plaintext in the device's IndexedDB. No encryption o
 
 ## 7. Inputs / Outputs
 
-**Inputs:** parent/child keyboard entry only. No file import, no network, no Drive access in this module.
+**Inputs:** parent/child keyboard entry only. No file import in this module.
+
+> **Amended 2026-08-10.** "No network" no longer holds: the wizard is where a child device
+> is paired, so it accepts an 8-character pairing code and exchanges it for a device token
+> via `POST /api/pair` (`TDS_Slice_Online_Revamp.md` §4.3). This is the module's one network
+> call, and it happens once per device.
 
 **Outputs (written to device storage):**
 - Child record: `{ name, pin }`

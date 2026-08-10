@@ -118,7 +118,7 @@ Each milestone must produce a working app and must not depend on unfinished feat
 - The completion CSV carries a **stable activity ID** and a reserved **`waived`** status — do not drop either to make the CSV prettier.
 - The child app has exactly **three** sanctioned bounded-intelligence exceptions (ledger snapshot, streak, local date-edit for deferment) — anything beyond these is scope creep.
 - Ledger/Streak recovery is note-plus-repair-form only — never add a machine-readable backup/restore path, and never make any module read the recovery note.
-- Keep everything mostly offline, zero-cost, framework-free. Optimize the child app hard for budget Android; the management app can be heavier.
+- Keep everything zero-cost and framework-free. Optimize the child app hard for budget Android; the management app can be heavier. *(Amended 2026-08-10: "mostly offline" is repealed — see `TDS_Slice_Online_Revamp.md`. Zero-cost and framework-free stand.)*
 - **Standing rule:** any SRS-level decision that changes domain semantics (adds a field, changes a behavior like Packet Import's refresh logic) gets reflected in the Domain Model doc the same session it's decided — not batched into a future leveling pass.
 - Evaluate every recommendation against the guardrails in Architecture Evaluation §11.
 
@@ -126,7 +126,13 @@ Each milestone must produce a working app and must not depend on unfinished feat
 
 ## 7. Core project constraints (never violate)
 
-1. Zero-cost development. 2. Zero-cost maintenance. 3. No required server. 4. No required cloud services (Drive is a convenience transport, not a dependency). 5. Runs completely offline (both apps) except launch and import/export. 6. Browser-based. 7. Child app optimized for budget Android; management app for the parent's capable device. 8. Maintainable by one parent with AI assistance. 9. Curriculum-first design. 10. Student ownership without allowing avoidance of required work. 11. Two-app producer/consumer split. 12. Generation lives on the parent device; the child app never runs the pacing engine (three named exceptions — §6). 13. Child app holds only a disposable slice **plus** three tiny permanent items (ledger snapshot, streak, pending deferred work). 14. Interchange is one-way in each direction; no bidirectional sync; no spend channel. 15. Theming is an adoption pillar, theme-ready from day one, and owns the reward-category display.
+> **Amended 2026-08-10** by `TDS_Slice_Online_Revamp.md`. Constraints 3, 4, 5, 13 and 14 are
+> repealed; 1 and 2 are preserved by staying inside Cloudflare's free tier. The list below
+> is the current one.
+
+1. Zero-cost development. 2. Zero-cost maintenance. 3. **No CLI — every operation, including schema migration, is performed from a browser.** 4. Cloudflare Workers + D1, free tier only. 5. **Online-first, offline-tolerant**: the child app opens from cache and queues completions, but the network is the normal path. 6. Browser-based. 7. Child app optimized for budget Android; management app for the parent's capable device. 8. Maintainable by one parent with AI assistance. 9. Curriculum-first design. 10. Student ownership without allowing avoidance of required work. 11. Two-app producer/consumer split. 12. Generation lives on the parent device; the child app never runs the pacing engine (three named exceptions — §6). 13. **D1 is the system of record; both apps' IndexedDB is a cache plus an outbox.** 14. **Parent and child write disjoint column sets on one shared `assignments` table; ownership is enforced server-side.** 15. Theming is an adoption pillar, theme-ready from day one, and owns the reward-category display.
+
+*Repealed for the record:* "No required server", "No required cloud services", "Runs completely offline", "Child app holds only a disposable slice", "Interchange is one-way in each direction; no bidirectional sync".
 
 ---
 

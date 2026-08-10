@@ -2,8 +2,26 @@
 
 ## Scope: Management App — Cloudflare D1 Durable Mirror & Sync
 
-**Status:** Authored 2026-08-10. Authorized by Ray in-session as an amendment to the
-LOCKED constraints in `CLAUDE.md` §III.A and §X (see §0).
+> ## ⚠️ SUPERSEDED — 2026-08-10, later the same day, by `TDS_Slice_Online_Revamp.md`.
+>
+> This slice's central claim — *"IndexedDB remains the source of truth; offline-first is
+> preserved in full"* (§0, §1) — **no longer holds.** D1 is now the system of record for
+> the whole project, not a mirror behind it.
+>
+> **What survives:** the `records` table, the outbox drain, the push/snapshot/status
+> endpoints, and the deployment shape. Its role narrows to backing up *parent curriculum
+> authoring stores only* (Revamp §3.1). Everything a child is assigned or produces lives in
+> relational tables instead (Revamp §3.3–§3.6).
+>
+> **What does not survive:** §0's amendment table, which narrowed the offline-first
+> constraint rather than repealing it. Read Revamp §0 instead.
+>
+> **Known gap this slice left open, and its cost:** the outbox only ever captured writes made
+> *after* sync was enabled, so curriculum authored before that never reached D1. This is what
+> lost Ray a curriculum. No backfill is planned (Revamp §12) — the data is gone, and authoring
+> restarts on the new system. Set the token *before* authoring, and verify it landed.
+
+**Status:** Authored 2026-08-10. Superseded the same day (see above).
 **Applies to:** `management-app/` only. The Child App is untouched by this slice.
 
 ---

@@ -1,14 +1,31 @@
 # CLAUDE.md – Build Session Guardrails
 
-**Version:** 1.0  
+**Version:** 2.0  
 **Project:** Homeschool Curriculum & Chore Scheduling System  
-**Last Updated:** 2026-07-13  
+**Last Updated:** 2026-08-10  
 
 ---
 
 ## Purpose
 
-This document defines hard constraints, verification rituals, and decision gates that apply to **every Claude Code build session** on this project. It is read-only guidance enforced **before any code is written or edited**. You are the designer for the Child App.
+This document defines hard constraints, verification rituals, and decision gates that apply to **every Claude Code build session** on this project. It is read-only guidance enforced **before any code is written or edited**.
+
+> **Version 2.0 is an architectural reversal.** The project was built offline-first, with two air-gapped databases exchanging a JSON packet and a completion CSV. That constraint is **repealed**. The system of record is now a Cloudflare D1 database, and the two apps talk to it over HTTP. `docs/TDS_Slice_Online_Revamp.md` is the authoritative design; this file enforces it.
+>
+> If you find guidance anywhere in `/docs` that tells you the app must work offline, that IndexedDB is the source of truth, or that packets and CSVs are the interchange — **that guidance is superseded.** Do not halt, do not escalate, do not "restore" it. Build online.
+
+---
+
+## 0. Non-Negotiables (read this first)
+
+| Constraint | Why |
+|---|---|
+| **Ray has no CLI.** | No step — deploy, schema, backup, recovery — may require a terminal. Anything that would be a `wrangler` command must be a button in a browser. See TDS_Online_Revamp §3.7. |
+| **D1 is the system of record.** | IndexedDB on both devices is a cache plus an outbox. Never the truth. |
+| **The parent token never goes on a child device.** | It grants a whole-database snapshot. Child devices use scoped, revocable device tokens. |
+| **Column-level ownership is enforced server-side.** | Parent-owned and child-owned columns are disjoint. This is what makes the design conflict-free. Never let a client decide what it may write. |
+| **Vanilla JS, no build step — in the two browser apps.** | The Worker is bundled by Wrangler and always has been. That is not a violation. |
+| **Free tier only.** | Cloudflare Workers + D1 free tier. No paid services, no billing surprises. |
 
 ---
 
@@ -16,79 +33,40 @@ This document defines hard constraints, verification rituals, and decision gates
 
 ### A. App-Level Isolation (MANDATORY)
 
-The project consists of **two separate applications** with a defined interchange contract:
+Two applications, one shared database, no shared runtime code:
 
 | Aspect | Child App | Management App |
 |--------|-----------|-----------------|
 | **Folder** | `child-app/` | `management-app/` |
-| **Scope** | Modules 1–11 (Child UI) | Modules 01–11 (Parent/admin UI) |
+| **Scope** | Child UI: plan, complete, rewards, streak | Parent/admin UI: curriculum, pacing, assignment, reporting |
 | **Runtime Code Sharing** | **FORBIDDEN** | **FORBIDDEN** |
-| **Shared Resources** | `Interchange_Contract.md`, `fixtures/` (read-only) | Interchange Contract, `fixtures/` (read-only) |
-| **Data Flow** | ← Packet (JSON) ← | → Completion CSV → |
+| **Data Flow** | ← `GET /api/plan` · `POST /api/completions` → | → `POST /api/assignments` · `GET /api/assignments` ← |
+| **Credential** | Scoped device token (per child) | `SYNC_TOKEN` (parent) |
 
 **Enforcement:**
-- A Claude Code session **must declare which app it is building** at the start.
-- Any file edit or create operation **outside the declared app folder** is an error; halt and escalate to Ray.
-- The `fixtures/` and interchange docs are **read-only reference only**; never edit them from a build session.
+- A session **must declare which app it is building** at the start. Worker changes are their own scope.
+- File edits outside the declared scope are an error; halt and escalate to Ray.
+- The two apps may share a *schema* and an *API*. They may never share a JS file.
 
-### B. Repository Structure (LOCKED)
+### B. Repository Structure
 
 ```
 /
-├── README.md (orientation)
-├── Interchange_Contract.md (master reference)
-├── Split_Build_Session_Guide.md (meta-workflow)
 ├── CLAUDE.md (this file)
+├── wrangler.toml           (repo root — Cloudflare dictates this location)
+├── package.json            (pins Wrangler for git-connected deploys; not app runtime)
 │
-├── fixtures/
-│   ├── packet_sample.json
-│   ├── packet_schema.json
-│   ├── completions_sample.csv
-│   └── TestData_M2_Child_App.md
+├── migrations/             (NNNN_description.sql — forward-only, applied in-browser)
 │
-├── child-app/
-│   ├── index.html (or homeschool-child-app.html for M1)
-│   ├── js/
-│   │   ├── startup.js (Module 1 – Startup Wizard)
-│   │   ├── packet-import.js (Module 2 – Packet Import)
-│   │   ├── daily-planner.js (Module 3 – Daily Planner)
-│   │   ├── completion.js (Module 4 – Activity/Chore Completion)
-│   │   ├── deferment.js (Module 5 – Deferment/Waive)
-│   │   ├── rewards.js (Module 6 – Reward Ledger)
-│   │   ├── streak.js (Module 7 – Streak)
-│   │   ├── export.js (Module 8 – CSV Export)
-│   │   ├── wipe.js (Module 9 – Wipe)
-│   │   ├── theming.js (Module 10 – Theming)
-│   │   ├── settings.js (Module 11 – Settings)
-│   │   └── idb-schema.js (IndexedDB store definitions)
-│   └── styles/
-│       └── styles.css
-│
+├── child-app/              (PWA: index.html, js/, css/, icons/, manifest.json, sw.js)
 ├── management-app/
-│   ├── index.html
-│   ├── js/
-│   │   ├── curriculum-lib.js (Module 01)
-│   │   ├── difficulty-tier.js (Module 02)
-│   │   ├── course-template.js (Module 03)
-│   │   ├── child-mgmt.js (Module 04)
-│   │   ├── pacing-config.js (Module 05)
-│   │   ├── chore-auth.js (Module 06)
-│   │   ├── event-auth.js (Module 07)
-│   │   ├── packet-gen.js (Module 08)
-│   │   ├── completion-import.js (Module 09)
-│   │   ├── reporting.js (Module 10)
-│   │   ├── settings-backup.js (Module 11)
-│   │   └── idb-schema.js (IndexedDB store definitions)
-│   └── styles/
-│       └── styles.css
+│   ├── index.html, js/, styles/
+│   └── worker/             (index.js, migrations.js — the API; never served as an asset)
 │
-└── docs/ (optional, stores prior TDS/SRS for reference)
-    ├── TDS_Slice_M1_Child_App.md
-    ├── TDS_Slice_M2_Child_App.md
-    └── ... (SRS modules, Domain Model, etc.)
+└── docs/                   (TDS slices, SRS modules, roadmap)
 ```
 
-Do **not** deviate from this structure without explicit Ray approval.
+`fixtures/` and `Interchange_Contract.md` are **legacy** — artifacts of the packet/CSV era, retained only until the revamp's Phase 5 deletion. Do not build against them.
 
 ---
 
@@ -96,87 +74,56 @@ Do **not** deviate from this structure without explicit Ray approval.
 
 ### BEFORE any code is written, verify:
 
-1. **TDS Slice for the target milestone exists** and is in `/docs/`:
-   - Defines schema shapes (tables, store layout, JSON structure)
-   - Locks all state machine transitions and mechanic decisions
-   - Flags open vs. decided items explicitly
-   - **Missing TDS = HALT; escalate to Ray for TDS authoring**
+1. **`docs/TDS_Slice_Online_Revamp.md` has been read.** It is the controlling design for everything post-2026-08-10. Where it conflicts with an older slice, it wins.
 
-2. **SRS modules for all affected Modules are current**:
-   - For Child App M2 (Modules 4–9): `SRS_Module_04.md` through `SRS_Module_09.md` must match the TDS slice.
-   - For Management App: Check `SRS_Management_Module_0X.md` for all modules being built.
-   - **Mismatch = HALT; run audit (§ IV.A) before proceeding**
+2. **A TDS slice exists for the target milestone**, defining schema shapes, state transitions, and open-vs-decided items.
+   - **Missing TDS = HALT; escalate to Ray for TDS authoring.**
 
-3. **Interchange Contract is consistent** with schema:
-   - Packet schema in `packet_schema.json` matches TDS "Packet Structure" section.
-   - Completion CSV layout in `Interchange_Contract.md` matches TDS "Completion CSV" section.
-   - **Mismatch = HALT; escalate reconciliation (§ III.C)**
+3. **SRS modules for affected Modules are current.**
+   - **Mismatch = HALT; run audit (§IV.A) before proceeding.**
+   - Exception: Child Module 02 (Packet Import), Child Module 08 (CSV Export as transport), and Management Module 09 (Completion Import) are **retired**. A mismatch against those is expected, not a blocker.
+
+4. **The D1 schema and the Worker API match the TDS.**
+   - Every schema change is a new migration file, registered per §3.7.3 of the revamp slice.
+   - **Never edit an applied migration.** Correct it with a new one.
 
 ---
 
 ## III. Key Architectural Constraints (LOAD-BEARING)
 
-These constraints are **not negotiable**. Violating them will break the system.
+### A. D1 as System of Record
 
-### A. IndexedDB & Offline-First
+- **D1 holds the truth.** IndexedDB on both devices is a read-through cache plus a write outbox.
+- **Network is the normal path.** Both apps make API calls during ordinary operation.
+- **Offline is tolerated, not guaranteed.** The Child App opens from cache, renders the last known plan, and queues completions. It does **not** need to function indefinitely without a network, and no design may be contorted to make it.
+- **Local writes never block on the network.** A completion commits locally and drains later.
 
-- **No network calls** during normal app operation (except GitHub Pages asset load and optional later Google Drive integration).
-- **IndexedDB is the source of truth** for all state; volatile state only in memory.
-- **Schema is defined in `idb-schema.js`** per app. Each build session must:
-  1. Read the current TDS slice to extract store definitions.
-  2. Verify `idb-schema.js` reflects the TDS slice exactly.
-  3. If `idb-schema.js` is out-of-date, update it *before* writing any feature code.
+### B. The Shared Assignment Table
 
-**Validation:**
-```bash
-node validate-idb-schema.js --app child|management --tds ./docs/TDS_Slice_*.md
-```
+- **One row per child per day per thing to do**, in `assignments`.
+- **IDs are server-minted opaque UUIDs.** Nothing parses an ID. There are no derived IDs, no reserved prefixes, no `CHR-{token}-{date}` scheme. *(The old per-occurrence identity rule is repealed.)*
+- **Parent writes the top half, child writes the bottom half** — see the revamp slice §3.3. The Worker enforces this; clients are never trusted to self-limit.
+- **Denormalized on purpose.** `title`, `course_name`, `reward_amount` are snapshotted at assign time. A completed assignment records what it *was*, not what the curriculum later became.
 
-### B. Child App: Per-Occurrence Chore Identity
+### C. Rescission and the Append-Only Ledger
 
-From the M1/M2 design decisions:
+- **Rescind sets `rescinded_at`; it never deletes.** A row that vanishes can be resurrected by a stale device replaying its outbox.
+- **Every Commit stamps a `batch_id`**, so a bad batch can be reversed in one statement.
+- **`reward_entries` is append-only.** Never update, never delete. A correction is a new compensating row. **Rescinding an assignment never claws back earnings** — a child's balance must not silently drop because a parent reorganised a syllabus.
 
-- **Chores DO NOT have a single definition-level ID** in the packet.
-- **Each chore instance is identified deterministically**: `CHR-{choreToken}-{YYYYMMDD}` at the child app level.
-- The packet contains chores **pre-expanded by date**, with a `date` field (ISO 8601 string).
-- **`daysOfWeek[]` does NOT appear in the packet**; expansion happens in the management app before export.
-- **Reserved prefix validation is load-bearing**: No `courseCode` may be literally `CHR` or `EVT`.
+### D. Migrations Are Browser-Applied
 
-**Validation:**
-```bash
-node validate-packet-schema.js --packet ./fixtures/packet_sample.json
-# Must confirm no courseCode is "CHR" or "EVT"
-```
+- Files in `/migrations`, `NNNN_short_description.sql`, forward-only, one logical change per file.
+- **Adding a file also means registering it** in `management-app/worker/migrations.js`.
+- Applied from Settings → Database, or from `/admin/migrations` when the app itself is broken.
+- **Never instruct Ray to run a CLI command or paste SQL into the D1 console.** If a task seems to require it, that is a bug in the task, not in Ray's setup.
 
-### C. Packet & Completion CSV Interchange
+### E. Authorization
 
-- **Packet (Management → Child)**: JSON, downloaded or imported by child app via Module 2.
-  - Structure is defined in `packet_schema.json` and locked in the TDS slice.
-  - Child app **never edits or transforms the packet**; it loads it as-is into IndexedDB.
-  
-- **Completion CSV (Child → Management)**: Tab-separated, exported by Module 8.
-  - One row per completed activity/chore, with columns: `completionID`, `itemID`, `date`, `completedAt`, `earnedReward`, `notes`.
-  - Management app imports this via Module 09 and reconciles against its database.
-
-**Validation:**
-```bash
-node validate-interchange.js --packet ./fixtures/packet_sample.json --csv ./fixtures/completions_sample.csv
-```
-
-### D. Reward Ledger Fold Cadence (N=100)
-
-- **M2 decision (locked, per `TDS_Slice_M2_Child_App.md` §4 — corrected 2026-07-13, was previously misstated here as N=25)**: after every `rewardLedgerTail` append, count that category's tail entries (`rewardLedgerTail`, scoped by `categoryId`); on reaching 100, fold immediately — sum into `rewardLedgerSnapshot`, then delete the folded tail rows for that category.
-- **Do not allow this to drift** in later modules; it is part of the user's mental model.
-
-### E. `plannerMeta` Keyed by Item ID, Not Date
-
-From M1 design (per `TDS_Slice_M1_Child_App.md` §4 — corrected 2026-07-13, field names were previously misstated here):
-
-- `plannerMeta` is a store keyed by **item ID** (`id`, matching an `activities`/`chores` record's own `id`), not by date.
-- Shape: `{ id, sortOrder?, blockHint?, deferredDate? }` — every field but `id` is optional, written only when the child actually acts; an untouched item has no `plannerMeta` record at all.
-- `sortOrder`/`blockHint` are written by Module 3 (Daily Planner); `deferredDate` is written by Module 5 (Deferment/Waive, M2) — the store is defined at M1 so no version bump is needed when Module 5 lands.
-- **Benefit**: Reschedule sort-order and block continuity for free.
-- **Do not deviate** (e.g., no per-date plannerMeta).
+- `SYNC_TOKEN` — parent, Worker secret, full scope.
+- Device tokens — per child, hashed at rest in `devices`, revocable, scoped to one `child_id`.
+- The Worker derives `child_id` **from the token**, never from the request body.
+- `/api/pair` is the only unauthenticated route.
 
 ---
 
@@ -184,71 +131,56 @@ From M1 design (per `TDS_Slice_M1_Child_App.md` §4 — corrected 2026-07-13, fi
 
 ### A. Pre-Build Audit Checklist
 
-Before writing code, run these checks. **If any fail, halt and escalate to Ray.**
-
 ```bash
-# 1. Confirm TDS slice exists
-[ -f docs/TDS_Slice_M*.md ] && echo "✓ TDS slice found" || echo "✗ HALT: No TDS slice"
+# 1. Controlling design present
+[ -f docs/TDS_Slice_Online_Revamp.md ] && echo "✓" || echo "✗ HALT"
 
-# 2. Confirm SRS modules are up-to-date
-# For Child App M2, check SRS_Module_04 through 09
-for i in 04 05 06 07 08 09; do
-  [ -f docs/SRS_Module_${i}_*.md ] && echo "✓ SRS_Module_${i} found" || echo "✗ SRS_Module_${i} missing"
+# 2. TDS slice for the target milestone
+ls docs/TDS_Slice_*.md
+
+# 3. Every migration file is registered in the runner
+for f in migrations/*.sql; do
+  grep -q "$(basename "$f")" management-app/worker/migrations.js \
+    && echo "✓ $(basename "$f")" || echo "✗ UNREGISTERED: $(basename "$f")"
 done
 
-# 3. Validate packet schema against TDS
-node validate-packet-schema.js --tds docs/TDS_Slice_*.md --packet fixtures/packet_sample.json
-
-# 4. Confirm Interchange Contract is current
-# (manual: read Interchange_Contract.md and verify it matches TDS slice)
-
-# 5. Confirm no stale branch cruft (git status should be clean)
-git status --short | grep -E '^ [MD]' && echo "✗ Uncommitted changes detected" || echo "✓ Working directory clean"
+# 4. Working directory clean
+git status --short
 ```
 
-### B. Mid-Build Validation Points
+### B. Mid-Build Validation
 
-At these milestones, run validation:
+| Milestone | Check |
+|---|---|
+| Migration written | Registered in `worker/migrations.js`; applies cleanly on an empty DB |
+| Worker route added | Rejects the wrong credential type; rejects writes to columns it does not own |
+| Child App data change | `DB.loadState()` still returns `{ activities, chores, events, meta }` (see revamp §8.2) |
+| Any schema change | Applied via the browser, never the console |
 
-| Milestone | Command | Expected Output |
-|-----------|---------|-----------------|
-| Store schema written | `node validate-idb-schema.js --app child` | All stores match TDS |
-| First 3 modules complete | `node validate-packet-load.js --app child` | Packet loads, no schema errors |
-| Completion flow done | `node validate-completion-csv.js --app child` | CSV exports match spec |
-| Full milestone complete | `npm test` (if available) | All tests pass |
+### C. Post-Build Reconciliation (before handoff)
 
-### C. Post-Build Reconciliation (Mandatory Before Handoff)
-
-After code is merged, Ray **must** perform this ritual before any code ships:
-
-1. **Read the final TDS slice** and the actual code side-by-side.
-2. **Verify the Interchange Contract** is still consistent (no schema drift).
-3. **Run the full test suite** if one exists.
-4. **Smoke-test the app** on a target device (Android budget device for child app).
-5. **Update the Roadmap** if any decisions deferred to a later milestone were instead resolved now.
+1. Read the TDS slice and the code side by side.
+2. Confirm every new migration is registered and applied.
+3. Verify the credential-scope acceptance checks (revamp §13, items 1–7).
+4. Smoke-test the Child App on a budget Android device.
+5. Update the Roadmap if deferred decisions were resolved early.
 
 ---
 
 ## V. Decision Gates & Escalation
 
-### A. When to Halt & Escalate to Ray
-
-**Do NOT guess. Do NOT proceed. Escalate with a clear summary.**
+### A. When to Halt & Escalate
 
 | Scenario | Action |
-|----------|--------|
-| No TDS slice for the target milestone | Halt. Provide Ray a summary of what you found and ask for TDS authoring. |
-| SRS module contradicts TDS slice | Halt. Provide a specific list of contradictions and ask which takes precedence. |
-| Schema change required not in TDS | Halt. Describe the change, explain why, and ask if it is in-scope for this milestone. |
-| Cross-app code sharing seems beneficial | Halt. Explain the case and ask if it violates architecture. (Answer is almost always yes.) |
-| `Interchange_Contract.md` needs update | Halt. Do not edit it unilaterally. Escalate the change with full justification. |
-| File layout ambiguity (single `index.html` vs. separate files) | Halt. Ray has an open decision here; ask which layout to use. |
-| Module 10 (Theming) needs to connect wizard choice to CSS | Halt. This is a later milestone; ask if it is in scope. |
-| Estimated build time exceeds 2–3 hours | Halt before writing code. Estimate work, break into phases, ask Ray how to proceed. |
+|---|---|
+| No TDS slice for the target milestone | Halt. Summarize findings, ask for TDS authoring. |
+| SRS contradicts the revamp slice | **Do not halt** if the contradiction is offline-vs-online, packet, or CSV. The revamp wins. Halt only for a genuine conflict. |
+| Schema change not described in a TDS | Halt. Describe the change and ask if it is in scope. |
+| A step appears to require a CLI | Halt. This is never acceptable — redesign it as a browser action. |
+| Cross-app code sharing seems beneficial | Halt. The answer is almost always no. |
+| Estimated build time exceeds 2–3 hours | Halt before writing code. Break into phases, ask how to proceed. |
 
 ### B. Decision Flags
-
-Use these in commit messages and comments to signal decisions:
 
 ```
 [DECISION] <context>
@@ -257,208 +189,76 @@ Rationale: <why this choice, not the alternative>
 Locked for: <which milestone/module>
 ```
 
-Example:
-```
-[DECISION] plannerMeta structure in Module 3
-Decided: Key by item ID, not date (Reschedule continuity)
-Rationale: Avoids re-computing sort-order & block-assignment on reschedule
-Locked for: M1 (no change in M2 or later)
-```
-
 ---
 
-## VI. Tools & Commands
-
-### A. Validation Scripts
-
-These should exist in the repo root (`validate-*.js`). If not, create them:
-
-```bash
-node validate-packet-schema.js [--packet <path>] [--tds <path>]
-  # Confirms packet matches TDS schema; flags reserved prefixes (CHR, EVT)
-
-node validate-idb-schema.js [--app child|management] [--tds <path>]
-  # Confirms idb-schema.js matches TDS store definitions
-
-node validate-interchange.js [--packet <path>] [--csv <path>]
-  # Confirms Completion CSV format matches Interchange Contract
-
-node validate-completion-csv.js [--app child] [--export-path <path>]
-  # Exports a test completion CSV and validates format
-```
-
-If a validation script is missing, **ask Ray before writing code**.
-
-### B. Test Structure
-
-If tests exist, run them before final commit:
-
-```bash
-npm test
-  # Run all unit tests
-
-npm run test:integration
-  # Run integration tests (e.g., packet load → daily planner → export)
-
-npm run test:coverage
-  # Report code coverage
-```
-
-### C. Build & Deployment (Future)
-
-```bash
-npm run build
-  # Bundle child or management app into a single .html file (if applicable)
-
-npm run deploy
-  # Push to GitHub Pages (requires Ray to configure secrets)
-```
-
----
-
-## VII. File Output Patterns (Ray's Workflow)
-
-This session should follow Ray's established pattern:
-
-1. **Create in `/home/claude/`** using `create_file`.
-2. **Copy to `/mnt/user-data/outputs/`** using `bash_tool`.
-3. **Present to Ray** using `present_files`.
-4. **Wait for Ray's confirmation** before proceeding to the next step.
-
-Ray will:
-- Review the file locally.
-- Confirm it matches intent ("✓ looks good, proceed").
-- Authorize continuation (move to next phase, commit, etc.).
-
-**Never skip this loop.** It prevents divergence.
-
----
-
-## VIII. Communication Patterns
+## VI. Communication Patterns
 
 ### A. Status Updates
 
-At the end of each session phase, provide Ray with:
-
-```
-## Phase Summary
-
-**Completed:**
-- [x] Verified TDS slice (M2_Child_App)
-- [x] Updated idb-schema.js (Modules 4–7)
-- [x] Wrote Module 4 (Activity/Chore Completion)
-
-**Halted / Escalated:**
-- [ ] Module 5 deferment logic (awaiting TDS clarification on edge case X)
-
-**Next Phase:**
-- [ ] Module 5 (Deferment/Waive)
-- [ ] Validation of Completion CSV export
-
-**Estimated Remaining Time:** 1.5 hours
-
-**Blockers:** None.
-```
+End each phase with what completed, what halted and why, what is next, and estimated remaining time.
 
 ### B. Error Reporting
 
-If a validation fails, provide:
-
-```
-## Validation Failure: [name]
-
-**Issue:** [Specific error or mismatch]
-
-**Details:**
-- Expected: [from TDS or spec]
-- Found: [in code or output]
-
-**Impact:** [Does this block the build? Can it be deferred?]
-
-**Suggested Fix:** [If obvious] or [Awaiting Ray guidance]
-```
+State the issue, expected vs. found, whether it blocks, and the suggested fix.
 
 ### C. Uncertainty
 
-If something is unclear, ask explicitly:
-
-```
-**Clarification Needed:**
-
-In SRS_Module_05 (Deferment), the waive flow says "remove from today's planner."
-Does this mean:
-A) Delete the item entirely (cannot defer again)?
-B) Move it to a future date (user chooses when)?
-C) Mark it done with zero reward (counts as completion)?
-
-The TDS slice does not clarify this. Proceeding with Option [X] pending your confirmation.
-```
+Ask explicitly, list the candidate readings, state which you are proceeding with, and flag it for confirmation.
 
 ---
 
-## IX. Session Checklist
+## VII. Quick Reference: Locked Decisions
 
-**Run this at the start of every Claude Code session:**
-
-- [ ] **App declared.** This session is building: `child-app` or `management-app`.
-- [ ] **TDS slice confirmed.** Located at: `docs/TDS_Slice_*.md`
-- [ ] **SRS modules checked.** All affected modules are up-to-date and consistent.
-- [ ] **Interchange Contract reviewed.** No schema drift.
-- [ ] **CLAUDE.md read.** Constraints and gates understood.
-- [ ] **Working directory clean.** `git status` shows no uncommitted changes.
-- [ ] **Validation tools available.** All required `validate-*.js` scripts exist (or ask Ray if missing).
-
----
-
-## X. Quick Reference: Locked Decisions
-
-| Decision | Status | Module(s) | Notes |
-|----------|--------|-----------|-------|
-| IndexedDB as source of truth | **LOCKED** | All | No network state. |
-| Offline-first guarantee | **LOCKED** | All | Blocks Gist integration. |
-| Per-occurrence chore ID (`CHR-{token}-{date}`) | **LOCKED** | 4–9 | No single definition ID. |
-| Packet interchange (JSON) | **LOCKED** | 2 | No transformation in child app. |
-| Completion CSV interchange | **LOCKED** | 8–9 | Tab-separated, one row per completion. |
-| Reserved prefix validation (CHR, EVT) | **LOCKED** | All | Enforced on packet load. |
-| `plannerMeta` keyed by item ID | **LOCKED** | 3–5 | Reschedule continuity. |
-| Ledger fold at N=100 | **LOCKED** | 6 | User mental model. Corrected 2026-07-13 (was misstated as N=25; TDS_Slice_M2 §4 is authoritative at N=100). |
-| Single-file bundle for Android | **LOCKED** | M1 | Relative paths break on multi-file folders. |
-| Vanilla JS, no build step | **LOCKED** | All | GitHub Pages deployment requirement. |
-| Two-app split, no shared runtime code | **LOCKED** | All | Interchange only. |
-| Child App M1 (Modules 1–3) | **COMPLETE** | 1–3 | `homeschool-child-app.html` delivered. |
-| Module 10 (Theming) | **DEFERRED** | 10 | Wizard choice → CSS integration is later. |
-| Google Drive integration | **DEFERRED** | 2 (alt path) | Planned for later milestone. |
-| Single vs. multi-file layout | **OPEN** | M2+ | Ray to decide at build session start. |
+| Decision | Status | Notes |
+|---|---|---|
+| D1 as system of record | **LOCKED** | Replaces IndexedDB-as-truth. |
+| Online-first, offline-tolerant | **LOCKED** | Replaces the offline-first guarantee. |
+| No CLI, ever | **LOCKED** | Migrations and all ops are browser-driven. |
+| Shared `assignments` table | **LOCKED** | Parent assigns, child completes, one row. |
+| Server-minted opaque UUIDs | **LOCKED** | Repeals `CHR-{token}-{date}` and reserved prefixes. |
+| Column-level ownership | **LOCKED** | Enforced in the Worker. No conflict resolution needed. |
+| Rescind = `rescinded_at`, never DELETE | **LOCKED** | Batch-scoped via `batch_id`. |
+| Append-only reward ledger | **LOCKED** | Repeals the N=100 fold. |
+| Scoped, revocable child device tokens | **LOCKED** | Parent token never leaves parent devices. |
+| Pacing engine in the browser | **LOCKED (this round)** | Server-side generation deferred; schema is ready. |
+| One Worker serving both apps | **LOCKED** | Same-origin, no CORS, one git connection. |
+| Vanilla JS, no build step (browser apps) | **LOCKED** | The Worker is bundled; that is not a violation. |
+| Two-app split, no shared runtime code | **LOCKED** | Shared schema and API only. |
+| Free tier only | **LOCKED** | Workers + D1. |
+| Packet JSON interchange | **REPEALED** | Was Module 02. |
+| Completion CSV interchange | **REPEALED** | Was Modules 08/09. CSV survives as a report export only. |
+| `plannerMeta` as a store | **REPEALED** | Now columns on `assignments`. |
+| Google Drive integration | **ABANDONED** | Solved a problem that no longer exists. |
+| Module 10 (Theming) | **DEFERRED** | Wizard choice → CSS integration. |
 
 ---
 
-## XI. Appendix: Key File References
+## VIII. Key File References
 
-| Document | Purpose | Read When |
-|----------|---------|-----------|
-| `Interchange_Contract.md` | Packet & CSV spec (master truth) | Before writing import/export code. |
-| `packet_schema.json` | Normative JSON schema | Before writing packet validation. |
-| `TDS_Slice_M*.md` | Mechanics & schema for milestone | Before writing any code. |
-| `SRS_Module_0X.md` | Feature spec for module | Before writing feature code. |
-| `DomainModel_Schedule_App.md` | Entity relationships & invariants | When designing store schema. |
-| `Architecture_Evaluation_Schedule_App.md` | Trade-off rationale | When questioning a constraint. |
-| `Split_Build_Session_Guide.md` | Meta-workflow for build sessions | To understand Ray's build ritual. |
-| `Roadmap_Schedule_App.md` | Milestone sequencing & dependencies | To understand what comes next. |
+| Document | Purpose |
+|---|---|
+| `docs/TDS_Slice_Online_Revamp.md` | **Controlling design.** Schema, API, auth, migrations, phasing. |
+| `migrations/*.sql` | Schema history. Forward-only. |
+| `management-app/worker/index.js` | The API. |
+| `management-app/worker/migrations.js` | Migration registry. |
+| `management-app/DEPLOY.md` | Cloudflare setup. |
+| `docs/SRS_*.md` | Feature specs. Current except the retired modules named in §II.3. |
+| `docs/Roadmap_Schedule_App.md` | Milestone sequencing. |
+| `Interchange_Contract.md`, `fixtures/` | **Legacy.** Historical record only. |
 
 ---
 
-## XII. Version & Amendments
+## IX. Version & Amendments
 
-**Current Version:** 1.0  
-**Date:** 2026-07-13
-
-### Change Log
+**Current Version:** 2.0  
+**Date:** 2026-08-10
 
 | Version | Date | Change |
 |---------|------|--------|
-| 1.0 | 2026-07-13 | Initial CLAUDE.md for Child App M2 build. Enforces split-app architecture, documentation-first gate, core design constraints, and decision escalation. |
-| 1.1 | 2026-07-13 | Corrected §III.D and §X: Reward Ledger fold cadence is N=100, not N=25, per `TDS_Slice_M2_Child_App.md` §4 (the document that fixes this concrete number — Domain Model §3.7 only ever said "every N entries"). Resolved with Ray after a pre-build audit found the two documents disagreed. |
-| 1.2 | 2026-07-13 | Corrected §III.E: `plannerMeta` shape is `{ id, sortOrder?, blockHint?, deferredDate? }` (per `TDS_Slice_M1_Child_App.md` §4 and the actual code), not `{ rescheduledTo, sortOrder, blockAssignment }` as previously stated. |
+| 1.0 | 2026-07-13 | Initial. Split-app architecture, documentation-first gate, offline-first constraints. |
+| 1.1 | 2026-07-13 | Corrected reward ledger fold cadence to N=100. |
+| 1.2 | 2026-07-13 | Corrected `plannerMeta` shape. |
+| 2.0 | 2026-08-10 | **Architectural reversal.** Offline-first repealed; D1 becomes the system of record; packet and CSV interchange replaced by a shared `assignments` table and an HTTP API; per-occurrence chore IDs, reserved prefixes, and the N=100 ledger fold repealed; no-CLI added as a hard constraint with browser-applied migrations. Authorized by Ray in-session. See `docs/TDS_Slice_Online_Revamp.md`. |
 
 ---
 
