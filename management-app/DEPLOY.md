@@ -114,19 +114,31 @@ pick this repository, then set:
 
 | Setting | Value |
 |---|---|
-| **Root directory** | `management-app` |
+| Root directory | *(leave at the repo root)* |
 | Build command | *(leave empty — vanilla JS, no build step)* |
-| Deploy command | `npx wrangler deploy` |
+| **Deploy command** | `cd management-app && npx wrangler deploy` |
 | Branch | `main` |
 
 > **Workers, not Pages.** This is a Worker with static assets (`main` + `[assets]`)
 > because it needs the D1 binding. A Cloudflare **Pages** project handles bindings
 > differently and will not work with this config as written.
 
-**Root directory is what scopes the deployment to just the management app.**
-`wrangler.toml` lives in `management-app/`, and its `[assets] directory = "./"` is
-resolved relative to that file — so `child-app/`, `docs/`, and `fixtures/` are never
-uploaded. The Child App stays on GitHub Pages, untouched.
+### Why the repo root is fine
+
+The connection covers the whole repository, and that is not a problem: **what gets
+deployed is decided by `wrangler.toml`, not by the Git connection.**
+
+Paths inside a Wrangler config resolve relative to the config file, so
+`[assets] directory = "./"` means `management-app/` — wherever the build happens to
+start. `child-app/`, `docs/`, and `fixtures/` are checked out during the build but
+never uploaded to the Worker. The Child App's GitHub Pages deployment is untouched.
+
+The `cd management-app` in the deploy command is what puts Wrangler next to its
+config. Without it the build fails outright with "no wrangler.toml found" — it does
+not silently deploy the wrong thing.
+
+If you prefer, `npx wrangler deploy --config management-app/wrangler.toml` is
+equivalent.
 
 `SYNC_TOKEN` is a Worker secret, so it lives on the Worker, not in the repo, and
 survives every Git-triggered deploy.
