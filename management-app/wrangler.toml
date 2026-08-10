@@ -9,7 +9,9 @@ compatibility_date = "2025-04-01"
 directory = "./"
 binding = "ASSETS"
 # Everything except /api/* is a static asset; the Worker only owns the API
-# (TDS_Slice_D1_Sync_Management_App.md §7).
+# (TDS_Slice_D1_Sync_Management_App.md §7). Route-array form needs Wrangler
+# 4.20+; safe to delete on an older one, since /api/* matches no asset and
+# falls through to the Worker anyway.
 run_worker_first = ["/api/*"]
 
 [[d1_databases]]

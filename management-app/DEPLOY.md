@@ -18,6 +18,11 @@ never have to remember to press anything.
 
 ---
 
+## Part A — one-time resource setup (from your machine)
+
+Steps 1–4 create the database and the secret. They run once. After that you can
+deploy from GitHub on every push (Part B) and never touch Wrangler again.
+
 ## 1. Install Wrangler and log in
 
 ```bash
@@ -62,15 +67,59 @@ and on every new device.
 > If `SYNC_TOKEN` is never set, the API denies every request. It fails closed on
 > purpose — an unconfigured Worker is never an open one.
 
-## 5. Deploy
+---
+
+## Part B — deploying
+
+Two options. Pick one; **B1 is the one to use if you already deploy from GitHub.**
+
+### B1. Push-to-deploy from GitHub (recommended)
+
+Cloudflare builds and deploys straight from the repo on every push, the same shape
+as a GitHub Pages deployment.
+
+In the Cloudflare dashboard: **Workers & Pages → Create → Workers → Connect to Git**,
+pick this repository, then set:
+
+| Setting | Value |
+|---|---|
+| **Root directory** | `management-app` |
+| Build command | *(leave empty — vanilla JS, no build step)* |
+| Deploy command | `npx wrangler deploy` |
+| Branch | `main` |
+
+> **Workers, not Pages.** This is a Worker with static assets (`main` + `[assets]`)
+> because it needs the D1 binding. A Cloudflare **Pages** project handles bindings
+> differently and will not work with this config as written.
+
+**Root directory is what scopes the deployment to just the management app.**
+`wrangler.toml` lives in `management-app/`, and its `[assets] directory = "./"` is
+resolved relative to that file — so `child-app/`, `docs/`, and `fixtures/` are never
+uploaded. The Child App stays on GitHub Pages, untouched.
+
+`SYNC_TOKEN` is a Worker secret, so it lives on the Worker, not in the repo, and
+survives every Git-triggered deploy. If you'd rather not use the CLI for step 4, set
+it in the dashboard instead under **Settings → Variables and Secrets**, as a
+**Secret** (not a plaintext variable).
+
+The `database_id` committed in `wrangler.toml` is an identifier, not a credential —
+it is safe in the repo. Reaching the database still requires your Cloudflare account.
+
+### B2. Deploy from your machine
 
 ```bash
+cd management-app
 wrangler deploy
 ```
 
-Wrangler prints your URL, e.g. `https://homeschool-management.<subdomain>.workers.dev`.
-That URL now serves the management app *and* its backup API from the same origin —
-no CORS, no second deployment.
+Useful for a first smoke test before wiring up Git.
+
+---
+
+Either way, Cloudflare prints your URL, e.g.
+`https://homeschool-management.<subdomain>.workers.dev`. That URL serves the
+management app *and* its backup API from the same origin — no CORS, no second
+deployment.
 
 ## 6. Connect the app
 
@@ -124,3 +173,7 @@ sync token are device-local and are deliberately excluded from the mirror.
   durable copy. Use restore to pull it back.
 - **Rotating the token:** `wrangler secret put SYNC_TOKEN` again, redeploy, then
   re-save the new token in Settings on each device.
+- **`run_worker_first` needs a reasonably current Wrangler** (the route-array form,
+  Wrangler 4.20+). If a deploy fails validating that key, delete the line — it is a
+  routing optimization, not a requirement. `/api/*` never matches a static asset, so
+  those requests fall through to the Worker regardless.
