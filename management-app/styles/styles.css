@@ -283,3 +283,39 @@ button.secondary {
   padding: 0.25rem 0.55rem;
   font-size: 0.8rem;
 }
+
+/* ---- Bulk CSV Import & Lesson Content Planning (M8) ---- */
+.count-target-row {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  flex-basis: 100%;
+}
+
+.bulk-import {
+  margin-bottom: 1.5rem;
+}
+
+.bulk-import-result ul {
+  margin: 0.5rem 0 0;
+  padding-left: 1.25rem;
+}
+
+.content-plan-summary {
+  margin-bottom: 1rem;
+  padding: 0.5rem 0.75rem;
+  background: #fbfaf8;
+  border: 1px dashed var(--color-border);
+  border-radius: 6px;
+}
+
+.content-plan-summary ul {
+  margin: 0.25rem 0 0;
+  padding-left: 1.25rem;
+}
+
+.count-target-progress {
+  font-size: 0.8rem;
+  color: #555;
+  margin: 0;
+}

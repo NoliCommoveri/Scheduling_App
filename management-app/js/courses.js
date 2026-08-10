@@ -1,8 +1,8 @@
-/* Module: courses.js — Module 03, Course Template Library (manual path only).
+/* Module: courses.js — Module 03, Course Template Library.
  * Per SRS_Management_Module_03_Course_Template_Library.md,
- * TDS_Slice_M5_Management_App_Rev7.md §1/§4.
- * Bulk CSV import (FR-5) and Lesson content-planning presets (FR-P1-P6) are
- * M8 scope — not built here. */
+ * TDS_Slice_M5_Management_App_Rev7.md §1/§4 (manual path),
+ * TDS_Slice_M8_Management_App.md §1/§3/§4 (bulk CSV import, FR-5;
+ * Lesson content-planning presets, FR-P1-P6). */
 
 const Courses = (() => {
   const RESERVED = ['CHR', 'EVT', 'TPL'];
@@ -165,7 +165,56 @@ const Courses = (() => {
 
   // ---- Lesson (FR-3) ----
 
-  function buildLessonRecord(id, courseId, fields, lessonCode, nextActivitySeq) {
+  // Optional Lesson content-planning fields (TDS_Slice_M8 §3, FR-P1/FR-P2).
+  // Same present-and-blank-means-omit discipline as normalizeOptionalActivityFields:
+  // a blank/absent group leaves the record's property absent, never null/""/0.
+  function normalizeOptionalLessonFields(input) {
+    const out = {};
+    if ('pageRangeStart' in input || 'pageRangeEnd' in input) {
+      const hasStart = input.pageRangeStart !== undefined && input.pageRangeStart !== null && String(input.pageRangeStart).trim() !== '';
+      const hasEnd = input.pageRangeEnd !== undefined && input.pageRangeEnd !== null && String(input.pageRangeEnd).trim() !== '';
+      if (!hasStart && !hasEnd) {
+        out.pageRangeStart = null;
+        out.pageRangeEnd = null;
+      } else if (hasStart && hasEnd) {
+        const start = Number(input.pageRangeStart);
+        const end = Number(input.pageRangeEnd);
+        if (!Number.isInteger(start) || !Number.isInteger(end)) {
+          return { error: 'Page range start and end must be whole numbers.' };
+        }
+        if (start > end) return { error: 'Page range start must not exceed end.' };
+        out.pageRangeStart = start;
+        out.pageRangeEnd = end;
+      } else {
+        return { error: 'Page range start and end must both be set, or both left blank.' };
+      }
+    }
+    if ('activityCountTargets' in input) {
+      const raw = input.activityCountTargets || [];
+      const targets = [];
+      for (const row of raw) {
+        if (!row.activityTypeKey) continue; // an empty row is not a target
+        const n = Number(row.targetCount);
+        if (!Number.isInteger(n) || n < 0) {
+          return { error: 'Activity count target must be a non-negative whole number.' };
+        }
+        targets.push({ activityTypeKey: row.activityTypeKey, targetCount: n });
+      }
+      out.activityCountTargets = targets.length ? targets : null;
+    }
+    return { fields: out };
+  }
+
+  function applyOptionalLessonFields(record, normalized) {
+    for (const key of ['pageRangeStart', 'pageRangeEnd', 'activityCountTargets']) {
+      if (key in normalized) {
+        if (normalized[key] === null) delete record[key];
+        else record[key] = normalized[key];
+      }
+    }
+  }
+
+  function buildLessonRecord(id, courseId, fields, lessonCode, nextActivitySeq, optionalFields) {
     const record = {
       id,
       courseId,
@@ -178,6 +227,7 @@ const Courses = (() => {
     if (fields.estimatedDays !== undefined && fields.estimatedDays !== '') {
       record.estimatedDays = Number(fields.estimatedDays);
     }
+    if (optionalFields) applyOptionalLessonFields(record, optionalFields);
     return record;
   }
 
@@ -199,7 +249,10 @@ const Courses = (() => {
     const codeResult = await validateLessonCode(fields.lessonCode, fields.order, courseId, undefined);
     if (codeResult.error) return { error: codeResult.error };
 
-    const record = buildLessonRecord('LSN-' + randomToken(), courseId, fields, codeResult.code, 1);
+    const optNorm = normalizeOptionalLessonFields(fields);
+    if (optNorm.error) return { error: optNorm.error };
+
+    const record = buildLessonRecord('LSN-' + randomToken(), courseId, fields, codeResult.code, 1, optNorm.fields);
     await Storage.put('lessons', record);
     return { record };
   }
@@ -219,7 +272,10 @@ const Courses = (() => {
       lessonCode = codeResult.code;
     }
 
-    const record = buildLessonRecord(id, existing.courseId, fields, lessonCode, existing.nextActivitySeq);
+    const optNorm = normalizeOptionalLessonFields(fields);
+    if (optNorm.error) return { error: optNorm.error };
+
+    const record = buildLessonRecord(id, existing.courseId, fields, lessonCode, existing.nextActivitySeq, optNorm.fields);
     await Storage.put('lessons', record);
     return { record };
   }
@@ -325,6 +381,33 @@ const Courses = (() => {
     return { payload: { text: form.referenceOrInstructions.value.trim() } };
   }
 
+  // FR-P3 (TDS_Slice_M8 §3) — pdf/reading-pages share one page-range budget
+  // per Lesson (§6). Pre-fill only; never blocks or warns on override.
+  async function computePageRangePrefill(lesson) {
+    const activities = await Storage.getAllByIndex('activities', 'by_lessonId', lesson.id);
+    const covered = new Set();
+    for (const a of activities) {
+      if (a.activityType !== 'pdf' && a.activityType !== 'reading-pages') continue;
+      const { pageRangeStart, pageRangeEnd } = a.payload || {};
+      if (typeof pageRangeStart !== 'number' || typeof pageRangeEnd !== 'number') continue;
+      for (let p = pageRangeStart; p <= pageRangeEnd; p++) covered.add(p);
+    }
+    for (let p = lesson.pageRangeStart; p <= lesson.pageRangeEnd; p++) {
+      if (!covered.has(p)) return p;
+    }
+    return lesson.pageRangeEnd + 1; // whole budget covered — past-budget extension, no warning.
+  }
+
+  // FR-P6 (TDS_Slice_M8 §3) — next sequenceNumber among this Lesson's
+  // Activities of the same type. Form-render default only.
+  async function computeSequencePrefill(lesson, type) {
+    const activities = await Storage.getAllByIndex('activities', 'by_lessonId', lesson.id);
+    const sameType = activities.filter(
+      (a) => a.activityType === type.activityTypeKey && typeof a.sequenceNumber === 'number'
+    );
+    return sameType.length ? Math.max(...sameType.map((a) => a.sequenceNumber)) + 1 : 1;
+  }
+
   async function createActivity(lessonId, fields, type, tier) {
     if (!fields.title || !fields.title.trim()) return { error: 'Title is required.' };
     if (!tier) return { error: 'Difficulty Tier must resolve to an existing Tier.' };
@@ -428,12 +511,372 @@ const Courses = (() => {
     });
   }
 
+  // ---- Bulk CSV Import (FR-5, TDS_Slice_M8 §1/§4) ----
+
+  // Locked column order (TDS §1) — exact header match required, whole file
+  // rejected before any row is read if it deviates.
+  const CSV_COLUMNS = [
+    'courseCode', 'lessonCode', 'lessonTitle', 'lessonOrder', 'activityType', 'title', 'required',
+    'pageRangeStart', 'pageRangeEnd', 'reference', 'text',
+    'difficultyTier', 'sequenceNumber', 'expectedDurationMin', 'instructions', 'blockHint',
+  ];
+
+  // Hand-rolled RFC4180-ish parser: comma-delimited, double-quote escaping
+  // ("" -> "), accepts \n or \r\n line endings. No external CSV library
+  // (locked: vanilla JS, no build step — TDS §1).
+  function parseCsv(text) {
+    const rows = [];
+    let row = [];
+    let field = '';
+    let inQuotes = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (inQuotes) {
+        if (ch === '"') {
+          if (text[i + 1] === '"') { field += '"'; i++; }
+          else inQuotes = false;
+        } else {
+          field += ch;
+        }
+        continue;
+      }
+      if (ch === '"') { inQuotes = true; continue; }
+      if (ch === ',') { row.push(field); field = ''; continue; }
+      if (ch === '\r') continue;
+      if (ch === '\n') { row.push(field); rows.push(row); row = []; field = ''; continue; }
+      field += ch;
+    }
+    if (field !== '' || row.length > 0) { row.push(field); rows.push(row); }
+    return rows.filter((r) => !(r.length === 1 && r[0] === '')); // drop blank lines
+  }
+
+  function validateCsvHeader(headerRow) {
+    return !!headerRow && headerRow.length === CSV_COLUMNS.length && CSV_COLUMNS.every((col, i) => headerRow[i] === col);
+  }
+
+  function rowToObject(row) {
+    const obj = {};
+    CSV_COLUMNS.forEach((col, i) => { obj[col] = row[i] !== undefined ? row[i] : ''; });
+    return obj;
+  }
+
+  function blankCol(rowObj, col) {
+    return !rowObj[col] || !String(rowObj[col]).trim();
+  }
+
+  // Payload columns populated/blank per-type, a direct projection of
+  // buildPayload()'s branching (TDS §1's table).
+  function validateCsvPayload(type, rowObj, rowNumber) {
+    const custom = isCustomType(type);
+    if (!custom && type.structurePattern === 'page-range') {
+      if (blankCol(rowObj, 'pageRangeStart') || blankCol(rowObj, 'pageRangeEnd')) {
+        return { error: `Row ${rowNumber}: pageRangeStart and pageRangeEnd are required for this Activity Type.` };
+      }
+      if (!blankCol(rowObj, 'reference') || !blankCol(rowObj, 'text')) {
+        return { error: `Row ${rowNumber}: reference and text must be blank for this Activity Type.` };
+      }
+      const start = Number(rowObj.pageRangeStart);
+      const end = Number(rowObj.pageRangeEnd);
+      if (!Number.isInteger(start) || !Number.isInteger(end)) {
+        return { error: `Row ${rowNumber}: pageRangeStart and pageRangeEnd must be whole numbers.` };
+      }
+      if (start > end) return { error: `Row ${rowNumber}: pageRangeStart must not exceed pageRangeEnd.` };
+      return { payload: { pageRangeStart: start, pageRangeEnd: end } };
+    }
+    if (!custom && type.activityTypeKey === 'practice-level') {
+      if (!blankCol(rowObj, 'pageRangeStart') || !blankCol(rowObj, 'pageRangeEnd') || !blankCol(rowObj, 'reference') || !blankCol(rowObj, 'text')) {
+        return { error: `Row ${rowNumber}: pageRangeStart, pageRangeEnd, reference, and text must all be blank for Practice Level.` };
+      }
+      return { payload: {} };
+    }
+    if (!custom) {
+      if (blankCol(rowObj, 'reference')) return { error: `Row ${rowNumber}: reference is required for this Activity Type.` };
+      if (!blankCol(rowObj, 'pageRangeStart') || !blankCol(rowObj, 'pageRangeEnd') || !blankCol(rowObj, 'text')) {
+        return { error: `Row ${rowNumber}: pageRangeStart, pageRangeEnd, and text must be blank for this Activity Type.` };
+      }
+      return { payload: { reference: rowObj.reference.trim() } };
+    }
+    if (blankCol(rowObj, 'text')) return { error: `Row ${rowNumber}: text is required for a custom Activity Type.` };
+    if (!blankCol(rowObj, 'pageRangeStart') || !blankCol(rowObj, 'pageRangeEnd') || !blankCol(rowObj, 'reference')) {
+      return { error: `Row ${rowNumber}: pageRangeStart, pageRangeEnd, and reference must be blank for a custom Activity Type.` };
+    }
+    return { payload: { text: rowObj.text.trim() } };
+  }
+
+  // Per-row validation (§4.2) — read-only, no writes. Returns { error } or { candidate }.
+  async function validateCsvRow(rowObj, rowNumber, templatesByCode) {
+    const course = templatesByCode.get((rowObj.courseCode || '').toLocaleUpperCase());
+    if (!course) return { error: `Row ${rowNumber}: courseCode "${rowObj.courseCode}" does not match any Course template.` };
+
+    const type = await Storage.get('activityTypes', rowObj.activityType);
+    if (!type) return { error: `Row ${rowNumber}: activityType "${rowObj.activityType}" does not resolve to an existing Activity Type.` };
+
+    const tier = await Storage.get('tiers', rowObj.difficultyTier);
+    if (!tier) return { error: `Row ${rowNumber}: difficultyTier "${rowObj.difficultyTier}" does not resolve to an existing Tier.` };
+
+    const lessonCode = (rowObj.lessonCode || '').trim();
+    if (!isAlphanumeric(lessonCode)) return { error: `Row ${rowNumber}: lessonCode must be alphanumeric only.` };
+    if (isReserved(lessonCode)) return { error: `Row ${rowNumber}: lessonCode may not be "${lessonCode.toUpperCase()}" (reserved).` };
+
+    const title = (rowObj.title || '').trim();
+    if (!title) return { error: `Row ${rowNumber}: title is required.` };
+
+    const requiredRaw = (rowObj.required || '').trim().toLowerCase();
+    let requiredBool;
+    if (requiredRaw === '' || requiredRaw === 'false') requiredBool = false;
+    else if (requiredRaw === 'true') requiredBool = true;
+    else return { error: `Row ${rowNumber}: required must be "true", "false", or blank.` };
+
+    if (blankCol(rowObj, 'lessonOrder') || !Number.isInteger(Number(rowObj.lessonOrder))) {
+      return { error: `Row ${rowNumber}: lessonOrder must be a whole number.` };
+    }
+    const lessonOrder = Number(rowObj.lessonOrder);
+
+    const lessonTitle = (rowObj.lessonTitle || '').trim();
+    if (!lessonTitle) return { error: `Row ${rowNumber}: lessonTitle is required.` };
+
+    const payloadResult = validateCsvPayload(type, rowObj, rowNumber);
+    if (payloadResult.error) return { error: payloadResult.error };
+
+    let sequenceNumber;
+    if (type.structurePattern === 'count') {
+      if (blankCol(rowObj, 'sequenceNumber') || !Number.isInteger(Number(rowObj.sequenceNumber))) {
+        return { error: `Row ${rowNumber}: sequenceNumber is required and must be a whole number for this Activity Type.` };
+      }
+      sequenceNumber = Number(rowObj.sequenceNumber);
+    }
+
+    const optNorm = normalizeOptionalActivityFields(rowObj);
+    if (optNorm.error) return { error: `Row ${rowNumber}: ${optNorm.error}` };
+
+    return {
+      candidate: {
+        rowNumber, course, lessonCode, lessonTitle, lessonOrder, type, tier,
+        title, required: requiredBool, payload: payloadResult.payload, sequenceNumber,
+        optionalFields: optNorm.fields,
+      },
+    };
+  }
+
+  // §4.4 — one transaction; Lesson resolution (existing vs. new) happens
+  // inside it, same store scope createActivity() already uses, just batched.
+  async function writeCsvImport(groups) {
+    let lessonsCreated = 0;
+    let lessonsAppended = 0;
+    let activitiesWritten = 0;
+
+    await Storage.runTransaction(['lessons', 'activities'], 'readwrite', (t) => {
+      const lessonsStore = t.objectStore('lessons');
+      const activitiesStore = t.objectStore('activities');
+
+      for (const group of groups.values()) {
+        const first = group.rows[0];
+        const lessonsReq = lessonsStore.index('by_courseId').getAll(first.course.id);
+        lessonsReq.onsuccess = () => {
+          const norm = first.lessonCode.toLocaleUpperCase();
+          const existingLesson = lessonsReq.result.find((l) => l.lessonCode.toLocaleUpperCase() === norm) || null;
+
+          const lesson = existingLesson || {
+            id: 'LSN-' + randomToken(),
+            courseId: first.course.id,
+            lessonCode: first.lessonCode,
+            order: first.lessonOrder,
+            title: first.lessonTitle,
+            nextActivitySeq: 1,
+          };
+          let seq = lesson.nextActivitySeq;
+
+          const writeRows = (startOrder) => {
+            let order = startOrder;
+            for (const row of group.rows) {
+              const id = `${row.course.courseCode}-TPL-${lesson.lessonCode}-${pad2(seq)}`;
+              const record = {
+                id,
+                lessonId: lesson.id,
+                activityType: row.type.activityTypeKey,
+                title: row.title,
+                required: row.required,
+                payload: row.payload,
+                difficultyTier: row.tier.tierId,
+                capturesGrade: row.type.capturePattern === 'grade-optional',
+                order,
+                lessonTitle: row.lessonTitle,
+              };
+              if (row.sequenceNumber !== undefined) record.sequenceNumber = row.sequenceNumber;
+              applyOptionalActivityFields(record, row.optionalFields);
+              activitiesStore.put(record);
+              seq++;
+              order++;
+              activitiesWritten++;
+            }
+            lessonsStore.put({ ...lesson, nextActivitySeq: seq });
+            if (existingLesson) lessonsAppended++; else lessonsCreated++;
+          };
+
+          if (existingLesson) {
+            const activitiesReq = activitiesStore.index('by_lessonId').getAll(existingLesson.id);
+            activitiesReq.onsuccess = () => {
+              const existingActivities = activitiesReq.result;
+              const startOrder = existingActivities.length
+                ? Math.max(...existingActivities.map((a) => a.order)) + 1
+                : 0;
+              writeRows(startOrder);
+            };
+          } else {
+            writeRows(0);
+          }
+        };
+      }
+    });
+
+    return { summary: { lessonsCreated, lessonsAppended, activitiesWritten } };
+  }
+
+  // Entry point (§4.1-§4.5). All per-row and whole-file checks run before any
+  // write; one or more failures ⇒ nothing is written, existing data untouched.
+  async function importActivitiesCsv(text) {
+    const rows = parseCsv(text);
+    if (rows.length === 0) return { error: 'CSV file is empty.' };
+
+    const header = rows[0];
+    if (!validateCsvHeader(header)) {
+      return { error: `CSV header must be exactly: ${CSV_COLUMNS.join(', ')}` };
+    }
+
+    const templates = await listCourseTemplates();
+    const templatesByCode = new Map(templates.map((c) => [c.courseCode.toLocaleUpperCase(), c]));
+
+    const dataRows = rows.slice(1);
+    const failures = [];
+    const candidates = [];
+    for (let i = 0; i < dataRows.length; i++) {
+      const rowObj = rowToObject(dataRows[i]);
+      const result = await validateCsvRow(rowObj, i + 2, templatesByCode); // +2: header is row 1
+      if (result.error) failures.push(result.error);
+      else candidates.push(result.candidate);
+    }
+
+    // Whole-file Lesson consistency (§4.3, §9): every row sharing a
+    // (course.id, lessonCode) must agree on lessonTitle/lessonOrder.
+    const groups = new Map();
+    for (const c of candidates) {
+      const key = `${c.course.id}|${c.lessonCode.toLocaleUpperCase()}`;
+      const group = groups.get(key);
+      if (!group) {
+        groups.set(key, { lessonTitle: c.lessonTitle, lessonOrder: c.lessonOrder, rows: [c] });
+      } else {
+        group.rows.push(c);
+        if (group.lessonTitle !== c.lessonTitle || group.lessonOrder !== c.lessonOrder) {
+          failures.push(
+            `Row ${c.rowNumber}: lessonTitle/lessonOrder for lessonCode "${c.lessonCode}" does not match earlier rows in this file.`
+          );
+        }
+      }
+    }
+
+    if (failures.length > 0) {
+      return { error: 'Import rejected — no Lessons or Activities were written.', failures };
+    }
+
+    return writeCsvImport(groups);
+  }
+
   // ---- Rendering ----
 
   function escapeHtml(str) {
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
+  }
+
+  function readFileAsText(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsText(file);
+    });
+  }
+
+  // Repeatable activityTypeKey/targetCount row-builder for FR-P2's
+  // activityCountTargets[] group. `.collect()` reads current row state back
+  // out on submit.
+  function buildCountTargetsFieldset(activityTypes, existingTargets) {
+    const fieldset = document.createElement('fieldset');
+    fieldset.className = 'count-targets';
+    fieldset.innerHTML = `
+      <legend>Activity count targets (optional)</legend>
+      <div class="count-target-rows"></div>
+      <button type="button" data-action="add-target">Add target</button>
+    `;
+    const rowsEl = fieldset.querySelector('.count-target-rows');
+    const typeOptions = (selected) =>
+      ['', ...activityTypes.map((t) => t.activityTypeKey)]
+        .map((key) => {
+          const type = activityTypes.find((t) => t.activityTypeKey === key);
+          const label = type ? type.label : '(select)';
+          return `<option value="${key}"${key === selected ? ' selected' : ''}>${escapeHtml(label)}</option>`;
+        })
+        .join('');
+
+    function addRow(activityTypeKey, targetCount) {
+      const row = document.createElement('div');
+      row.className = 'count-target-row';
+      row.innerHTML = `
+        <select name="activityTypeKey">${typeOptions(activityTypeKey || '')}</select>
+        <input type="number" name="targetCount" min="0" step="1" value="${targetCount ?? ''}">
+        <button type="button" data-action="remove-target">Remove</button>
+      `;
+      row.querySelector('[data-action="remove-target"]').addEventListener('click', () => row.remove());
+      rowsEl.appendChild(row);
+    }
+
+    (existingTargets || []).forEach((t) => addRow(t.activityTypeKey, t.targetCount));
+    fieldset.querySelector('[data-action="add-target"]').addEventListener('click', () => addRow());
+
+    fieldset.collect = () =>
+      Array.from(rowsEl.querySelectorAll('.count-target-row')).map((row) => ({
+        activityTypeKey: row.querySelector('[name="activityTypeKey"]').value,
+        targetCount: row.querySelector('[name="targetCount"]').value,
+      }));
+
+    return fieldset;
+  }
+
+  function buildBulkImportSection(root) {
+    const section = document.createElement('section');
+    section.className = 'bulk-import';
+    section.innerHTML = `
+      <h2>Bulk Import Lessons &amp; Activities (CSV)</h2>
+      <input type="file" name="csvFile" accept=".csv,text/csv">
+      <button type="button" data-action="import">Import</button>
+      <div class="bulk-import-result" hidden></div>
+    `;
+    const fileInput = section.querySelector('input[type="file"]');
+    const resultEl = section.querySelector('.bulk-import-result');
+
+    section.querySelector('[data-action="import"]').addEventListener('click', async () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) {
+        resultEl.hidden = false;
+        resultEl.innerHTML = `<p class="error">Choose a CSV file first.</p>`;
+        return;
+      }
+      const text = await readFileAsText(file);
+      const result = await importActivitiesCsv(text);
+      resultEl.hidden = false;
+      if (result.error) {
+        const list = (result.failures || []).map((f) => `<li>${escapeHtml(f)}</li>`).join('');
+        resultEl.innerHTML = `<p class="error">${escapeHtml(result.error)}</p>${list ? `<ul>${list}</ul>` : ''}`;
+        return;
+      }
+      const { lessonsCreated, lessonsAppended, activitiesWritten } = result.summary;
+      resultEl.innerHTML = `<p class="success">Imported: ${lessonsCreated} new Lesson(s), ${lessonsAppended} appended to, ${activitiesWritten} Activity/Activities written.</p>`;
+      fileInput.value = '';
+      render(root);
+    });
+
+    return section;
   }
 
   async function render(root) {
@@ -498,6 +941,8 @@ const Courses = (() => {
       render(root);
     });
     root.appendChild(form);
+
+    root.appendChild(buildBulkImportSection(root));
   }
 
   async function renderCourseDetail(root) {
@@ -508,9 +953,11 @@ const Courses = (() => {
       return render(root);
     }
     const frozen = await hasActivitiesBeneathCourse(course.id);
-    const lessons = (await Storage.getAllByIndex('lessons', 'by_courseId', course.id)).sort(
-      (a, b) => a.order - b.order
-    );
+    const [lessonsRaw, activityTypes] = await Promise.all([
+      Storage.getAllByIndex('lessons', 'by_courseId', course.id),
+      Storage.getAll('activityTypes'),
+    ]);
+    const lessons = lessonsRaw.sort((a, b) => a.order - b.order);
 
     const backBtn = document.createElement('button');
     backBtn.textContent = '← Back to Courses';
@@ -588,9 +1035,16 @@ const Courses = (() => {
       <label>Title<input type="text" name="title" required></label>
       <label>Order<input type="number" name="order" value="${lessons.length}" required></label>
       <label>Lesson code (blank = auto)<input type="text" name="lessonCode"></label>
+      <fieldset>
+        <legend>Page range budget (optional)</legend>
+        <label>Start<input type="number" name="pageRangeStart" min="1" step="1"></label>
+        <label>End<input type="number" name="pageRangeEnd" min="1" step="1"></label>
+      </fieldset>
       <p class="error" hidden></p>
       <button type="submit">Add Lesson</button>
     `;
+    const countTargetsFieldset = buildCountTargetsFieldset(activityTypes, null);
+    form.querySelector('.error').before(countTargetsFieldset);
     const errorEl = form.querySelector('.error');
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -598,6 +1052,9 @@ const Courses = (() => {
         title: form.title.value,
         order: form.order.value,
         lessonCode: form.lessonCode.value,
+        pageRangeStart: form.pageRangeStart.value,
+        pageRangeEnd: form.pageRangeEnd.value,
+        activityCountTargets: countTargetsFieldset.collect(),
       });
       if (result.error) {
         errorEl.hidden = false;
@@ -632,6 +1089,69 @@ const Courses = (() => {
     const heading = document.createElement('h1');
     heading.textContent = lesson.title;
     root.appendChild(heading);
+
+    // FR-P4 — content-plan progress, read-only; never blocks anything.
+    if (lesson.pageRangeStart !== undefined || (lesson.activityCountTargets && lesson.activityCountTargets.length)) {
+      const summary = document.createElement('div');
+      summary.className = 'content-plan-summary';
+      let html = '<h3>Content Plan</h3>';
+      if (lesson.pageRangeStart !== undefined) {
+        html += `<p>Page range budget: ${lesson.pageRangeStart}–${lesson.pageRangeEnd}</p>`;
+      }
+      if (lesson.activityCountTargets && lesson.activityCountTargets.length) {
+        const rows = lesson.activityCountTargets
+          .map((t) => {
+            const label = (activityTypes.find((at) => at.activityTypeKey === t.activityTypeKey) || {}).label || t.activityTypeKey;
+            const current = activities.filter((a) => a.activityType === t.activityTypeKey).length;
+            return `<li>${escapeHtml(label)}: ${current} of ${t.targetCount}</li>`;
+          })
+          .join('');
+        html += `<ul>${rows}</ul>`;
+      }
+      summary.innerHTML = html;
+      root.appendChild(summary);
+    }
+
+    // FR-P1/FR-P2 — edit the Lesson's content-planning fields (and title/order).
+    const editLessonForm = document.createElement('form');
+    editLessonForm.innerHTML = `
+      <h3>Edit Lesson</h3>
+      <label>Title<input type="text" name="title" value="${escapeHtml(lesson.title)}" required></label>
+      <label>Order<input type="number" name="order" value="${lesson.order}" required></label>
+      <fieldset>
+        <legend>Page range budget (optional)</legend>
+        <label>Start<input type="number" name="pageRangeStart" min="1" step="1" value="${lesson.pageRangeStart ?? ''}"></label>
+        <label>End<input type="number" name="pageRangeEnd" min="1" step="1" value="${lesson.pageRangeEnd ?? ''}"></label>
+      </fieldset>
+      <p class="error" hidden></p>
+      <p class="success" hidden></p>
+      <button type="submit">Save Lesson</button>
+    `;
+    const editLessonTargetsFieldset = buildCountTargetsFieldset(activityTypes, lesson.activityCountTargets);
+    editLessonForm.querySelector('.error').before(editLessonTargetsFieldset);
+    const editLessonErr = editLessonForm.querySelector('.error');
+    const editLessonOk = editLessonForm.querySelector('.success');
+    editLessonForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const result = await editLesson(lesson.id, {
+        title: editLessonForm.title.value,
+        order: editLessonForm.order.value,
+        pageRangeStart: editLessonForm.pageRangeStart.value,
+        pageRangeEnd: editLessonForm.pageRangeEnd.value,
+        activityCountTargets: editLessonTargetsFieldset.collect(),
+      });
+      if (result.error) {
+        editLessonErr.hidden = false;
+        editLessonErr.textContent = result.error;
+        editLessonOk.hidden = true;
+        return;
+      }
+      editLessonErr.hidden = true;
+      editLessonOk.hidden = false;
+      editLessonOk.textContent = 'Saved.';
+      render(root);
+    });
+    root.appendChild(editLessonForm);
 
     if (editActivityId) {
       const activity = activities.find((a) => a.id === editActivityId);
@@ -704,7 +1224,10 @@ const Courses = (() => {
     const payloadContainer = form.querySelector('.payload-fields');
     const errorEl = form.querySelector('.error');
 
-    function renderPayloadFields() {
+    let renderToken = 0; // guards against a stale async pre-fill landing after a later type switch
+
+    async function renderPayloadFields() {
+      const token = ++renderToken;
       const type = activityTypes.find((t) => t.activityTypeKey === form.activityType.value);
       if (!type) {
         payloadContainer.innerHTML = '';
@@ -728,6 +1251,39 @@ const Courses = (() => {
         html += `<label>Sequence number<input type="number" name="sequenceNumber"></label>`;
       }
       payloadContainer.innerHTML = html;
+
+      // FR-P3 — page-range pre-fill, pdf/reading-pages only, budget set on the Lesson.
+      if (
+        !custom &&
+        (type.activityTypeKey === 'pdf' || type.activityTypeKey === 'reading-pages') &&
+        lesson.pageRangeStart !== undefined &&
+        lesson.pageRangeEnd !== undefined
+      ) {
+        const prefill = await computePageRangePrefill(lesson);
+        if (token !== renderToken) return;
+        const startField = payloadContainer.querySelector('[name="pageRangeStart"]');
+        if (startField) startField.value = prefill;
+      }
+
+      if (type.structurePattern === 'count') {
+        // FR-P6 — sequenceNumber pre-fill.
+        const seqPrefill = await computeSequencePrefill(lesson, type);
+        if (token !== renderToken) return;
+        const seqField = payloadContainer.querySelector('[name="sequenceNumber"]');
+        if (seqField) seqField.value = seqPrefill;
+
+        // FR-P4 — count-target progress, read-only.
+        const target = (lesson.activityCountTargets || []).find((t) => t.activityTypeKey === type.activityTypeKey);
+        if (target) {
+          const activities = await Storage.getAllByIndex('activities', 'by_lessonId', lesson.id);
+          if (token !== renderToken) return;
+          const current = activities.filter((a) => a.activityType === type.activityTypeKey).length;
+          const label = document.createElement('p');
+          label.className = 'count-target-progress';
+          label.textContent = `${current} of ${target.targetCount}`;
+          payloadContainer.appendChild(label);
+        }
+      }
     }
 
     form.activityType.addEventListener('change', renderPayloadFields);
@@ -857,5 +1413,6 @@ const Courses = (() => {
     lessonCodeExists,
     isReserved,
     isAlphanumeric,
+    importActivitiesCsv,
   };
 })();
