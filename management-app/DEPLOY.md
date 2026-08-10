@@ -18,51 +18,72 @@ never have to remember to press anything.
 
 ---
 
-## Part A — one-time resource setup (from your machine)
+## Part A — one-time resource setup
 
-Steps 1–4 create the database and the secret. They run once. After that you can
-deploy from GitHub on every push (Part B) and never touch Wrangler again.
+Steps 1–4 create the database and the secret. They run once. After that, every
+deploy happens from GitHub on push (Part B).
 
-## 1. Install Wrangler and log in
+**No local tooling is required.** Everything below is done in the Cloudflare
+dashboard and by editing one file on GitHub. Wrangler runs inside Cloudflare's
+build environment, not on your machine.
 
-```bash
-npm install -g wrangler
-wrangler login
-```
+## 1. Create the D1 database
 
-## 2. Create the D1 database
+Dashboard: **Storage & Databases → D1 → Create database**. Name it
+`homeschool-management`.
 
-```bash
-cd management-app
-wrangler d1 create homeschool-management
-```
+The database's overview page shows its **Database ID**. Copy it.
 
-This prints a `database_id`. Open `wrangler.toml` and paste it over
-`REPLACE_WITH_YOUR_D1_DATABASE_ID`.
+## 2. Point the config at it
+
+Edit `management-app/wrangler.toml` on GitHub (pencil icon) and paste the ID over
+`REPLACE_WITH_YOUR_D1_DATABASE_ID`. Commit.
+
+If you named the database something other than `homeschool-management`, change
+`database_name` to match as well — both fields have to agree with the dashboard.
 
 ## 3. Create the table
 
-```bash
-wrangler d1 execute homeschool-management --remote --file=worker/schema.sql
+Open the database, go to the **Console** tab, and run these two statements **one at
+a time**:
+
+```sql
+CREATE TABLE IF NOT EXISTS records (store TEXT NOT NULL, key TEXT NOT NULL, value TEXT, deleted INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, device_id TEXT, PRIMARY KEY (store, key));
 ```
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_records_updated_at ON records (updated_at);
+```
+
+(These are the same statements as `worker/schema.sql`, flattened for the console.)
+
+Confirm it worked:
+
+```sql
+SELECT name FROM sqlite_master WHERE type IN ('table','index') ORDER BY name;
+```
+
+You should see `records` and `idx_records_updated_at`.
 
 ## 4. Set your sync token
 
-Pick a long random string — this is the only thing standing between the internet
-and your database, so let it be generated, not invented:
+This is the only thing standing between the internet and your database, so
+generate it rather than inventing one. Any password manager's generator works —
+30+ random characters.
 
-```bash
-openssl rand -base64 32
-```
+Add it to the Worker **after** its first deploy (Part B), under
+**Settings → Variables and Secrets → Add**:
 
-Store it as a Worker secret, pasting the value when prompted:
+| Field | Value |
+|---|---|
+| Type | **Secret** (not Text) |
+| Name | `SYNC_TOKEN` |
+| Value | your generated string |
 
-```bash
-wrangler secret put SYNC_TOKEN
-```
+Adding a secret triggers a redeploy automatically.
 
-**Keep a copy somewhere safe** (a password manager). You need it again in step 6,
-and on every new device.
+**Keep a copy somewhere safe.** You need it again in step 6, and on every new
+device.
 
 > If `SYNC_TOKEN` is never set, the API denies every request. It fails closed on
 > purpose — an unconfigured Worker is never an open one.
@@ -71,7 +92,12 @@ and on every new device.
 
 ## Part B — deploying
 
-Two options. Pick one; **B1 is the one to use if you already deploy from GitHub.**
+Do this after steps 1–3, then come back and do step 4. The first deploy will
+succeed but every API call returns `401` until `SYNC_TOKEN` exists — that is the
+fail-closed behaviour, not a broken deploy.
+
+**Use B1 unless you specifically want a local CLI.** B2 is an alternative, not a
+prerequisite: nothing in this setup requires Wrangler on your own machine.
 
 ### B1. Push-to-deploy from GitHub (recommended)
 
@@ -98,21 +124,19 @@ resolved relative to that file — so `child-app/`, `docs/`, and `fixtures/` are
 uploaded. The Child App stays on GitHub Pages, untouched.
 
 `SYNC_TOKEN` is a Worker secret, so it lives on the Worker, not in the repo, and
-survives every Git-triggered deploy. If you'd rather not use the CLI for step 4, set
-it in the dashboard instead under **Settings → Variables and Secrets**, as a
-**Secret** (not a plaintext variable).
+survives every Git-triggered deploy.
 
 The `database_id` committed in `wrangler.toml` is an identifier, not a credential —
 it is safe in the repo. Reaching the database still requires your Cloudflare account.
 
-### B2. Deploy from your machine
+### B2. Deploy from a machine with Wrangler (optional)
 
 ```bash
 cd management-app
 wrangler deploy
 ```
 
-Useful for a first smoke test before wiring up Git.
+Only if you want it. B1 covers the whole lifecycle on its own.
 
 ---
 
@@ -146,11 +170,11 @@ is not affected.
 
 ## Verifying the backup independently
 
-Confirm the data really is in D1, without trusting the app's own status line:
+Confirm the data really is in D1, without trusting the app's own status line. In
+the D1 **Console** tab:
 
-```bash
-wrangler d1 execute homeschool-management --remote \
-  --command "SELECT store, COUNT(*) AS rows FROM records WHERE deleted = 0 GROUP BY store ORDER BY store"
+```sql
+SELECT store, COUNT(*) AS rows FROM records WHERE deleted = 0 GROUP BY store ORDER BY store;
 ```
 
 Expect one row per populated object store — `activities`, `courses`, `lessons`,
@@ -171,8 +195,9 @@ sync token are device-local and are deliberately excluded from the mirror.
 - **Developer Tools' "Clear" buttons are local-only** and are not mirrored — that
   is deliberate, so clearing a store to test empty-state UI cannot destroy your
   durable copy. Use restore to pull it back.
-- **Rotating the token:** `wrangler secret put SYNC_TOKEN` again, redeploy, then
-  re-save the new token in Settings on each device.
+- **Rotating the token:** edit the `SYNC_TOKEN` secret under the Worker's
+  **Settings → Variables and Secrets** (this redeploys automatically), then re-save
+  the new token in the app's Settings on each device.
 - **`run_worker_first` needs a reasonably current Wrangler** (the route-array form,
   Wrangler 4.20+). If a deploy fails validating that key, delete the line — it is a
   routing optimization, not a requirement. `/api/*` never matches a static asset, so
