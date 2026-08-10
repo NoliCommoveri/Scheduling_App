@@ -1,0 +1,29 @@
+# Must live at the repository root. A git-connected Cloudflare build looks for
+# this file at the build root; when it is missing, the Worker deploys as static
+# assets with no script, and Settings then reports "Variables cannot be added to
+# a Worker that only has static assets." Same failure, same fix as the
+# Star-homeschool repo (docs/parent-sync-spec.md, Step 5).
+#
+# This is the one deliberate deviation from CLAUDE.md §I.B's locked repo
+# structure — Cloudflare dictates the location, not the project.
+
+name = "scheduling-app"
+main = "./management-app/worker/index.js"
+compatibility_date = "2025-04-01"
+
+# Scoped to management-app/, so child-app/, docs/, fixtures/ and .git/ are never
+# uploaded. The Child App keeps its own GitHub Pages deployment, untouched.
+# `.assetsignore` inside that directory keeps worker/ out of the public bundle.
+[assets]
+directory = "./management-app"
+binding = "ASSETS"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "scheduling-app"
+database_id = "bb58d835-f115-4ae5-a8ad-5653b102957e"
+
+# SYNC_TOKEN is a secret, never a [vars] entry. Set it on the deployed Worker
+# under Settings → Variables and Secrets, type Secret (not Text). Secrets do
+# work from the dashboard — unlike bindings, they are stored separately from
+# this file. They only take effect on a deploy made AFTER they are added.

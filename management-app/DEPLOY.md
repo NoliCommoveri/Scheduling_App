@@ -36,7 +36,7 @@ The database's overview page shows its **Database ID**. Copy it.
 
 ## 2. Point the config at it
 
-Already done in `management-app/wrangler.toml`:
+Already done, in **`wrangler.toml` at the repository root**:
 
 ```toml
 database_name = "scheduling-app"
@@ -46,6 +46,11 @@ database_id   = "bb58d835-f115-4ae5-a8ad-5653b102957e"
 If you ever recreate the database, both fields have to match the dashboard again —
 Wrangler validates the pair, and a mismatch fails the deploy rather than silently
 writing somewhere unexpected.
+
+> **Do not add the D1 binding through the dashboard's Bindings tab.** For a
+> git-deployed Worker that editor is locked: bindings added there silently fail to
+> persist, because `wrangler.toml` is the source of truth and Cloudflare will not
+> let the two drift. The repo config above is the only place this belongs.
 
 ## 3. Create the table
 
@@ -85,10 +90,17 @@ Add it to the Worker **after** its first deploy (Part B), under
 | Name | `SYNC_TOKEN` |
 | Value | your generated string |
 
-Adding a secret triggers a redeploy automatically.
+Secrets **do** work from the dashboard, unlike bindings — they are stored
+separately from `wrangler.toml`, which is correct, since a secret value must never
+be committed to git.
 
-**Keep a copy somewhere safe.** You need it again in step 6, and on every new
-device.
+> **Secrets only take effect on a deploy made after they were added.** If the
+> Worker was already deployed when you added `SYNC_TOKEN`, push a commit or hit
+> **Retry deployment**, or `env.SYNC_TOKEN` stays undefined and every API call
+> keeps returning `401`.
+
+**Keep a copy somewhere safe.** The value is not viewable again after saving. You
+need it again in step 6, and on every new device.
 
 > If `SYNC_TOKEN` is never set, the API denies every request. It fails closed on
 > purpose — an unconfigured Worker is never an open one.
@@ -115,9 +127,23 @@ pick this repository, then set:
 | Setting | Value |
 |---|---|
 | Root directory | *(leave at the repo root)* |
-| Build command | *(leave empty — vanilla JS, no build step)* |
-| **Deploy command** | `cd management-app && npx wrangler deploy` |
+| Build command | *(leave empty)* |
+| Deploy command | `npx wrangler deploy` |
 | Branch | `main` |
+
+> **No build command is needed here**, unlike the Star-homeschool Worker. That one
+> writes its API as Pages Functions in `functions/`, a file-based-routing
+> convention a plain Worker cannot read, so it must be compiled to a single entry
+> script first and its `main` points at the build output.
+>
+> `management-app/worker/index.js` is *already* a single entry script that routes
+> itself and falls back to `env.ASSETS.fetch(request)` — the same shape that
+> bundler emits. `main` points straight at the source and `wrangler deploy` bundles
+> it. There is no `dist/` to regenerate and commit.
+>
+> If the build log ever reports `wrangler: not found`, set the build command to
+> `npm install`; the root `package.json` exists only to pin Wrangler's version so
+> deploys are reproducible.
 
 > **Workers, not Pages.** This is a Worker with static assets (`main` + `[assets]`)
 > because it needs the D1 binding. A Cloudflare **Pages** project handles bindings
@@ -125,20 +151,18 @@ pick this repository, then set:
 
 ### Why the repo root is fine
 
-The connection covers the whole repository, and that is not a problem: **what gets
-deployed is decided by `wrangler.toml`, not by the Git connection.**
+The connection covers the whole repository, and that is deliberate: **`wrangler.toml`
+must sit at the repository root**, because a git-connected build looks for it there.
+It is the one file in this project whose location Cloudflare dictates rather than
+`CLAUDE.md` §I.B.
 
-Paths inside a Wrangler config resolve relative to the config file, so
-`[assets] directory = "./"` means `management-app/` — wherever the build happens to
-start. `child-app/`, `docs/`, and `fixtures/` are checked out during the build but
-never uploaded to the Worker. The Child App's GitHub Pages deployment is untouched.
+What gets *deployed* is still scoped by that config, not by the connection.
+`[assets] directory = "./management-app"` means only that folder is uploaded —
+`child-app/`, `docs/`, `fixtures/`, and `.git/` never are. The Child App's GitHub
+Pages deployment is untouched.
 
-The `cd management-app` in the deploy command is what puts Wrangler next to its
-config. Without it the build fails outright with "no wrangler.toml found" — it does
-not silently deploy the wrong thing.
-
-If you prefer, `npx wrangler deploy --config management-app/wrangler.toml` is
-equivalent.
+`management-app/.assetsignore` then keeps `worker/` and this guide out of the
+public bundle, so the Worker source is not served as a downloadable file.
 
 `SYNC_TOKEN` is a Worker secret, so it lives on the Worker, not in the repo, and
 survives every Git-triggered deploy.
@@ -201,6 +225,36 @@ SELECT store, COUNT(*) AS rows FROM records WHERE deleted = 0 GROUP BY store ORD
 Expect one row per populated object store — `activities`, `courses`, `lessons`,
 `children`, and so on. `appSettings` must **never** appear: your launch PIN and
 sync token are device-local and are deliberately excluded from the mirror.
+
+---
+
+## Troubleshooting
+
+### "Variables cannot be added to a Worker that only has static assets"
+
+Also shows as *"Triggers cannot be added…"* and *"Logpush cannot be added…"* on the
+same Settings page, and as a Bindings tab that accepts a D1 binding then shows
+"No connected bindings" again immediately.
+
+**Cause:** the Worker deployed with **no script** — only static assets. The build
+did not find a `wrangler.toml` with a `main` entry, so there is nothing for a
+secret or binding to attach to.
+
+**Fix:** `wrangler.toml` must be at the **repository root** (it is), with `main`
+pointing at the Worker script. Redeploy. Once the deploy includes a script, the
+Variables and Secrets section becomes usable.
+
+If the Worker stays stuck in assets-only mode after a correct redeploy, delete it
+in the dashboard and let the next push recreate it — the project type is decided at
+creation and does not always convert in place.
+
+*(Same failure and same fix as the Star-homeschool Worker — see that repo's
+`docs/parent-sync-spec.md`, Step 5.)*
+
+### Every API call returns 401 after setting the token
+
+`SYNC_TOKEN` takes effect only on a deploy made **after** it was added. Push a
+commit or hit **Retry deployment**.
 
 ---
 
