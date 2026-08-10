@@ -669,10 +669,17 @@ export for a parent who wants a spreadsheet. It is no longer on any critical pat
 Nothing is deleted until the replacement carries real days. The current app keeps working
 throughout.
 
+> **No backfill phase.** An earlier draft opened with one, because `sync.js`'s outbox only
+> ever captured writes made *after* a sync token was set — curriculum authored before that
+> never reached D1. That gap is real and is what cost Ray a curriculum. It is not a task,
+> because there is nothing left to recover: authoring restarts on the new system.
+>
+> The consequence that matters for sequencing: **no new curriculum should be authored until
+> Phase 1 lands and durability is verifiable.** Do not re-add a backfill phase.
+
 | Phase | Work | Note |
 |---|---|---|
-| **0** | Backfill existing IndexedDB → `records` | **Urgent and independent.** The outbox only ever captured writes made *after* sync was enabled, so curriculum authored before that has never reached D1. Ray may believe it is already safe. It is not. |
-| **0.5** | Migration runner + `/admin/migrations` (§3.7) | **Must land before any schema change.** It is the only way schema reaches the database without a CLI, so it is a prerequisite for Phase 1 rather than part of it. |
+| **0** | Migration runner + `/admin/migrations` (§3.7) | **Must land before any schema change.** It is the only way schema reaches the database without a CLI, so it is a prerequisite for Phase 1 rather than part of it. Start here. |
 | **1** | Schema migrations + Worker routes (§3, §5) | Applied by clicking Apply. No client changes yet. |
 | **2** | Pairing (§4.3) + Devices UI | Child App still on the old path. |
 | **3** | Commit writes assignments; Child App reads `/api/plan` | File import retained as fallback. |

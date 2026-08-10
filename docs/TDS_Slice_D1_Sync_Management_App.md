@@ -16,9 +16,10 @@
 > **What does not survive:** §0's amendment table, which narrowed the offline-first
 > constraint rather than repealing it. Read Revamp §0 instead.
 >
-> **Known gap this slice left open:** the outbox only ever captured writes made *after* sync
-> was enabled, so curriculum authored before that has never reached D1. There is no
-> backfill. See Revamp §12 Phase 0 — it is the most urgent item in the project.
+> **Known gap this slice left open, and its cost:** the outbox only ever captured writes made
+> *after* sync was enabled, so curriculum authored before that never reached D1. This is what
+> lost Ray a curriculum. No backfill is planned (Revamp §12) — the data is gone, and authoring
+> restarts on the new system. Set the token *before* authoring, and verify it landed.
 
 **Status:** Authored 2026-08-10. Superseded the same day (see above).
 **Applies to:** `management-app/` only. The Child App is untouched by this slice.

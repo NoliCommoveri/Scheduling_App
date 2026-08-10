@@ -15,9 +15,13 @@
  * Still non-blocking by design: nothing here is awaited by an authoring path,
  * so a dropped network grows the outbox instead of failing a write.
  *
- * KNOWN GAP: the outbox only captures writes made after a sync token was set.
- * Curriculum authored before that has never reached D1 and there is no backfill
- * yet. See Revamp §12 Phase 0 — highest-priority item in the project.
+ * KNOWN GAP, load-bearing: the outbox only captures writes made AFTER a sync
+ * token is set. Anything authored before that never reached D1 -- this is what
+ * cost Ray a curriculum. There is deliberately no backfill (Revamp §12): the
+ * data is already gone, so authoring restarts on the new system instead.
+ *
+ * Practical consequence: set the sync token BEFORE authoring anything, and
+ * verify against /api/sync/status that it actually landed.
  */
 
 const Sync = (() => {
