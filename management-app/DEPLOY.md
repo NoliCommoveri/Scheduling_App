@@ -29,18 +29,23 @@ build environment, not on your machine.
 
 ## 1. Create the D1 database
 
-Dashboard: **Storage & Databases → D1 → Create database**. Name it
-`homeschool-management`.
+Dashboard: **Storage & Databases → D1 → Create database**. This project's database
+is named `scheduling-app`.
 
 The database's overview page shows its **Database ID**. Copy it.
 
 ## 2. Point the config at it
 
-Edit `management-app/wrangler.toml` on GitHub (pencil icon) and paste the ID over
-`REPLACE_WITH_YOUR_D1_DATABASE_ID`. Commit.
+Already done in `management-app/wrangler.toml`:
 
-If you named the database something other than `homeschool-management`, change
-`database_name` to match as well — both fields have to agree with the dashboard.
+```toml
+database_name = "scheduling-app"
+database_id   = "bb58d835-f115-4ae5-a8ad-5653b102957e"
+```
+
+If you ever recreate the database, both fields have to match the dashboard again —
+Wrangler validates the pair, and a mismatch fails the deploy rather than silently
+writing somewhere unexpected.
 
 ## 3. Create the table
 
@@ -140,10 +145,14 @@ Only if you want it. B1 covers the whole lifecycle on its own.
 
 ---
 
-Either way, Cloudflare prints your URL, e.g.
-`https://homeschool-management.<subdomain>.workers.dev`. That URL serves the
-management app *and* its backup API from the same origin — no CORS, no second
-deployment.
+Either way, Cloudflare prints your URL. It is built from the **Worker** name in
+`wrangler.toml` (`name = "homeschool-management"`), which is a separate thing from
+the D1 database name — so it reads
+`https://homeschool-management.<subdomain>.workers.dev`. Change that `name` if you
+want a different URL; it does not affect the database binding.
+
+That URL serves the management app *and* its backup API from the same origin — no
+CORS, no second deployment.
 
 ## 6. Connect the app
 

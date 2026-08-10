@@ -16,7 +16,7 @@ run_worker_first = ["/api/*"]
 
 [[d1_databases]]
 binding = "DB"
-database_name = "homeschool-management"
+database_name = "scheduling-app"
 database_id = "bb58d835-f115-4ae5-a8ad-5653b102957e"
 
 # SYNC_TOKEN is a secret, never a [vars] entry. Set it on the deployed Worker

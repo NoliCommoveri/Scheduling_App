@@ -2,7 +2,8 @@
 -- Per TDS_Slice_D1_Sync_Management_App.md §4.
 --
 -- Apply with:
---   wrangler d1 execute homeschool-management --remote --file=worker/schema.sql
+--   wrangler d1 execute scheduling-app --remote --file=worker/schema.sql
+-- or paste each statement into the D1 Console (see management-app/DEPLOY.md §3).
 
 -- One row per IndexedDB record, keyed structurally rather than per-entity
 -- (§1.1) so a future object store is mirrored with no migration here.
