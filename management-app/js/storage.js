@@ -1,10 +1,11 @@
 /* Module: storage.js — managementAppDB schema, open/seed.
  * Per TDS_Slice_M4_Management_App_Rev3.md §2, TDS_Slice_M5_Management_App_Rev7.md §2,
- * and TDS_Slice_M7_Management_App_Rev1.md §2 (v3: pacingProfiles + generationLog). */
+ * TDS_Slice_M7_Management_App_Rev1.md §2 (v3: pacingProfiles + generationLog),
+ * and TDS_Slice_D1_Sync_Management_App.md §2 (v4: syncOutbox + write capture). */
 
 const Storage = (() => {
   const DB_NAME = 'managementAppDB';
-  const DB_VERSION = 3;
+  const DB_VERSION = 4;
 
   const ACTIVITY_TYPE_SEED = [
     { activityTypeKey: 'quiz', label: 'Quiz', capturePattern: 'grade-optional', structurePattern: 'count' },
@@ -50,7 +51,18 @@ const Storage = (() => {
     ...EMPTY_STORES, ...V3_STORES,
   ];
 
+  // The D1 mirror's outbox (TDS_Slice_D1_Sync §2). Deliberately NOT in
+  // STORE_NAMES: that list drives dev-tools' clear buttons, and clearing the
+  // outbox would silently drop changes that have not reached D1 yet.
+  const OUTBOX_STORE = 'syncOutbox';
+
+  // Never mirrored (TDS_Slice_D1_Sync §1.2, SRS Module 11 §2.3): appSettings
+  // holds the launchPin and the sync token — device-local credentials, not
+  // authored content. The outbox never mirrors itself.
+  const SYNC_EXCLUDED = new Set(['appSettings', OUTBOX_STORE]);
+
   let dbPromise = null;
+  const commitListeners = new Set();
 
   function openDB() {
     if (dbPromise) return dbPromise;
@@ -149,6 +161,13 @@ const Storage = (() => {
           generationLog.createIndex('by_child', 'childId');
           generationLog.createIndex('by_instance', 'instanceId');
         }
+
+        if (oldVersion < 4) {
+          // TDS_Slice_D1_Sync §2 — one store added, nothing existing reshaped.
+          // Rows are appended in the same transaction as the data write they
+          // describe (§1.6), so `seq` doubles as push order.
+          db.createObjectStore(OUTBOX_STORE, { keyPath: 'seq', autoIncrement: true });
+        }
       };
 
       req.onsuccess = () => resolve(req.result);
@@ -184,27 +203,33 @@ const Storage = (() => {
     });
   }
 
+  // put/del route through runTransaction so mirror capture has exactly one
+  // code path (TDS_Slice_D1_Sync §1.4) — there is no way to write to this
+  // database that bypasses the outbox.
   async function put(storeName, value, key) {
-    const db = await openDB();
-    return new Promise((resolve, reject) => {
-      const req = db.transaction(storeName, 'readwrite').objectStore(storeName).put(value, key);
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
+    let result;
+    await runTransaction([storeName], 'readwrite', (t) => {
+      const req = t.objectStore(storeName).put(value, key);
+      req.onsuccess = () => { result = req.result; };
     });
+    return result;
   }
 
   async function del(storeName, key) {
-    const db = await openDB();
-    return new Promise((resolve, reject) => {
-      const req = db.transaction(storeName, 'readwrite').objectStore(storeName).delete(key);
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error);
+    await runTransaction([storeName], 'readwrite', (t) => {
+      t.objectStore(storeName).delete(key);
     });
   }
 
   // Dev/testing only — not part of any spec'd module. Empties one store
   // completely; does not re-seed it (seeding only ever runs in
   // onupgradeneeded, once, at v1).
+  //
+  // Deliberately NOT mirrored: it writes through the raw transaction, so a
+  // dev clear is local-only and D1 still holds the records. That is the
+  // wanted behaviour for a testing tool — clearing a store to exercise
+  // empty-state UI must not destroy the durable copy. Use the Sync panel's
+  // restore to pull the data back.
   async function clearStore(storeName) {
     const db = await openDB();
     return new Promise((resolve, reject) => {
@@ -214,25 +239,156 @@ const Storage = (() => {
     });
   }
 
+  // ---- D1 mirror write capture (TDS_Slice_D1_Sync §1.4–§1.6, §3) ----
+
+  // Derives the record's IndexedDB key from the live store's own keyPath, so
+  // this needs no hardcoded store→keyPath table and cannot drift as the
+  // schema grows (§3.2). Handles all three key shapes in the schema: string
+  // keyPath, array keyPath (generationLog), and out-of-line (meta).
+  function deriveKey(store, value, explicitKey) {
+    const keyPath = store.keyPath;
+    if (keyPath === null || keyPath === undefined) return explicitKey;
+    if (Array.isArray(keyPath)) return keyPath.map((p) => value[p]);
+    return value[keyPath];
+  }
+
+  // A silently wrong mirror is worse than a loud gap (§3.3).
+  function serializeKey(key, storeName, op) {
+    if (key === undefined || key === null) {
+      console.warn(`[sync] ${op} on "${storeName}" with no derivable key — not mirrored.`);
+      return null;
+    }
+    if (typeof IDBKeyRange !== 'undefined' && key instanceof IDBKeyRange) {
+      console.warn(`[sync] ${op} on "${storeName}" by key range — not mirrored.`);
+      return null;
+    }
+    try {
+      return JSON.stringify(key);
+    } catch {
+      console.warn(`[sync] ${op} on "${storeName}" with unserializable key — not mirrored.`);
+      return null;
+    }
+  }
+
+  // Intercepts put/delete at the moment they are invoked, not by inspecting
+  // the worker's arguments up front — several existing transaction workers
+  // issue writes from inside onsuccess callbacks (§1.5).
+  function wrapStore(realStore, outboxStore, captured) {
+    if (SYNC_EXCLUDED.has(realStore.name)) return realStore;
+
+    const record = (op, key, value) => {
+      const serialized = serializeKey(key, realStore.name, op);
+      if (serialized === null) return;
+      outboxStore.add({
+        store: realStore.name,
+        key: serialized,
+        op,
+        value: op === 'put' ? value : null,
+        ts: Date.now(),
+      });
+      captured.count += 1;
+    };
+
+    return new Proxy(realStore, {
+      get(target, prop) {
+        if (prop === 'put') {
+          return (value, key) => {
+            record('put', deriveKey(target, value, key), value);
+            return target.put(value, key);
+          };
+        }
+        if (prop === 'delete') {
+          return (key) => {
+            record('delete', key, null);
+            return target.delete(key);
+          };
+        }
+        const value = Reflect.get(target, prop, target);
+        // Bind to the real store: IDB methods reject a Proxy as `this`.
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+      set(target, prop, value) {
+        target[prop] = value;
+        return true;
+      },
+    });
+  }
+
+  function wrapTransaction(realTx, captured) {
+    const outboxStore = realTx.objectStore(OUTBOX_STORE);
+    const cache = new Map();
+    return new Proxy(realTx, {
+      get(target, prop) {
+        if (prop === 'objectStore') {
+          return (name) => {
+            if (!cache.has(name)) {
+              cache.set(name, wrapStore(target.objectStore(name), outboxStore, captured));
+            }
+            return cache.get(name);
+          };
+        }
+        const value = Reflect.get(target, prop, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+      set(target, prop, value) {
+        target[prop] = value;
+        return true;
+      },
+    });
+  }
+
   // For multi-store atomic writes (e.g. minting a tier + category + counter
   // in one transaction). `worker(tx)` must issue all its requests
   // synchronously against `tx.objectStore(...)` before returning — do not
   // await inside it, or the IDB transaction auto-commits early.
-  async function runTransaction(storeNames, mode, worker) {
+  //
+  // On readwrite transactions the outbox store is appended to `storeNames` so
+  // mirror rows commit atomically with the data they describe (§1.6): an
+  // aborted transaction discards its outbox rows too, and a crash can never
+  // land a write that the mirror never hears about.
+  async function runTransaction(storeNames, mode, worker, options = {}) {
     const db = await openDB();
-    return new Promise((resolve, reject) => {
-      const t = db.transaction(storeNames, mode);
-      let result;
-      t.oncomplete = () => resolve(result);
+    const names = Array.isArray(storeNames) ? storeNames : [storeNames];
+    const capture = mode === 'readwrite' && options.captureForSync !== false;
+    const effectiveNames = capture ? [...names, OUTBOX_STORE] : names;
+
+    const captured = { count: 0 };
+    const result = await new Promise((resolve, reject) => {
+      const t = db.transaction(effectiveNames, mode);
+      let workerResult;
+      t.oncomplete = () => resolve(workerResult);
       t.onerror = () => reject(t.error);
       t.onabort = () => reject(t.error);
       try {
-        result = worker(t);
+        workerResult = worker(capture ? wrapTransaction(t, captured) : t);
       } catch (err) {
         reject(err);
       }
     });
+
+    // Fire only after the commit actually landed. Listeners are advisory —
+    // a throwing listener must never fail the write that triggered it.
+    if (captured.count > 0) {
+      for (const listener of commitListeners) {
+        try {
+          listener(captured.count);
+        } catch (err) {
+          console.warn('[sync] commit listener failed:', err);
+        }
+      }
+    }
+
+    return result;
   }
 
-  return { openDB, get, getAll, getAllByIndex, put, del, runTransaction, clearStore, STORE_NAMES };
+  // Registered by sync.js to schedule a drain after a captured write.
+  function onCommit(listener) {
+    commitListeners.add(listener);
+    return () => commitListeners.delete(listener);
+  }
+
+  return {
+    openDB, get, getAll, getAllByIndex, put, del, runTransaction, clearStore,
+    onCommit, STORE_NAMES, OUTBOX_STORE, SYNC_EXCLUDED,
+  };
 })();

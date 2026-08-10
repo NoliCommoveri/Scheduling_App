@@ -68,6 +68,10 @@ const App = (() => {
       <a href="#/settings">Settings</a>
     `;
     startRouter();
+
+    // Starts the D1 mirror drain (TDS_Slice_D1_Sync §6). Deliberately after
+    // the gate, and deliberately not awaited — no view waits on the network.
+    Sync.init().catch((err) => console.warn('[sync] init failed:', err));
   }
 
   return { boot, navigate };
