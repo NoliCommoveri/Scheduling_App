@@ -85,8 +85,8 @@
 
     // ---------- app bar ----------
     // Everything that used to stack settings-style buttons across the top —
-    // Theme (Module 10), Settings (Module 11), Import (Module 2), Export
-    // (Module 8), Wipe (Module 9), dev reset — now lives behind one menu.
+    // Theme (Module 10), Settings (Module 11), Export (Module 8), Wipe
+    // (Module 9), dev reset — now lives behind one menu.
     // These are weekly/per-semester/one-off actions; the daily view stays
     // just greeting + tabs + today's plan (Ray, 2026-07-13).
     function appbar() {
@@ -148,8 +148,6 @@
       }
 
       addItem("🎨", "Change theme", openThemeDialog);
-      addItem("📥", "Import a packet", pickPacket);
-      if (g.EMBEDDED_SAMPLE) addItem("🧪", "Load sample packet", doImportEmbedded);
       addItem("📤", "Export completions", doExport);
       addItem("🧹", "Wipe sent work", doWipe);
       addItem("⚙️", "Settings", openSettingsGate);
@@ -202,19 +200,6 @@
       card.appendChild(actions);
       overlay.appendChild(card);
       document.body.appendChild(overlay);
-    }
-
-    // Shared packet picker — a detached, self-cleaning file input so no hidden
-    // <input> lingers in the daily chrome.
-    function pickPacket() {
-      var file = document.createElement("input");
-      file.type = "file"; file.accept = "application/json,.json"; file.style.display = "none";
-      document.body.appendChild(file);
-      file.onchange = function () {
-        if (file.files && file.files[0]) doImport(file.files[0]);
-        document.body.removeChild(file);
-      };
-      file.click();
     }
 
     function greetingText() {
@@ -405,28 +390,18 @@
       return node("span", "emoji-icon", icon.value);
     }
 
+    // Two genuinely different empty states now that the file path is gone
+    // (Phase 5, §11): a paired device has nothing to do but wait for §8.3's
+    // poll, while an unpaired one cannot receive work at all until someone
+    // enters a pairing code. Neither offers an action the child can take on
+    // their own — pairing lives behind the Settings PIN gate, because the code
+    // comes from the Management App and is a parent's job to fetch.
     function emptyState() {
       var e = node("div", "empty");
       e.appendChild(node("h2", null, "Nothing here yet"));
-      // A paired device gets its plan over the network (Online Revamp §8.3), so
-      // "import a packet" is the wrong first instruction — the honest answer is
-      // that nothing has been assigned yet. Import stays available underneath:
-      // §12 keeps the file path as a fallback through Phase 4.
       e.appendChild(node("p", null, state.sync && state.sync.paired
         ? "No work has been assigned yet. This fills in on its own once it's ready."
-        : "Import a packet to see today's school work, chores, and events."));
-      var b = node("button", "btn", "Import a packet");
-      var file = node("input", "hidden-file");
-      file.type = "file"; file.accept = "application/json,.json";
-      file.onchange = function () { if (file.files && file.files[0]) doImport(file.files[0]); file.value = ""; };
-      b.onclick = function () { file.click(); };
-      e.appendChild(b); e.appendChild(file);
-      if (g.EMBEDDED_SAMPLE) {
-        var sampleBtn = node("button", "btn ghost", "Load sample packet");
-        sampleBtn.style.marginTop = "10px";
-        sampleBtn.onclick = doImportEmbedded;
-        e.appendChild(sampleBtn);
-      }
+        : "This device isn't linked yet. Ask a grown-up to link it in Settings, then today's plan will show up here."));
       return e;
     }
 
@@ -1136,32 +1111,6 @@
         else newKey = (keyAt(j) + keyAt(j + 1)) / 2;
       }
       setMeta(moved.id, { sortOrder: newKey });
-    }
-
-    // ---------- import ----------
-    function handleResult(res) {
-      if (res.ok) {
-        var msg = res.counts.added + " new item" + (res.counts.added === 1 ? "" : "s");
-        if (res.counts.refreshed) msg += ", " + res.counts.refreshed + " refreshed";
-        toast("Packet imported — " + msg + ".", false);
-        reload();
-      } else if (res.versionError || res.parseError) {
-        toast(res.message, true);
-      } else {
-        toast("Packet rejected: " + res.errors[0] + (res.errors.length > 1 ? " (+" + (res.errors.length - 1) + " more)" : ""), true);
-      }
-    }
-    function doImport(file) {
-      g.Importer.importFile(file).then(handleResult).catch(function (e) {
-        toast("Something went wrong reading that file.", true);
-        console.error(e);
-      });
-    }
-    function doImportEmbedded() {
-      g.Importer.importText(JSON.stringify(g.EMBEDDED_SAMPLE)).then(handleResult).catch(function (e) {
-        toast("Something went wrong loading the sample.", true);
-        console.error(e);
-      });
     }
 
     // ---------- export (Module 8) ----------

@@ -15,10 +15,17 @@
  * D1 (§5.2), which is the system of record. Propose and Review are untouched
  * — §6.1 is explicit that only Commit's final act changes.
  *
- * The packet file is still exported. That is not a leftover: the Child App
- * does not read /api/plan until Phase 3's second half lands, so until then the
- * file remains the live transport and the rows are the new one being laid down
- * beside it. Phase 5 (§11) deletes the export.
+ * EXPORT REMOVED 2026-08-11 — Phase 5 (§11). The packet file was kept beside
+ * the D1 rows only until the Child App read /api/plan; it has since Phase 3B,
+ * so the file had no reader. Gone with it: buildPacket and the packet-shaped
+ * projections, and validatePacket — a validator for a document nobody writes
+ * any more, and the last place in the app that still asserted the repealed
+ * CHR-{token}-{date} and EVT- id patterns. It never guarded the D1 path: it
+ * validated `packet`, not the rows projectAssignments builds. The Worker's
+ * column-ownership check (§4.2) is what stands behind those.
+ *
+ * The name stays `packet.js`, and Generation Log rows still key on the
+ * per-occurrence chore id. That is local scheduling history, not interchange.
  */
 
 const Packet = (() => {
@@ -283,7 +290,12 @@ const Packet = (() => {
     return { ok: true };
   }
 
-  // ---- Projection (§4.5) — onto the closed Interchange allow-lists ----
+  // ---- Payload projection (§4.5) ----
+  //
+  // All that survives of the packet projections: the kind-specific half of an
+  // activity's payload, which assignmentFromActivity still builds on. It maps
+  // an activity type to a payload shape and has nothing to do with the
+  // interchange allow-lists the rest of §4.5 described.
 
   function projectPayload(activityTypeKey, stored) {
     if (PAGE_RANGE_KEYS.includes(activityTypeKey)) {
@@ -292,200 +304,6 @@ const Packet = (() => {
     if (REFERENCE_KEYS.includes(activityTypeKey)) return { kind: 'reference', reference: stored.reference };
     if (activityTypeKey === 'practice-level') return { kind: 'none' };
     return { kind: 'freeText', text: stored.text }; // any parent-added key
-  }
-
-  function projectActivity(item) {
-    const a = item.record;
-    const entry = {
-      id: a.id,
-      activityType: session.maps.typeLabel.get(a.activityType) || a.activityType, // label, never the key
-      title: a.title,
-      required: !!a.required,
-      payload: projectPayload(a.activityType, a.payload || {}),
-      difficultyTier: a.difficultyTier,
-      rewardCategoryId: session.maps.rewardCat.get(a.difficultyTier),
-      courseName: session.maps.courseName.get(item.instanceId),
-      capturesGrade: !!a.capturesGrade,
-    };
-    if (a.expectedDurationMin != null) entry.expectedDurationMin = a.expectedDurationMin;
-    if (item.blockHint) entry.blockHint = item.blockHint;
-    if (a.sequenceNumber != null) entry.sequenceNumber = a.sequenceNumber;
-    if (a.lessonTitle) entry.lessonTitle = a.lessonTitle;
-    if (a.instructions) entry.instructions = a.instructions;
-    return entry;
-  }
-
-  function projectChore(item) {
-    const c = item.record;
-    const entry = {
-      id: item.id,
-      choreType: c.choreType,
-      title: c.title,
-      date: item.assignedDate,
-      difficultyTier: c.difficultyTier,
-      rewardCategoryId: session.maps.rewardCat.get(c.difficultyTier),
-      required: true,
-    };
-    if (c.notes) entry.notes = c.notes;
-    if (c.blockHint) entry.blockHint = c.blockHint;
-    return entry;
-  }
-
-  function projectEvent(item) {
-    const e = item.record;
-    const entry = { id: e.id, title: e.title, startDate: e.startDate, endDate: e.endDate };
-    if (e.notes) entry.notes = e.notes;
-    if (e.time) entry.time = e.time;
-    return entry;
-  }
-
-  function buildPacket() {
-    const dayList = [...session.days.entries()]
-      .filter(([, o]) => o.activities.length || o.chores.length || o.events.length)
-      .sort((a, b) => (a[0] < b[0] ? -1 : 1))
-      .map(([date, o]) => ({
-        date,
-        activities: o.activities.map(projectActivity),
-        chores: o.chores.map(projectChore),
-        events: o.events.map(projectEvent),
-      }));
-    return {
-      schemaVersion: 1,
-      childId: session.childId,
-      childName: session.childName,
-      semesterLabel: session.semesterLabel,
-      generatedAt: new Date().toISOString(),
-      coversFrom: session.coversFrom,
-      coversTo: session.coversTo,
-      days: dayList,
-    };
-  }
-
-  // ---- Validation (§4.6) — packet_schema.json shape + FR-13 structural pass ----
-
-  function only(obj, allowed) {
-    return Object.keys(obj).every((k) => allowed.includes(k));
-  }
-  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-  const ACT_ID_RE = /^[A-Za-z0-9]+-[A-Za-z0-9]+-[A-Za-z0-9]+-[A-Za-z0-9]+$/;
-  const CHR_ID_RE = /^CHR-[A-Za-z0-9]+-\d{8}$/;
-  const EVT_ID_RE = /^EVT-[A-Za-z0-9]+$/;
-  const CHORE_TYPES = [
-    'Pet Care', 'Car Care', 'Kitchen/Dining', 'Bathroom', 'Living/Main Area',
-    'Playroom', 'Bedroom', "Parent's Room", 'Porch', 'Floors', 'Miscellaneous',
-  ];
-
-  function validatePayload(p, path, errors) {
-    if (typeof p !== 'object' || p === null) return errors.push(`${path}: payload must be an object`);
-    switch (p.kind) {
-      case 'pageRange':
-        if (!only(p, ['kind', 'pageRangeStart', 'pageRangeEnd'])) errors.push(`${path}: payload has unexpected keys`);
-        if (!Number.isInteger(p.pageRangeStart) || p.pageRangeStart < 0) errors.push(`${path}: pageRangeStart invalid`);
-        if (!Number.isInteger(p.pageRangeEnd) || p.pageRangeEnd < 0) errors.push(`${path}: pageRangeEnd invalid`);
-        break;
-      case 'reference':
-        if (!only(p, ['kind', 'reference'])) errors.push(`${path}: payload has unexpected keys`);
-        if (typeof p.reference !== 'string' || p.reference.length < 1) errors.push(`${path}: reference invalid`);
-        break;
-      case 'none':
-        if (!only(p, ['kind'])) errors.push(`${path}: payload has unexpected keys`);
-        break;
-      case 'freeText':
-        if (!only(p, ['kind', 'text'])) errors.push(`${path}: payload has unexpected keys`);
-        if (typeof p.text !== 'string' || p.text.length < 1) errors.push(`${path}: text invalid`);
-        break;
-      default:
-        errors.push(`${path}: payload.kind is not one of pageRange|reference|none|freeText`);
-    }
-  }
-
-  const ACT_ALLOWED = [
-    'id', 'activityType', 'title', 'required', 'payload', 'difficultyTier', 'rewardCategoryId',
-    'courseName', 'capturesGrade', 'expectedDurationMin', 'blockHint', 'sequenceNumber', 'lessonTitle', 'instructions',
-  ];
-  const ACT_REQUIRED = ['id', 'activityType', 'title', 'required', 'payload', 'difficultyTier', 'rewardCategoryId', 'courseName', 'capturesGrade'];
-  const CHR_ALLOWED = ['id', 'choreType', 'title', 'date', 'difficultyTier', 'rewardCategoryId', 'required', 'notes', 'blockHint'];
-  const CHR_REQUIRED = ['id', 'choreType', 'title', 'date', 'difficultyTier', 'rewardCategoryId', 'required'];
-  const EVT_ALLOWED = ['id', 'title', 'startDate', 'endDate', 'notes', 'time'];
-  const EVT_REQUIRED = ['id', 'title', 'startDate', 'endDate'];
-
-  function validatePacket(packet) {
-    const errors = [];
-
-    // ---- top-level schema shape ----
-    if (packet.schemaVersion !== 1) errors.push('schemaVersion must be 1');
-    for (const k of ['childId', 'childName', 'semesterLabel']) {
-      if (typeof packet[k] !== 'string') errors.push(`${k} must be a string`);
-    }
-    if (typeof packet.generatedAt !== 'string') errors.push('generatedAt must be a string');
-    if (!DATE_RE.test(packet.coversFrom)) errors.push('coversFrom must be YYYY-MM-DD');
-    if (!DATE_RE.test(packet.coversTo)) errors.push('coversTo must be YYYY-MM-DD');
-    if (!only(packet, ['schemaVersion', 'childId', 'childName', 'semesterLabel', 'generatedAt', 'coversFrom', 'coversTo', 'days'])) {
-      errors.push('packet has unexpected top-level keys');
-    }
-
-    // ---- FR-13 structural (Interchange §1 rules the JSON Schema can't express) ----
-    if (packet.coversFrom > packet.coversTo) errors.push('coversFrom must be ≤ coversTo');
-    const seenDates = new Set();
-    const nonEventIds = new Set(); // activities + chores must be globally unique
-    const eventIdsPerDay = new Set();
-
-    for (const day of packet.days) {
-      if (!only(day, ['date', 'activities', 'chores', 'events'])) errors.push(`day ${day.date}: unexpected keys`);
-      if (!DATE_RE.test(day.date)) errors.push(`day date "${day.date}" is not YYYY-MM-DD`);
-      if (day.date < packet.coversFrom || day.date > packet.coversTo) errors.push(`day ${day.date} is outside the covered range`);
-      if (seenDates.has(day.date)) errors.push(`duplicate day ${day.date}`);
-      seenDates.add(day.date);
-
-      for (const a of day.activities) {
-        const path = `activity ${a.id} on ${day.date}`;
-        if (!only(a, ACT_ALLOWED)) errors.push(`${path}: has non-allow-list fields`);
-        for (const r of ACT_REQUIRED) if (a[r] === undefined || a[r] === null) errors.push(`${path}: missing ${r}`);
-        if (typeof a.id !== 'string' || !ACT_ID_RE.test(a.id)) errors.push(`${path}: id fails pattern`);
-        if (typeof a.required !== 'boolean') errors.push(`${path}: required must be boolean`);
-        if (typeof a.capturesGrade !== 'boolean') errors.push(`${path}: capturesGrade must be boolean`);
-        if (typeof a.courseName !== 'string' || !a.courseName) errors.push(`${path}: courseName unresolved`);
-        if (typeof a.rewardCategoryId !== 'string' || !a.rewardCategoryId) errors.push(`${path}: rewardCategoryId unresolved`);
-        if (a.expectedDurationMin !== undefined && (!Number.isInteger(a.expectedDurationMin) || a.expectedDurationMin < 0)) errors.push(`${path}: expectedDurationMin invalid`);
-        if (a.sequenceNumber !== undefined && (!Number.isInteger(a.sequenceNumber) || a.sequenceNumber < 1)) errors.push(`${path}: sequenceNumber invalid`);
-        validatePayload(a.payload || {}, path, errors);
-        if (a.payload) {
-          if (a.payload.kind === 'pageRange' && a.payload.pageRangeEnd < a.payload.pageRangeStart) errors.push(`${path}: pageRangeEnd < pageRangeStart`);
-          // sequenceNumber required whenever payload is reference or none (schema-invisible — FR-13).
-          if ((a.payload.kind === 'reference' || a.payload.kind === 'none') && a.sequenceNumber === undefined) {
-            errors.push(`${path}: sequenceNumber is required for a ${a.payload.kind} payload`);
-          }
-        }
-        if (nonEventIds.has(a.id)) errors.push(`${path}: duplicate id`);
-        nonEventIds.add(a.id);
-      }
-
-      for (const c of day.chores) {
-        const path = `chore ${c.id} on ${day.date}`;
-        if (!only(c, CHR_ALLOWED)) errors.push(`${path}: has non-allow-list fields`);
-        for (const r of CHR_REQUIRED) if (c[r] === undefined || c[r] === null) errors.push(`${path}: missing ${r}`);
-        if (typeof c.id !== 'string' || !CHR_ID_RE.test(c.id)) errors.push(`${path}: id fails pattern`);
-        if (!CHORE_TYPES.includes(c.choreType)) errors.push(`${path}: choreType not in enum`);
-        if (c.required !== true) errors.push(`${path}: required must be true`);
-        if (typeof c.rewardCategoryId !== 'string' || !c.rewardCategoryId) errors.push(`${path}: rewardCategoryId unresolved`);
-        if (c.date !== day.date) errors.push(`${path}: chore date must equal its enclosing day`);
-        if (nonEventIds.has(c.id)) errors.push(`${path}: duplicate id`);
-        nonEventIds.add(c.id);
-      }
-
-      for (const e of day.events) {
-        const path = `event ${e.id} on ${day.date}`;
-        if (!only(e, EVT_ALLOWED)) errors.push(`${path}: has non-allow-list fields`);
-        for (const r of EVT_REQUIRED) if (e[r] === undefined || e[r] === null) errors.push(`${path}: missing ${r}`);
-        if (typeof e.id !== 'string' || !EVT_ID_RE.test(e.id)) errors.push(`${path}: id fails pattern`);
-        // A multi-day event repeats its id once per in-range day — allowed. Only same-day repeat and overlap are checked.
-        const dayKey = `${day.date}::${e.id}`;
-        if (eventIdsPerDay.has(dayKey)) errors.push(`${path}: duplicate event id on the same day`);
-        eventIdsPerDay.add(dayKey);
-        if (e.endDate < packet.coversFrom || e.startDate > packet.coversTo) errors.push(`${path}: event does not overlap the covered range`);
-      }
-    }
-    return errors;
   }
 
   // ---- Assignment projection (Revamp §3.3) — the Phase 3 write path ----
@@ -617,14 +435,17 @@ const Packet = (() => {
 
   async function commit() {
     if (!session) return { error: 'No active proposal.' };
-    const packet = buildPacket();
+
+    // The rows are now built first rather than beside a packet: they are the
+    // only output, and the empty-source test below reads their count.
+    const rows = projectAssignments();
 
     // Minted before the log rows are built so both the D1 batch and the local
     // decisions that produced it carry the same id. A 'dropped' row has no D1
     // counterpart — nothing was assigned — but recording which Commit decided
     // it is what makes the log auditable against the batch.
     const batchId = mintBatchId();
-    const generatedAt = packet.generatedAt;
+    const generatedAt = new Date().toISOString();
     const sentRows = [];
     for (const [, o] of session.days) {
       for (const it of o.activities) sentRows.push({ childId: session.childId, itemId: it.id, instanceId: it.instanceId, assignedDate: it.assignedDate, disposition: 'sent', generatedAt, batchId });
@@ -638,13 +459,12 @@ const Packet = (() => {
     // Empty-source (FR-7) only when there is nothing to send AND no review
     // decision to record. A proposal reduced to only drops/excludes still
     // commits those decisions (else re-propose would resurface them) — it
-    // just exports no file.
-    if (packet.days.length === 0 && !sentRows.length && !droppedRows.length && !excludeIds.length) {
+    // just assigns nothing. `rows.length` replaces the old `packet.days.length`
+    // and tests the same thing: buildPacket dropped days that had no items, so
+    // a day survived it exactly when it contributed at least one row here.
+    if (!rows.length && !sentRows.length && !droppedRows.length && !excludeIds.length) {
       return { error: 'Nothing to generate for this child and range (empty-source).' };
     }
-
-    const errors = validatePacket(packet); // empty days[] is schema-valid
-    if (errors.length) return { error: errors[0], errors, packet };
 
     // ---- D1 first, IndexedDB second (Revamp §6.1) ----
     //
@@ -660,7 +480,6 @@ const Packet = (() => {
     // fails, leaving live rows in D1 with no local record. That one is
     // recoverable precisely because every row carries batchId — the error below
     // surfaces it so the batch can be rescinded in a single statement (§6.2).
-    const rows = projectAssignments();
     let assignedCount = 0;
 
     if (rows.length) {
@@ -707,28 +526,10 @@ const Packet = (() => {
       };
     }
 
-    // Export AFTER both writes commit — retriable, outside IDB (§4.4.4).
-    // Skip the file only when nothing is being sent (decisions still recorded).
-    const exported = packet.days.length > 0;
-    if (exported) exportPacket(packet);
     return {
-      ok: true, packet, exported, batchId, assignedCount,
+      ok: true, batchId, assignedCount,
       sentCount: sentRows.length, droppedCount: droppedRows.length, excludedCount: excludeIds.length,
     };
-  }
-
-  function exportPacket(packet) {
-    const slug = session.childName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'child';
-    const filename = `packet_${slug}_${packet.coversFrom}_${packet.coversTo}.json`;
-    const blob = new Blob([JSON.stringify(packet, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
   }
 
   // ---- Rendering ----
@@ -809,8 +610,8 @@ const Packet = (() => {
       lastResult = {
         message: `Committed: ${result.assignedCount} assigned to D1, ${result.droppedCount} dropped, ` +
           `${result.excludedCount} excluded (batch ${result.batchId}). ` +
-          (result.exported
-            ? 'A packet file was also exported — still the Child App’s transport until it reads /api/plan.'
+          (result.assignedCount
+            ? 'Paired devices pick this up on their next check.'
             : 'Nothing to assign; decisions were still recorded.'),
       };
       session = null;
@@ -930,7 +731,7 @@ const Packet = (() => {
   return {
     render,
     // exposed for build-session acceptance checks (§5):
-    propose, commit, validatePacket, buildPacket, projectAssignments,
+    propose, commit, projectAssignments,
     relocate, excludeActivity, deferActivity, dropChore, pullForward,
     _getSession: () => session,
     _reset: () => { session = null; lastResult = null; },

@@ -11,7 +11,6 @@
 .git/
 .github/
 docs/
-fixtures/
 node_modules/
 
 # The API's own source. Bundled into the Worker by `main`, never served.

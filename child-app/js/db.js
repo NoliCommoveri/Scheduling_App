@@ -15,10 +15,12 @@
 //   keyed:        assignments (keyPath "id") — the /api/plan cache
 // Online Revamp Phase 4 adds the write side at version 5:
 //   keyed:        outbox (keyPath "seq", autoIncrement) — queued uploads
-// The M1 stores it supersedes (activities/chores/events/plannerMeta) are NOT
-// dropped: §12 keeps file import as a fallback through Phase 4, and plannerMeta
-// is still where this device's own overrides live — Phase 4 uploads a copy of
-// each override, it does not stop writing the local one.
+// Phase 5 deleted the packet import (§11), so nothing writes activities/chores/
+// events any more. They are not dropped here: removing an object store is a
+// DB_VERSION bump with an upgrade path, and it belongs with the rest of the
+// §8.1/§8.2 collapse rather than bolted onto a deletion commit. plannerMeta is
+// a different case and is still live — it is where this device's own overrides
+// are written, and the outbox uploads a copy rather than replacing it.
 // No dailyPlan store — the day is derived at render time and never persisted.
 //
 // §8.1 also names a `rewardEntries` store replacing rewardLedgerSnapshot/Tail.
@@ -137,16 +139,6 @@
     });
   }
 
-  // Apply a merge result (arrays of full records) atomically to activities/chores/events.
-  function applyMerge(mergeResult) {
-    return tx(["activities", "chores", "events"], "readwrite").then(function (t) {
-      mergeResult.activityPuts.forEach(function (r) { t.objectStore("activities").put(r); });
-      mergeResult.chorePuts.forEach(function (r) { t.objectStore("chores").put(r); });
-      mergeResult.eventPuts.forEach(function (r) { t.objectStore("events").put(r); });
-      return txDone(t);
-    });
-  }
-
   // Ingest a /api/plan response in one transaction (Online Revamp §5.5).
   // Upserts the rows that are still part of the plan and drops the ones the
   // Worker sent purely so the client could remove them. plan-sync.js decides
@@ -161,49 +153,36 @@
     });
   }
 
-  // The pre-revamp local stores on their own — what a hand-imported packet file
-  // left behind. Packet Import merges against exactly this and must not see
-  // server assignments: they are not packet items, they were never in a packet,
-  // and letting them seed the merge's receipt counter would muddle the ordering
-  // of both paths for no gain.
-  function loadLocalState() {
-    return Promise.all([getAll("activities"), getAll("chores"), getAll("events"), getAll("plannerMeta")])
-      .then(function (r) {
-        var metaMap = Object.create(null);
-        r[3].forEach(function (m) { metaMap[m.id] = m; });
-        return { activities: r[0], chores: r[1], events: r[2], meta: metaMap };
-      });
-  }
-
   // Load everything the planner needs in one shot.
   //
   // Online Revamp §8.2: this still returns { activities, chores, events, meta },
-  // because effectively all of planner-ui.js is built on that shape. What
-  // changed underneath is where it comes from — `assignments` rows fetched from
-  // /api/plan, reassembled by assignment-core.js, unioned with whatever the
-  // retained file-import fallback (§12, Phase 3) has left in the local stores.
-  // An explicit shim with a stated lifespan; Phase 5 collapses it.
+  // because effectively all of planner-ui.js is built on that shape. The rows
+  // now come from one source — `assignments`, fetched from /api/plan and
+  // partitioned by kind — since Phase 5 deleted the packet import that used to
+  // fill activities/chores/events locally. Those three stores still exist and
+  // are read here only in the sense that nothing writes them any more; dropping
+  // them is a schema change (§8.1) and belongs with the rest of the shim
+  // collapse, not here.
   //
-  // Ids cannot collide across the two sources: server rows carry server-minted
-  // UUIDs (§3.3.1) and packet ids are the four-segment / CHR- / EVT- forms the
-  // packet schema pins. Where a row does appear in both meta maps, the local
-  // one wins field-by-field: until Phase 4 uploads this device's overrides, the
-  // local plannerMeta entry is the newer of the two by construction.
+  // plannerMeta is NOT vestigial and is still overlaid: it is where this
+  // device's own overrides (sortOrder, deferrals) are written, ahead of the
+  // outbox uploading a copy. The local entry wins field-by-field over the
+  // server's — a pending override is by construction newer than the columns it
+  // has not yet been flushed to.
   function loadState() {
-    return Promise.all([loadLocalState(), getAll("assignments")]).then(function (r) {
-      var local = r[0];
+    return Promise.all([getAll("plannerMeta"), getAll("assignments")]).then(function (r) {
       var server = g.AssignmentCore.toState(r[1]);
 
       var meta = Object.create(null);
       Object.keys(server.meta).forEach(function (id) { meta[id] = server.meta[id]; });
-      Object.keys(local.meta).forEach(function (id) {
-        meta[id] = meta[id] ? Object.assign({}, meta[id], local.meta[id]) : local.meta[id];
+      r[0].forEach(function (local) {
+        meta[local.id] = meta[local.id] ? Object.assign({}, meta[local.id], local) : local;
       });
 
       return {
-        activities: server.activities.concat(local.activities),
-        chores: server.chores.concat(local.chores),
-        events: server.events.concat(local.events),
+        activities: server.activities,
+        chores: server.chores,
+        events: server.events,
         meta: meta
       };
     });
@@ -274,14 +253,12 @@
     del: del,
     delMany: delMany,
     putMany: putMany,
-    applyMerge: applyMerge,
     applyPlan: applyPlan,
     outboxAdd: outboxAdd,
     outboxAll: outboxAll,
     outboxCount: outboxCount,
     outboxDelete: outboxDelete,
     loadState: loadState,
-    loadLocalState: loadLocalState,
     setMeta: setMeta,
     devWipeAll: devWipeAll
   };
