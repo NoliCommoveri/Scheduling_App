@@ -23,13 +23,21 @@ Design and rationale: `docs/TDS_Slice_Online_Revamp.md` (current),
 
 ## What this gives you
 
-Your data still lives in the browser's IndexedDB and the app still works with the
-network unplugged. On top of that, **every write is copied to a Cloudflare D1
-database automatically**, so a lost laptop, a cleared browser, or a wiped profile
-no longer costs you your authored curriculum.
+One Cloudflare Worker serving **both apps and the API from a single origin**, on top
+of a D1 database that is the system of record. A lost laptop, a cleared browser or a
+wiped profile no longer costs you anything: the curriculum you author is mirrored to
+D1 as you write it, and everything the children are assigned and complete lives there
+outright.
 
-If the network is down, changes queue locally and upload themselves later. You
-never have to remember to press anything.
+The parent's browser holds a working copy plus an upload queue; each child's device
+holds a cached plan plus its own queue. Neither is the truth any more. If the network
+is down, changes queue locally and upload themselves later — you never have to
+remember to press anything — but the network is the normal path, not an exception.
+
+> **This replaces the old "works completely offline" promise, deliberately.** What you
+> give up is that a child's device must reach the network at least once to *receive*
+> new work. What you get is that the two apps talk to each other: no packet files to
+> carry, no completion CSVs to import, no reconciliation. See Revamp §0.
 
 ---
 
@@ -266,6 +274,101 @@ faster.
 > the GitHub Pages copy — a device token stored there belongs to a different
 > origin's IndexedDB and does not travel. Mint a fresh pairing code from
 > **Settings → Devices** in the Management App.
+
+---
+
+## Part D — first run, in order
+
+Parts A–C put the system on the internet. This is the shortest path from there to a
+child looking at their own plan. **The order matters** — each step is the input to the
+next, and doing them out of order is the one way to get stuck.
+
+Everything here is a browser. There is no CLI in this project (CLAUDE.md §0).
+
+### 1. Apply the schema
+
+Open the Management App, unlock with your launch PIN, go to **Settings → Database**,
+press **Apply**. A banner on the home screen tells you if anything is pending without
+your having to look.
+
+If the app will not start at all, use **`/admin/migrations`** instead — same job, plain
+HTML, no JavaScript, works when nothing else does.
+
+*Nothing else on this list will work until this is done.* An unmigrated database has no
+tables for children, assignments, devices or pairing codes.
+
+### 2. Save the sync token in the app
+
+**Settings → Cloud backup**, paste the `SYNC_TOKEN` from Part A step 4, **Save token**.
+You should see `Connected. Cloud holds N record(s).`
+
+### 3. Author enough to assign
+
+The minimum that produces a real day, in dependency order — each screen validates
+against the one above it:
+
+| Order | Screen | Why it has to come first |
+|---|---|---|
+| 1 | **Tiers** | Already seeded with four (Easy → Very Hard) and their reward categories. Every activity and chore points at one. Extend if you want; nothing here blocks you. |
+| 2 | **Activity Types** | Already seeded with the canonical ten (Quiz, Test, Project, Report, PDF, Drill, Workbook, Video, Practice Level, Reading Pages). Activities reference these. |
+| 3 | **Curriculum** | The container courses live under. |
+| 4 | **Courses** | Lessons and activities are authored inside a course. |
+| 5 | **Children** | One row per child. **Nothing can be assigned or paired without this.** |
+| 6 | **Children → assign a course** | Stamps a Child Course Instance — the thing pacing paces. |
+| 7 | **Pacing** | How fast that instance moves. School instances only. |
+| 8 | **Chores** / **Events** | Optional. Standalone, per child, no curriculum needed. |
+
+### 4. Commit a batch of assignments
+
+**Assign** → pick the child and a date range → **Propose** → review what comes back →
+**Commit & assign**.
+
+Commit is the moment work becomes real: it writes one row per child per day per thing
+to do, straight to D1. Nothing is downloaded and nothing needs carrying anywhere.
+
+A big Commit goes up in chunks. If one dies partway, press **Commit** again — it
+resumes rather than assigning everything twice, and it will tell you where it got to.
+
+Check it landed under **Assignments**, which browses what any child has been given and
+is also where you rescind a bad batch or move a single item.
+
+### 5. Pair each child's device
+
+In the Management App, **Settings → Devices**. Under **Pair a device**, pick the child
+and press **Generate pairing code**. It shows an 8-character code, good for **15
+minutes**, usable **once**. The same page lists every device already paired and revokes
+any of them.
+
+Then on the child's device:
+
+1. Open `<your-worker-url>/kid` and **Add to Home Screen**.
+2. Set a parent PIN — this is the device's own PIN for deferment and reward spending,
+   nothing to do with your launch PIN or the sync token.
+3. Type the pairing code. Case, spaces and dashes do not matter.
+4. Name the device if you like ("Ellie's tablet"), give it a semester label and a
+   theme.
+
+Their name is never typed on that device — it arrives with the code, from the child
+record you made in step 3. When setup ends, the plan you committed in step 4 is already
+on screen.
+
+> **The parent `SYNC_TOKEN` never goes on a child's device.** It grants a whole-database
+> snapshot. Device tokens are scoped to one child and revocable from **Settings →
+> Devices**, effective on that device's very next request with no redeploy. This is the
+> single most important rule in the design (Revamp §4.1).
+
+Repeat step 5 per child, and per device if a child has more than one. A code pairs one
+device; mint another for the next.
+
+### If something looks wrong
+
+| Symptom | Cause |
+|---|---|
+| Child App says "This device isn't linked yet" | Setup was finished before pairing, or Settings → "Forget this device" was pressed. Mint a fresh code. |
+| "Unknown pairing code" | Expired (15 min) or already used. Mint another; they are free. |
+| Paired, but no work shows up | Nothing has been committed for that child *in the window*. The device fetches today−7 … today+14. |
+| Child App keeps re-asking for setup | Setup never reached the last step, so no PIN was stored. Run it through to the end; it will recognise the pairing it already has. |
+| Everything returns 401 | `SYNC_TOKEN` unset, or set after the last deploy. See the troubleshooting section. |
 
 ---
 

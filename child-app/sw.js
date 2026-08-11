@@ -29,7 +29,12 @@
 // against whichever schema its browser happens to hold — writing to two stores
 // the upgrade has already deleted the moment any other tab triggers it. The
 // files must land as a set.
-const CACHE_NAME = "daily-plan-shell-v7";
+// v8: the Startup Wizard pairs the device (§4.3, Module 1 §7). wizard.js,
+// pairing.js and app.js changed together — the wizard calls a redeem that now
+// seeds the Child record's name, and app.js's boot gate depends on the wizard
+// having written a PIN. A device serving any two of the three from a v7 cache
+// would either re-enter setup on every launch or leave it half-finished.
+const CACHE_NAME = "daily-plan-shell-v8";
 
 const APP_SHELL = [
   "./",

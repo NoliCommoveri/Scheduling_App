@@ -1,6 +1,26 @@
 // wizard.js — Startup Wizard (SRS Module 1). Runs once, when no child record
-// exists. Captures PIN, child name, semester label, theme; writes the three
-// singleton stores; then transitions to the Daily Planner. Touches no content.
+// exists. Captures a PIN, pairs the device, captures a semester label and a
+// theme; writes the three singleton stores; then transitions to the Daily
+// Planner. Touches no content.
+//
+// Online Revamp §4.3 / Module 1 §7: step 2 used to ask someone to type the
+// child's name. It now redeems a pairing code, and the name arrives from the
+// server as part of that exchange — the same answer, from the authority that
+// actually holds it, and the device gets its token in the bargain.
+//
+// [DECISION] Whether the pairing step is skippable
+// Decided: no. Setup cannot finish without a paired device.
+// Rationale: the token is what every read and write presents (§5.5), so a
+//   device that skips it has no plan, no upload path, and no name — and its
+//   only route back is the Settings screen, which sits behind the parent PIN.
+//   That was the state a fresh install landed in before this step existed,
+//   and it looked like an app that simply did not work. §8.4 already accepts
+//   that a device must reach the network at least once to receive assignments;
+//   requiring that once to be during setup adds no new constraint, it just
+//   makes the existing one visible at the moment someone can act on it.
+// Consequence: the parent mints the code in the Management App (Settings →
+//   Devices) before handing over the child's device. DEPLOY.md Part D orders it.
+// Locked for: this milestone.
 
 (function (g) {
   "use strict";
@@ -20,7 +40,7 @@
   function run(root, onComplete) {
     var state = { pin: "", pin2: "", name: "", semester: "", theme: "daylight" };
     var step = 0; // 0..3
-    var steps = [renderPin, renderName, renderSemester, renderTheme];
+    var steps = [renderPin, renderPair, renderSemester, renderTheme];
 
     function applyThemePreview(id) { document.documentElement.setAttribute("data-theme", id); }
 
@@ -75,30 +95,86 @@
         var err = body.querySelector("#pinErr");
         if (!/^\d{4,}$/.test(state.pin)) { err.textContent = "Use at least 4 digits, numbers only."; return; }
         if (state.pin !== state.pin2) { err.textContent = "The two PINs don't match."; return; }
-        step = 1; renderName();
+        step = 1; renderPair();
       }, false));
       frame(body);
     }
 
-    // --- Step 2: Name ---
-    function renderName() {
+    // --- Step 2: Pair this device (Online Revamp §4.3) ---
+    //
+    // Two faces, chosen by whether a token is already stored: the code form, or
+    // a confirmation. The second is not a nicety — `Pairing.redeem` commits the
+    // token to `syncMeta` the moment the server answers, so a wizard abandoned
+    // after this step and reopened must recognise its own work rather than ask
+    // for a code that has already been consumed and cannot be redeemed twice.
+    function renderPair() {
       var body = el(
         '<div>' +
           '<div class="wiz-step-label">Step 2 of 4</div>' +
-          '<h1 class="wiz-title">Who is this for?</h1>' +
-          '<p class="wiz-help">Your child\'s first name or nickname. It shows up around the app.</p>' +
-          '<div class="field"><label for="name">Name</label>' +
-            '<input id="name" type="text" autocomplete="off" maxlength="24" value="' + escapeAttr(state.name) + '">' +
-            '<div class="err-text" id="nameErr"></div></div>' +
+          '<h1 class="wiz-title">Link this device</h1>' +
+          '<div id="pairBody"><p class="wiz-help">Checking…</p></div>' +
         '</div>'
       );
-      body.appendChild(actions(true, "Continue", function () {
-        state.name = body.querySelector("#name").value.trim();
-        var err = body.querySelector("#nameErr");
-        if (!state.name) { err.textContent = "Please enter a name."; return; }
-        step = 2; renderSemester();
-      }, true));
       frame(body);
+
+      var slot = body.querySelector("#pairBody");
+
+      g.Pairing.getStatus().then(function (meta) {
+        if (meta && meta.deviceToken) return renderPaired(meta.childName);
+        renderForm();
+      }).catch(function () { renderForm(); });
+
+      function advance() { step = 2; renderSemester(); }
+
+      function renderPaired(childName) {
+        state.name = childName || state.name;
+        slot.innerHTML = "";
+        slot.appendChild(el(
+          '<p class="wiz-help">This device is linked to <strong>' + escapeHtml(state.name) + '</strong>. ' +
+          'Their plan will appear as soon as setup is finished.</p>'
+        ));
+        body.appendChild(actions(true, "Continue", advance, true));
+      }
+
+      function renderForm() {
+        slot.innerHTML = "";
+        slot.appendChild(el(
+          '<p class="wiz-help">In the Management App, open <strong>Settings → Devices</strong>, ' +
+          'pick this child and press <strong>Pair a device</strong>. Type the 8-character code it ' +
+          'shows here — it is good for 15 minutes and works once.</p>'
+        ));
+        slot.appendChild(el(
+          '<div class="field"><label for="code">Pairing code</label>' +
+            '<input id="code" type="text" autocomplete="off" autocapitalize="characters" ' +
+              'spellcheck="false" maxlength="12" inputmode="text">' +
+            '<div class="err-text" id="codeErr"></div></div>'
+        ));
+        slot.appendChild(el(
+          '<div class="field"><label for="devLabel">Name this device (optional)</label>' +
+            '<input id="devLabel" type="text" autocomplete="off" maxlength="40" ' +
+              'placeholder="e.g. Ellie\'s tablet"></div>'
+        ));
+
+        var bar = actions(true, "Link device", function () {
+          var err = slot.querySelector("#codeErr");
+          var button = bar.querySelector("button:last-child");
+          err.textContent = "";
+          button.disabled = true;
+          g.Pairing.redeem(slot.querySelector("#code").value, slot.querySelector("#devLabel").value)
+            .then(function (res) {
+              button.disabled = false;
+              if (!res.ok) { err.textContent = res.message; return; }
+              // Straight on rather than pausing to confirm: the name coming
+              // back is the confirmation, and it is on the next screen.
+              state.name = res.childName || state.name;
+              advance();
+            });
+        }, true);
+        body.appendChild(bar);
+
+        var codeInput = slot.querySelector("#code");
+        if (codeInput) codeInput.focus();
+      }
     }
 
     // --- Step 3: Semester label ---
@@ -155,11 +231,16 @@
     }
 
     function finish() {
-      Promise.all([
-        g.DB.putSingleton("child", { name: state.name, pin: state.pin }),
-        g.DB.putSingleton("semester", { label: state.semester }),
-        g.DB.putSingleton("themeSettings", { theme: state.theme })
-      ]).then(function () {
+      // Merged, not replaced: the pairing step has already written `name` onto
+      // this record (pairing.js), and a blind put would be writing the same
+      // value back over a record that may have gained fields since.
+      g.DB.getSingleton("child").then(function (child) {
+        return Promise.all([
+          g.DB.putSingleton("child", Object.assign({}, child, { name: state.name, pin: state.pin })),
+          g.DB.putSingleton("semester", { label: state.semester }),
+          g.DB.putSingleton("themeSettings", { theme: state.theme })
+        ]);
+      }).then(function () {
         // Best-effort request to survive browser storage eviction (TDS §4).
         if (navigator.storage && navigator.storage.persist) {
           try { navigator.storage.persist(); } catch (e) { /* denial not surfaced */ }
@@ -172,6 +253,10 @@
   }
 
   function escapeAttr(s) { return String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;"); }
+  // The child's name reaches this screen from the server (§4.3 step 4), so it
+  // is escaped on the way into markup like any other value the device did not
+  // author itself.
+  function escapeHtml(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 
   g.Wizard = { run: run, THEMES: THEMES };
 })(window);
