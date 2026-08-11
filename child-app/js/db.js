@@ -6,44 +6,46 @@
 //   overrides:  plannerMeta                       (keyPath "id")
 // M2 stores, added additively at version 2 (TDS_Slice_M2 §2):
 //   singleton:    streak                          (fixed out-of-line key, same pattern as child/semester/themeSettings)
-//   keyed:        activityRecords (keyPath "activityId"), rewardLedgerSnapshot (keyPath "categoryId"),
-//                 rewardLedgerTail (keyPath "id", autoIncrement — in-line, so the generated key is
-//                 written back onto the stored row itself, per TDS §2's `{ id, type, categoryId, ... }` shape)
+//   keyed:        activityRecords (keyPath "activityId"), and the two-store reward
+//                 ledger — rewardLedgerSnapshot/rewardLedgerTail — both dropped at
+//                 version 7 below.
 // Online Revamp Phase 2 (§12) adds one more singleton at version 3:
 //   singleton:    syncMeta (device token, childId, childName — §4.3 step 5)
 // Online Revamp Phase 3B adds the read side of §8.1 at version 4:
 //   keyed:        assignments (keyPath "id") — the /api/plan cache
 // Online Revamp Phase 4 adds the write side at version 5:
 //   keyed:        outbox (keyPath "seq", autoIncrement) — queued uploads
-// Phase 5 deleted the packet import (§11), so nothing writes activities/chores/
-// events any more. They are not dropped here: removing an object store is a
-// DB_VERSION bump with an upgrade path, and it belongs with the rest of the
-// §8.1/§8.2 collapse rather than bolted onto a deletion commit. plannerMeta is
-// a different case and is still live — it is where this device's own overrides
-// are written, and the outbox uploads a copy rather than replacing it.
-// No dailyPlan store — the day is derived at render time and never persisted.
+// Version 6 adds `rejections` (§5.6).
+// Version 7 completes the ledger half of §8.1: rewardLedgerSnapshot and
+//   rewardLedgerTail are migrated into a single append-only `rewardEntries`
+//   store (keyPath "id") and then deleted. See migrateLedgerToEntries below;
+//   the balance math that used to fold them lives in completion-core.js.
 //
-// §8.1 also names a `rewardEntries` store replacing rewardLedgerSnapshot/Tail.
-// That is a Phase 5 collapse, not Phase 4 work: the local ledger is read by
-// reward.js, export.js, settings.js and wipe.js, and swapping its shape in the
-// same change that adds the upload path would put two unrelated risks in one
-// commit. Phase 4 uploads from the existing ledger's write sites instead — see
-// outbox.js's enqueueReward.
+// Phase 5 deleted the packet import (§11), so nothing writes activities/chores/
+// events any more. They are still not dropped: they belong to the §8.2 planner
+// collapse, which §12 gates on phases 3-4 having carried live days, and that
+// gate is not met yet. plannerMeta is a different case and is still live — it is
+// where this device's own overrides are written, and the outbox uploads a copy
+// rather than replacing it.
+// No dailyPlan store — the day is derived at render time and never persisted.
 
 (function (g) {
   "use strict";
 
   var DB_NAME = "childAppDB";
-  var DB_VERSION = 6;
+  var DB_VERSION = 7;
   var SINGLETONS = ["child", "semester", "themeSettings", "streak", "syncMeta"];
   var KEYED = ["activities", "chores", "events", "plannerMeta", "assignments"];
   var KEYED_CUSTOM = [
     { name: "activityRecords", keyPath: "activityId" },
-    { name: "rewardLedgerSnapshot", keyPath: "categoryId" },
-    { name: "rewardLedgerTail", keyPath: "id", autoIncrement: true },
-    // In-line autoIncrement, same pattern as rewardLedgerTail: the generated
-    // key is written back onto the stored row, so a drained row carries the
-    // `seq` the drain has to delete without a second lookup.
+    // §3.4/§8.1's append-only ledger. Keyed on the client-minted entry id, which
+    // is the same id the outbox uploads — so the local row and the server row
+    // are one row, and a replayed append collides on the primary key at both
+    // ends. Never updated, never deleted; a correction is a compensating entry.
+    { name: "rewardEntries", keyPath: "id" },
+    // In-line autoIncrement: the generated key is written back onto the stored
+    // row, so a drained row carries the `seq` the drain has to delete without a
+    // second lookup.
     { name: "outbox", keyPath: "seq", autoIncrement: true },
     // Rows the server accepted the request for but refused (§5.6's per-row
     // `rejected` array). Its own store rather than a field on syncMeta, for the
@@ -56,6 +58,89 @@
   ];
 
   var _db = null;
+
+  // Local midnight for a YYYY-MM-DD string, as ms. Used only to give a migrated
+  // ledger entry an `earnedAt` — the old rows carry a calendar date and an
+  // autoincrement key, never a clock reading.
+  function dayStartMs(dateStr) {
+    if (!dateStr) return 0;
+    var p = String(dateStr).split("-").map(Number);
+    if (p.length !== 3 || p.some(isNaN)) return 0;
+    return new Date(p[0], p[1] - 1, p[2]).getTime();
+  }
+
+  // v7 (§8.1): fold the two-store ledger into `rewardEntries` and drop it.
+  //
+  // Runs inside the versionchange transaction, so the old stores are deleted
+  // only after their contents have been rewritten — if anything throws, the
+  // whole upgrade aborts and the next open retries it against untouched data.
+  // That matters more here than anywhere else in this file: this is a child's
+  // reward balance, and §3.4's ledger is append-only precisely because a lost
+  // balance is not something a parent can reconstruct.
+  //
+  // Migrated rows are written locally and never enqueued. Entries appended
+  // before Phase 4 were never uploaded, and entries appended after it were
+  // uploaded already under a different minted id; enqueueing either now would
+  // double-count against an append-only server ledger. They carry `migrated:
+  // true` so a reader can tell them from rows whose id the server also knows.
+  function migrateLedgerToEntries(db, upgradeTx) {
+    var hasSnapshot = db.objectStoreNames.contains("rewardLedgerSnapshot");
+    var hasTail = db.objectStoreNames.contains("rewardLedgerTail");
+    if (!hasSnapshot && !hasTail) return;
+
+    var target = upgradeTx.objectStore("rewardEntries");
+    var snapshotReq = hasSnapshot ? upgradeTx.objectStore("rewardLedgerSnapshot").getAll() : null;
+    var tailReq = hasTail ? upgradeTx.objectStore("rewardLedgerTail").getAll() : null;
+
+    // Requests on one transaction complete in the order they were issued, so
+    // waiting on the later of the two is enough to have both results.
+    var last = tailReq || snapshotReq;
+    last.onsuccess = function () {
+      var snapshots = (snapshotReq && snapshotReq.result) || [];
+      var tail = ((tailReq && tailReq.result) || []).slice()
+        .sort(function (a, b) { return a.id - b.id; });
+
+      // A snapshot is every folded entry for its category collapsed into one
+      // number, with no way back to the rows it folded. It migrates as a single
+      // opening entry at the epoch — earlier than any real entry, which is the
+      // ordering the fold already gave it.
+      snapshots.forEach(function (s) {
+        if (!s || !s.categoryId) return;
+        target.put({
+          id: "migrated-opening-" + s.categoryId,
+          assignmentId: null,
+          category: s.categoryId,
+          amount: typeof s.balance === "number" ? s.balance : 0,
+          reason: "adjustment",
+          earnedAt: 0,
+          date: s.asOfDate || null,
+          migrated: true
+        });
+      });
+
+      tail.forEach(function (e) {
+        if (!e || !e.categoryId) return;
+        target.put({
+          id: "migrated-" + e.id,
+          assignmentId: e.sourceId || null,
+          category: e.categoryId,
+          // The old shape carried the sign in `type`; the new one carries it in
+          // `amount`. 'earn' and 'adjust' were already stored signed as intended.
+          amount: e.type === "spend" ? -e.amount : e.amount,
+          reason: e.type === "spend" ? "spend" : (e.type === "adjust" ? "adjustment" : "earned"),
+          // Ordering, not a real timestamp. Local midnight plus the old
+          // autoincrement key preserves the exact fold order these rows had
+          // without inventing precision the data never carried.
+          earnedAt: dayStartMs(e.date) + e.id,
+          date: e.date || null,
+          migrated: true
+        });
+      });
+
+      if (hasTail) db.deleteObjectStore("rewardLedgerTail");
+      if (hasSnapshot) db.deleteObjectStore("rewardLedgerSnapshot");
+    };
+  }
 
   function open() {
     return new Promise(function (resolve, reject) {
@@ -74,6 +159,9 @@
             db.createObjectStore(spec.name, { keyPath: spec.keyPath, autoIncrement: !!spec.autoIncrement });
           }
         });
+        // After the creates: the migration writes into `rewardEntries`, which
+        // the loop above has just made on any database old enough to need it.
+        migrateLedgerToEntries(db, req.transaction);
       };
       req.onsuccess = function () { _db = req.result; resolve(_db); };
       req.onerror = function () { reject(req.error); };

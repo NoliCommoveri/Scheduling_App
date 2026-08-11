@@ -54,10 +54,13 @@
     return { ok: true, date: raw };
   }
 
-  // TDS §6: the exact tail-entry shape a repair adjust writes — identical
-  // shape to a spend entry but type 'adjust', amount signed.
-  function buildAdjustEntry(categoryId, amount, today) {
-    return { type: "adjust", categoryId: categoryId, amount: amount, date: today };
+  // TDS §6: the entry a repair adjust writes — the same §3.4 shape as an earn or
+  // a spend, with reason 'adjustment' and an amount that is already signed by
+  // validateAdjustAmount (a correction may go either way). Uploaded under that
+  // same reason so a parent reading /api/rewards can tell a repair apart from
+  // work the child actually did.
+  function buildAdjustEntry(id, categoryId, amount, today, at) {
+    return g.CompletionCore.buildEntry(id, categoryId, amount, "adjustment", today, at, null);
   }
 
   g.SettingsCore = {

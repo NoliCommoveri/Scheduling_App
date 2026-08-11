@@ -22,6 +22,18 @@ partway left rows live with no handle on them and duplicated the lot on retry;
 same §5.6 reason completions already had; and §5.6's recorded client-side gap is closed —
 `outbox.js` now reads the `rejected` array and surfaces it.
 
+**Amended a third time 2026-08-11**, authorized in-session, recording the **local ledger
+collapse** — the last part of §12's Phase 5 to be built, and the ledger half of what §14
+had bundled as one deferred item. `rewardLedgerSnapshot` and `rewardLedgerTail` are gone;
+IndexedDB v7 migrates both into the single append-only `rewardEntries` store §8.1 names, and
+the N=100 fold — repealed for D1 in §3.4 and never repealed for the device until now — is
+deleted rather than ported. Two consequences worth naming, because neither was in the
+original text: a local entry now carries the *same* client-minted id the outbox uploads, so
+one earning is one row at both ends rather than two constructions that happen to agree; and
+§14 gains an open item recording that the device's zero-floored balance and §3.4's flat
+`SUM` disagree in a case nothing reconciles. The §8.2 planner shim is untouched and stays
+deferred — §12 gates it on live days.
+
 **Applies to:** Both apps, the Worker, and the interchange layer between them.
 **Supersedes:** `TDS_Slice_D1_Sync_Management_App.md` (the mirror becomes a
 curriculum-only backup), `Interchange_Contract.md` (replaced by §5's API),
@@ -672,14 +684,18 @@ Balance display reads the local cache; the server's `SUM` is authoritative on re
 
 ## 8. Child App
 
-### 8.1 IndexedDB v3
+### 8.1 IndexedDB
+
+*(Headed "v3" when written; the store list below is what matters, and the version reached
+**v7** on 2026-08-11 with the ledger collapse. Versions landed one phase at a time: v3
+`syncMeta`, v4 `assignments`, v5 `outbox`, v6 `rejections`, v7 `rewardEntries`.)*
 
 | Dropped | Added |
 |---|---|
 | `activities`, `chores`, `events` | `assignments` (keyPath `id`) |
 | `plannerMeta` | — folded into assignment columns |
 | `activityRecords` | — folded into `status`/`completed_at`/`grade` |
-| `rewardLedgerSnapshot`, `rewardLedgerTail` | `rewardEntries` (keyPath `id`) |
+| `rewardLedgerSnapshot`, `rewardLedgerTail` | `rewardEntries` (keyPath `id`) — **done, v7.** The key is the client-minted entry id the outbox uploads (§5.5), so the local row and the server row are one row. Balance is `CompletionCore.balanceOf`, never stored. Migrated, not dropped: the v7 upgrade rewrites the snapshot as a single opening entry and each tail row as a signed entry, inside the versionchange transaction, so an interrupted upgrade retries against untouched data. |
 | — | `outbox` (autoIncrement) |
 | — | `rejections` (autoIncrement) — §5.6's refused writes, kept to be shown |
 | — | `syncMeta` singleton: device token, `childId`, `lastVersion` |
@@ -907,9 +923,25 @@ throughout.
   missing is the field on the tier, and a decision about whether it is per tier or per
   activity. Until then §7 describes a path that carries a constant. The one way a row gets
   a real amount today is a parent editing it by hand in the Assignments view.
-- **Collapsing the §8.2 shim and the local ledger.** `assignment-core.js` still reassembles
-  the pre-revamp `{ activities, chores, events, meta }` shape, `activities`/`chores`/
-  `events` survive as empty stores, and `rewardLedgerSnapshot`/`rewardLedgerTail` still run
-  the N=100 fold locally — repealed for D1 (§3.4), not yet for IndexedDB. §8.1 names
-  `rewardEntries` as their replacement. All of it is one coherent Child App change and
-  none of it is on a critical path.
+- **Collapsing the §8.2 shim.** `assignment-core.js` still reassembles the pre-revamp
+  `{ activities, chores, events, meta }` shape, and `activities`/`chores`/`events` survive
+  as empty stores, because the planner is still written against that shape. `plannerMeta`
+  likewise remains a store rather than folding into the child-owned columns. This is a
+  rewrite of `planner-ui.js` — the largest file in the Child App — not a tidy-up, it is not
+  on a critical path, and §12 gates it on phases 3–4 having carried live days, which as of
+  2026-08-11 they have not.
+
+  > The **local ledger** half of this item, with which it was originally bundled, is
+  > **done** — see the third amendment at the head of this document. What is left here is
+  > the planner shim alone.
+
+- **Whether a reward balance floors at zero.** The device folds a category's entries with a
+  per-step zero floor, so an adjustment large enough to take a category negative leaves the
+  child at `0` and the next earn counts up from there. §3.4's server balance is a flat
+  `SUM(amount)` and would report the negative. Both behaviours are defensible — the floor
+  implements the locked "no negative or owed state" rule (Roadmap §8), the sum is what an
+  append-only ledger literally says — and nothing reconciles them, so §7's "the server's
+  `SUM` is authoritative on reconnect" currently describes an intent no code implements.
+  The divergence is latent: it needs an adjustment bigger than a balance to become visible,
+  and only the parent's repair form can write one. Recorded rather than fixed because
+  choosing an end is a product decision, not a refactor. It predates the ledger collapse.

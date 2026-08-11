@@ -16,23 +16,21 @@
   // Every enqueue is a no-op on an unpaired device or a packet-imported item
   // (outbox.js decides which), so no caller here has to know whether this
   // device is online, linked, or reading from a file.
-  function queueUpload(item, record, earn) {
+  //
+  // The earn entry is handed over as-is rather than rebuilt: since the §8.1
+  // collapse the row stored in `rewardEntries` is already in the server's shape,
+  // carrying the id that makes the append idempotent (§5.5). Uploading a
+  // reconstruction would give the server a different id for the same earning.
+  function queueUpload(item, record, earn, at) {
     if (!g.Outbox) return Promise.resolve();
-    var at = Date.now();
     var fields = { status: record.status, completedAt: at };
     if (typeof record.grade === "number") fields.grade = record.grade;
     return g.Outbox.enqueueCompletion(item.id, fields).then(function () {
-      return g.Outbox.enqueueReward({
-        assignmentId: item.id,
-        category: earn.categoryId,
-        amount: earn.amount,
-        reason: "earned",
-        earnedAt: at
-      });
+      return g.Outbox.enqueueReward(earn);
     });
   }
 
-  // TDS §9: "Module 4 writes activityRecords and rewardLedgerTail, and triggers
+  // TDS §9: "Module 4 writes activityRecords and the reward ledger, and triggers
   // Module 7's live check." Streak (Module 7) is a later build phase; until it
   // defines Streak.recheckToday, this is a no-op — Module 4 never has to change
   // when Module 7 lands. Always returns a promise so the caller's own promise
@@ -43,26 +41,14 @@
     return Promise.resolve();
   }
 
-  // Fold check after an earn append (TDS §4): only folds once this category's
-  // tail reaches FOLD_THRESHOLD entries. Full-store read + JS filter by
-  // categoryId, no secondary index — matches Architecture Evaluation §6's
-  // no-indexing stance at M1/M2 volumes.
-  function foldIfDue(categoryId, today) {
-    return Promise.all([g.DB.getAll("rewardLedgerTail"), g.DB.get("rewardLedgerSnapshot", categoryId)])
-      .then(function (r) {
-        var tailForCategory = r[0].filter(function (e) { return e.categoryId === categoryId; });
-        if (tailForCategory.length < C.FOLD_THRESHOLD) return;
-        var plan = C.foldPlan(categoryId, r[1], tailForCategory, today);
-        return g.DB.put("rewardLedgerSnapshot", plan.snapshot)
-          .then(function () { return g.DB.delMany("rewardLedgerTail", plan.deleteIds); });
-      });
-  }
-
   // TDS §3: idempotency guard first (double-tap race — an already-resolved item
   // is a full no-op, never a double-earn), then grade validation gated on
   // capturesGrade (chores have no such field, treated as absent-equals-false,
-  // SRS Module 4 FR-2), then the write path in order: record, earn entry, fold
-  // check, streak trigger.
+  // SRS Module 4 FR-2), then the write path in order: record, earn entry,
+  // streak trigger.
+  //
+  // The fold check that used to sit between the earn and the upload is gone with
+  // the store it maintained (§8.1) — an append is now the whole of the write.
   function completeItem(item, rawGrade) {
     return g.DB.get("activityRecords", item.id).then(function (existing) {
       if (existing) return { ok: true, alreadyDone: true };
@@ -75,17 +61,19 @@
       }
 
       var today = g.DateUtil.today();
+      var at = Date.now();
       var record = C.buildActivityRecord(item.id, today, grade);
-      var earn = C.buildEarnEntry(item.rewardCategoryId, today, item.id, item.rewardAmount);
+      // Minted before the row is stored, let alone sent, so the local entry and
+      // the uploaded one are the same entry (§5.5).
+      var earn = C.buildEarnEntry(C.mintEntryId(), item.rewardCategoryId, today, item.id, item.rewardAmount, at);
 
       return g.DB.put("activityRecords", record)
-        .then(function () { return g.DB.put("rewardLedgerTail", earn); })
-        .then(function () { return foldIfDue(item.rewardCategoryId, today); })
-        .then(function () { return queueUpload(item, record, earn); })
+        .then(function () { return g.DB.put("rewardEntries", earn); })
+        .then(function () { return queueUpload(item, record, earn, at); })
         .then(notifyStreak)
         .then(function () { return { ok: true, alreadyDone: false }; });
     });
   }
 
-  g.Completion = { completeItem: completeItem, foldIfDue: foldIfDue };
+  g.Completion = { completeItem: completeItem };
 })(typeof window !== "undefined" ? window : globalThis);
