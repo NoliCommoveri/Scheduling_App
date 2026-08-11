@@ -306,8 +306,11 @@ const Sync = (() => {
     if (enabled) scheduleDrain(0);
   }
 
+  // `api` is exported so migrations.js can call §5.3a with the parent
+  // credential without storing or re-deriving the token a second time. It is
+  // the only sanctioned way to reach a parent endpoint from another module.
   return {
     init, drain, subscribe, getState, getConfig, setToken,
-    restoreFromCloud, status, countOutbox,
+    restoreFromCloud, status, countOutbox, api,
   };
 })();
