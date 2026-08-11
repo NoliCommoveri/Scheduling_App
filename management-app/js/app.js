@@ -21,6 +21,7 @@ const App = (() => {
     '#/events': () => Events.render(root),
     '#/pacing': () => Pacing.render(root),
     '#/packet': () => Packet.render(root),
+    '#/reporting': () => Reporting.render(root),
     '#/settings': () => Settings.renderSettingsPage(root),
   };
 
@@ -65,6 +66,7 @@ const App = (() => {
       <a href="#/events">Events</a>
       <a href="#/pacing">Pacing</a>
       <a href="#/packet">Assign</a>
+      <a href="#/reporting">Reporting</a>
       <a href="#/settings">Settings</a>
     `;
     startRouter();

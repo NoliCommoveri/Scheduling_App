@@ -18,6 +18,28 @@
       });
   }
 
+  // The single write point for the `streak` singleton (FR-7), now also the
+  // single upload point (Online Revamp §3.5).
+  //
+  // `longestStreak` is new and exists because §3.5 has a column for it that
+  // only this device can fill — the server stores the result so reporting can
+  // read it without recomputing, and there is nowhere else the high-water mark
+  // could come from. Nothing in the Child App reads it; it is carried, not
+  // used. Derived rather than stored independently, so a device that upgrades
+  // mid-semester starts from its current streak instead of zero.
+  function write(prev, next) {
+    var current = Math.max(0, next.currentStreak || 0);
+    var record = {
+      currentStreak: current,
+      lastQualifyingDate: next.lastQualifyingDate || null,
+      longestStreak: Math.max((prev && prev.longestStreak) || 0, (prev && prev.currentStreak) || 0, current)
+    };
+    return g.DB.putSingleton("streak", record).then(function () {
+      if (!g.Outbox) return record;
+      return g.Outbox.enqueueStreak(record).then(function () { return record; });
+    });
+  }
+
   // FR-1: live, same-day increment. Called by Module 4/5 right after a write —
   // always re-evaluates *today* specifically, regardless of which date the
   // item that was just resolved actually belonged to.
@@ -27,7 +49,7 @@
       var status = C.dayStatus(ctx.activities, ctx.chores, ctx.meta, ctx.resolved, today);
       if (status !== "resolved") return; // FR-2: neutral/breaking never trigger a change
       if (ctx.streak.lastQualifyingDate === today) return; // already counted today
-      return g.DB.putSingleton("streak", {
+      return write(ctx.streak, {
         currentStreak: ctx.streak.currentStreak + 1,
         lastQualifyingDate: today
       });
@@ -49,12 +71,14 @@
       while (d < today) {
         var status = C.dayStatus(ctx.activities, ctx.chores, ctx.meta, ctx.resolved, d);
         if (status === "breaking") {
-          return g.DB.putSingleton("streak", { currentStreak: 0, lastQualifyingDate: d });
+          // A reset keeps longestStreak — that is the point of a high-water
+          // mark, and write() derives it from the run being ended.
+          return write(ctx.streak, { currentStreak: 0, lastQualifyingDate: d });
         }
         d = g.DateUtil.addDays(d, 1);
       }
     });
   }
 
-  g.Streak = { recheckToday: recheckToday, reconcileOnOpen: reconcileOnOpen };
+  g.Streak = { recheckToday: recheckToday, reconcileOnOpen: reconcileOnOpen, write: write };
 })(typeof window !== "undefined" ? window : globalThis);

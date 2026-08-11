@@ -380,3 +380,91 @@ button.secondary {
   color: #555;
   margin: 0;
 }
+
+/* ---- Reporting (Module 10, Online Revamp §9) ---- */
+
+/* Overrides the global `form { flex-direction: column }` — child, from, to and
+   the button belong on one line, wrapping to a second on a narrow screen. */
+.report-controls {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+}
+
+.report-controls label {
+  margin: 0;
+  align-items: flex-start;
+}
+
+.report-controls .error {
+  flex-basis: 100%;
+}
+
+.report-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  list-style: none;
+  margin: 0.75rem 0 1.25rem;
+  padding: 0;
+}
+
+.report-tiles li {
+  flex: 1 1 7rem;
+  display: flex;
+  flex-direction: column;
+  padding: 0.5rem 0.75rem;
+  background: #fff;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+}
+
+.tile-value {
+  font-size: 1.5rem;
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+.tile-label {
+  font-size: 0.75rem;
+  color: #555;
+  text-transform: lowercase;
+}
+
+/* Detail tables run wide on a phone. Scrolling the table rather than the page
+   keeps the nav and the summary tiles where they were. */
+.report-table-wrap {
+  overflow-x: auto;
+  margin: 0.5rem 0 1.25rem;
+}
+
+.report-table-wrap table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.85rem;
+  background: #fff;
+}
+
+.report-table-wrap th,
+.report-table-wrap td {
+  padding: 0.35rem 0.6rem;
+  border-bottom: 1px solid var(--color-border);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.report-table-wrap th {
+  background: #efece7;
+  font-weight: 600;
+}
+
+.report-detail td:nth-child(3) {
+  white-space: normal;
+  min-width: 12rem;
+}
+
+.status-complete { color: var(--color-success); font-weight: 600; }
+.status-waived { color: #8a6d1f; }
+.status-pending { color: #555; }
+.status-rescinded { color: var(--color-error); text-decoration: line-through; }

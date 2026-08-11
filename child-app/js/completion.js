@@ -2,11 +2,35 @@
 // (Module 6-earn), wired to IndexedDB. TDS_Slice_M2 §3/§4/§9.
 // Mirrors the importer.js/merge-core.js split: this file owns DB access and the
 // cross-module trigger point; completion-core.js owns the pure record/fold math.
+//
+// Online Revamp Phase 4 (§5.5, §7): a completion now also queues an upload of
+// the child-owned columns and its reward entry. The local writes above are
+// unchanged and still happen first — the queue is a consequence of the write,
+// never a precondition for it (§8.4).
 
 (function (g) {
   "use strict";
 
   var C = g.CompletionCore;
+
+  // Every enqueue is a no-op on an unpaired device or a packet-imported item
+  // (outbox.js decides which), so no caller here has to know whether this
+  // device is online, linked, or reading from a file.
+  function queueUpload(item, record, earn) {
+    if (!g.Outbox) return Promise.resolve();
+    var at = Date.now();
+    var fields = { status: record.status, completedAt: at };
+    if (typeof record.grade === "number") fields.grade = record.grade;
+    return g.Outbox.enqueueCompletion(item.id, fields).then(function () {
+      return g.Outbox.enqueueReward({
+        assignmentId: item.id,
+        category: earn.categoryId,
+        amount: earn.amount,
+        reason: "earned",
+        earnedAt: at
+      });
+    });
+  }
 
   // TDS §9: "Module 4 writes activityRecords and rewardLedgerTail, and triggers
   // Module 7's live check." Streak (Module 7) is a later build phase; until it
@@ -52,11 +76,12 @@
 
       var today = g.DateUtil.today();
       var record = C.buildActivityRecord(item.id, today, grade);
-      var earn = C.buildEarnEntry(item.rewardCategoryId, today, item.id);
+      var earn = C.buildEarnEntry(item.rewardCategoryId, today, item.id, item.rewardAmount);
 
       return g.DB.put("activityRecords", record)
         .then(function () { return g.DB.put("rewardLedgerTail", earn); })
         .then(function () { return foldIfDue(item.rewardCategoryId, today); })
+        .then(function () { return queueUpload(item, record, earn); })
         .then(notifyStreak)
         .then(function () { return { ok: true, alreadyDone: false }; });
     });

@@ -28,6 +28,13 @@
         g.PlanSync.start(function () {
           g.Streak.reconcileOnOpen().then(function () { planner.reload(); });
         });
+
+        // Phase 4's other half (§5.5): anything this device did while it could
+        // not reach the server is queued in `outbox` and goes up now. Started
+        // after the planner is mounted and never awaited, same as the read
+        // path — a kid who opens the app to a dead network still gets their
+        // plan on screen, and the queue simply waits.
+        g.Outbox.start();
       });
   }
 

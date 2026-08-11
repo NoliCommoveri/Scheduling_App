@@ -27,9 +27,18 @@
     return rec;
   }
 
-  // TDS §3 step 2: the flat-earn tail entry, amount always 1 regardless of grade.
-  function buildEarnEntry(categoryId, today, sourceId) {
-    return { type: "earn", categoryId: categoryId, amount: 1, date: today, sourceId: sourceId };
+  // TDS §3 step 2: the flat-earn tail entry, amount independent of grade.
+  //
+  // `amount` is an optional override for the flat 1. Online Revamp §7 has the
+  // earned amount come from the assignment row's snapshotted `reward_amount`,
+  // so that a later edit to a tier cannot retroactively change what was already
+  // earned. The Management App has no per-tier amount to snapshot yet, so
+  // packet.js leaves that column NULL and every row falls through to the flat 1
+  // this module has always used — nothing changes today, and the day a parent
+  // can set an amount, this is already the path it travels.
+  function buildEarnEntry(categoryId, today, sourceId, amount) {
+    var value = typeof amount === "number" && isFinite(amount) ? amount : 1;
+    return { type: "earn", categoryId: categoryId, amount: value, date: today, sourceId: sourceId };
   }
 
   // Signed contribution of one tail entry (TDS §4). Only 'earn' is ever written

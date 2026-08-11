@@ -72,6 +72,11 @@
       rewardCategoryId: row.reward_category,
       receiptIndex: receiptIndexOf(row)
     };
+    // §7: the earned amount is the one snapshotted on the row, so a later edit
+    // to a tier never changes what was already earned. NULL today (packet.js
+    // has no per-tier amount to snapshot), which completion-core reads as the
+    // flat 1 the Child App has always used.
+    if (row.reward_amount != null) item.rewardAmount = row.reward_amount;
     // Optional fields are set only when present, never as empty strings: several
     // planner-ui branches key off presence (FR-8/FR-10/FR-12) and would render
     // an empty element for "".
@@ -99,6 +104,7 @@
       rewardCategoryId: row.reward_category,
       receiptIndex: receiptIndexOf(row)
     };
+    if (row.reward_amount != null) item.rewardAmount = row.reward_amount; // §7, see activityFrom
     if (p.notes) item.notes = p.notes;
     if (row.block_hint) item.blockHint = row.block_hint;
     return item;

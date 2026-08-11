@@ -13,24 +13,36 @@
 //   singleton:    syncMeta (device token, childId, childName — §4.3 step 5)
 // Online Revamp Phase 3B adds the read side of §8.1 at version 4:
 //   keyed:        assignments (keyPath "id") — the /api/plan cache
+// Online Revamp Phase 4 adds the write side at version 5:
+//   keyed:        outbox (keyPath "seq", autoIncrement) — queued uploads
 // The M1 stores it supersedes (activities/chores/events/plannerMeta) are NOT
 // dropped: §12 keeps file import as a fallback through Phase 4, and plannerMeta
-// is still where this device's own overrides live until the outbox exists.
-// `outbox` is deliberately absent — it belongs to Phase 4, which is the first
-// phase with anything to put in it; an empty store now would be dead schema.
+// is still where this device's own overrides live — Phase 4 uploads a copy of
+// each override, it does not stop writing the local one.
 // No dailyPlan store — the day is derived at render time and never persisted.
+//
+// §8.1 also names a `rewardEntries` store replacing rewardLedgerSnapshot/Tail.
+// That is a Phase 5 collapse, not Phase 4 work: the local ledger is read by
+// reward.js, export.js, settings.js and wipe.js, and swapping its shape in the
+// same change that adds the upload path would put two unrelated risks in one
+// commit. Phase 4 uploads from the existing ledger's write sites instead — see
+// outbox.js's enqueueReward.
 
 (function (g) {
   "use strict";
 
   var DB_NAME = "childAppDB";
-  var DB_VERSION = 4;
+  var DB_VERSION = 5;
   var SINGLETONS = ["child", "semester", "themeSettings", "streak", "syncMeta"];
   var KEYED = ["activities", "chores", "events", "plannerMeta", "assignments"];
   var KEYED_CUSTOM = [
     { name: "activityRecords", keyPath: "activityId" },
     { name: "rewardLedgerSnapshot", keyPath: "categoryId" },
-    { name: "rewardLedgerTail", keyPath: "id", autoIncrement: true }
+    { name: "rewardLedgerTail", keyPath: "id", autoIncrement: true },
+    // In-line autoIncrement, same pattern as rewardLedgerTail: the generated
+    // key is written back onto the stored row, so a drained row carries the
+    // `seq` the drain has to delete without a second lookup.
+    { name: "outbox", keyPath: "seq", autoIncrement: true }
   ];
 
   var _db = null;
@@ -197,6 +209,37 @@
     });
   }
 
+  // ---- outbox (§8.1, §8.4) ----
+  //
+  // The queue that makes a completion survive a dead network. A write commits
+  // locally and appends here in the caller's own promise chain; outbox.js
+  // drains it later. Nothing in the app awaits the drain — §III.A of CLAUDE.md:
+  // "Local writes never block on the network."
+
+  function outboxAdd(op) {
+    return tx(["outbox"], "readwrite").then(function (t) {
+      t.objectStore("outbox").add(op);
+      return txDone(t);
+    });
+  }
+
+  function outboxAll() {
+    return getAll("outbox");
+  }
+
+  function outboxCount() {
+    return tx(["outbox"], "readonly").then(function (t) {
+      return reqToPromise(t.objectStore("outbox").count());
+    });
+  }
+
+  // Delete only the rows a request actually carried, and only after a 2xx.
+  // A dropped response replays them, which every §5.5 write is idempotent
+  // against — that is the whole reason the ids are minted before the send.
+  function outboxDelete(seqs) {
+    return delMany("outbox", seqs);
+  }
+
   // Read/merge/write a single plannerMeta field, leaving other fields intact.
   function setMeta(id, patch) {
     return get("plannerMeta", id).then(function (existing) {
@@ -233,6 +276,10 @@
     putMany: putMany,
     applyMerge: applyMerge,
     applyPlan: applyPlan,
+    outboxAdd: outboxAdd,
+    outboxAll: outboxAll,
+    outboxCount: outboxCount,
+    outboxDelete: outboxDelete,
     loadState: loadState,
     loadLocalState: loadLocalState,
     setMeta: setMeta,
