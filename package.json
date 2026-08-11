@@ -1,7 +1,11 @@
 {
   "name": "scheduling-app",
   "private": true,
-  "description": "Deploy tooling for the Management App's Cloudflare Worker. Neither app needs any of this at runtime — both are self-contained vanilla JS with no build step (CLAUDE.md §X). This exists only to pin Wrangler so git-connected deploys are reproducible.",
+  "type": "module",
+  "description": "Deploy tooling and tests. Neither app needs any of this at runtime — both are self-contained vanilla JS with no build step (CLAUDE.md §X). This pins Wrangler so git-connected deploys are reproducible, and declares the ESM the Worker has always been written in so `node --test` can load it.",
+  "scripts": {
+    "test": "node --test \"tests/**/*.test.js\""
+  },
   "devDependencies": {
     "wrangler": "^4.20.0"
   }

@@ -12,6 +12,7 @@
 .github/
 docs/
 node_modules/
+tests/
 
 # The API's own source. Bundled into the Worker by `main`, never served.
 management-app/worker/

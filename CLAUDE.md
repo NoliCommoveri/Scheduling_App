@@ -57,16 +57,24 @@ Two applications, one shared database, no shared runtime code:
 ├── package.json            (pins Wrangler for git-connected deploys; not app runtime)
 │
 ├── migrations/             (NNNN_description.sql — forward-only, applied in-browser)
+├── tests/                  (node --test; `npm test`. No runtime dependency of either app)
 │
 ├── child-app/              (PWA: index.html, js/, css/, icons/, manifest.json, sw.js)
 ├── management-app/
 │   ├── index.html, js/, styles/
-│   └── worker/             (index.js, migrations.js — the API; never served as an asset)
+│   └── worker/             (index.js, migrations.js, validation.js — the API;
+│                            never served as an asset)
 │
 └── docs/                   (TDS slices, SRS modules, roadmap)
 ```
 
-`fixtures/` and `Interchange_Contract.md` are **legacy** — artifacts of the packet/CSV era, retained only until the revamp's Phase 5 deletion. Do not build against them.
+`tests/` covers the pure layers only — `worker/validation.js` and the Child App's
+`*-core.js` files. Those were written DOM-free and IO-free precisely so they could be
+exercised directly; everything above them still needs the manual §13 acceptance checks.
+Adding a directory of anything non-public also means adding it to `.assetsignore` in the
+same commit — the assets directory is the repo root.
+
+`Interchange_Contract.md` is **legacy** — an artifact of the packet/CSV era, kept as a historical record of a contract nothing implements any more. Do not build against it. `fixtures/` was deleted in Phase 5, along with `management-app/worker/schema.sql`, whose header still told an operator to run `wrangler d1 execute` or paste DDL into the D1 console — the one thing §III.D says is never acceptable.
 
 ---
 
@@ -244,7 +252,7 @@ Ask explicitly, list the candidate readings, state which you are proceeding with
 | `management-app/DEPLOY.md` | Cloudflare setup. |
 | `docs/SRS_*.md` | Feature specs. Current except the retired modules named in §II.3. |
 | `docs/Roadmap_Schedule_App.md` | Milestone sequencing. |
-| `Interchange_Contract.md`, `fixtures/` | **Legacy.** Historical record only. |
+| `Interchange_Contract.md` | **Legacy.** Historical record only; `fixtures/` and `worker/schema.sql` are deleted. |
 
 ---
 
