@@ -11,11 +11,20 @@ name = "scheduling-app"
 main = "./management-app/worker/index.js"
 compatibility_date = "2025-04-01"
 
-# Scoped to management-app/, so child-app/, docs/, fixtures/ and .git/ are never
-# uploaded. The Child App keeps its own GitHub Pages deployment, untouched.
-# `.assetsignore` inside that directory keeps worker/ out of the public bundle.
+# Widened from ./management-app to the repo root so the Child App is served
+# same-origin with the API (TDS_Slice_Online_Revamp.md §10) — its relative
+# fetch("/api/pair") cannot resolve from a GitHub Pages origin, so pairing
+# (Phase 2) and the planner's /api/plan reads (Phase 3) both require this.
+#
+# Widening means everything not excluded becomes publicly downloadable, so
+# `.assetsignore` AT THE REPO ROOT is now load-bearing rather than a tidiness
+# measure: it is the only thing keeping docs/, migrations/, the Worker source
+# and this file out of the public bundle. Wrangler reads `.assetsignore` from
+# the assets directory, so the root copy is the one that counts — the old
+# management-app/.assetsignore was deleted rather than left to look active.
+# Acceptance check §13.10 is the test for this.
 [assets]
-directory = "./management-app"
+directory = "./"
 binding = "ASSETS"
 
 [[d1_databases]]

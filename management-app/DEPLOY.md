@@ -3,14 +3,15 @@
 One-time setup, ~10 minutes. Everything here stays inside Cloudflare's free tier.
 
 > **Partially superseded — 2026-08-10.** `docs/TDS_Slice_Online_Revamp.md` makes D1 the
-> system of record and puts both apps behind one Worker. Two things in this guide change:
+> system of record and puts both apps behind one Worker. Two things in this guide changed:
 >
 > - **Step 3 no longer touches the D1 console.** *(Done — Revamp Phase 0.)* Schema arrives
 >   as numbered files in `/migrations`, applied by clicking **Apply** in Settings → Database
 >   or at `/admin/migrations`. No console, no CLI. See Revamp §3.7.
-> - **`[assets] directory` widens to `./`** so the Child App is served from the same origin,
->   and a repo-root `.assetsignore` becomes load-bearing. *(Still pending — needed at Phase 3,
->   when the Child App starts calling the API.)* See Revamp §10.
+> - **`[assets] directory` widened to `./`** so the Child App is served from the same origin,
+>   with a repo-root `.assetsignore` holding everything non-public back. *(Done — Phase 3
+>   prep.)* See Revamp §10 and **Part C** below, which is the one-time move you have to
+>   do by hand.
 >
 > Everything else below — the git connection, the repo-root `wrangler.toml`, the
 > `SYNC_TOKEN` secret, the troubleshooting section — is unchanged and still correct.
@@ -169,13 +170,21 @@ must sit at the repository root**, because a git-connected build looks for it th
 It is the one file in this project whose location Cloudflare dictates rather than
 `CLAUDE.md` §I.B.
 
-What gets *deployed* is still scoped by that config, not by the connection.
-`[assets] directory = "./management-app"` means only that folder is uploaded —
-`child-app/`, `docs/`, `fixtures/`, and `.git/` never are. The Child App's GitHub
-Pages deployment is untouched.
+What gets *deployed* is still scoped by that config, not by the connection — but
+that scope is now the whole repository. `[assets] directory = "./"` uploads
+everything, because both apps have to be served from this one origin, so the
+**repo-root `.assetsignore` is the only thing keeping the rest private**:
+`docs/`, `fixtures/`, `migrations/`, `.git/`, `management-app/worker/`,
+`wrangler.toml`, and every `*.md` are excluded there.
 
-`management-app/.assetsignore` then keeps `worker/` and this guide out of the
-public bundle, so the Worker source is not served as a downloadable file.
+That file is a security boundary now, not housekeeping. **Adding a directory of
+anything non-public to the repo means adding it to `.assetsignore` in the same
+commit**, or it is downloadable by anyone who guesses the URL. Revamp acceptance
+check §13.10 is the test — see "Verifying the asset boundary" below.
+
+`migrations/` is excluded from *assets* yet still reaches the Worker: the
+`[[rules]]` Text glob in `wrangler.toml` bundles each `.sql` file into the script
+itself (Revamp §3.7.2), which is what lets the in-browser runner apply them.
 
 `SYNC_TOKEN` is a Worker secret, so it lives on the Worker, not in the repo, and
 survives every Git-triggered deploy.
@@ -195,13 +204,23 @@ Only if you want it. B1 covers the whole lifecycle on its own.
 ---
 
 Either way, Cloudflare prints your URL. It is built from the **Worker** name in
-`wrangler.toml` (`name = "homeschool-management"`), which is a separate thing from
-the D1 database name — so it reads
-`https://homeschool-management.<subdomain>.workers.dev`. Change that `name` if you
-want a different URL; it does not affect the database binding.
+`wrangler.toml` (`name = "scheduling-app"`), so it reads
+`https://scheduling-app.<subdomain>.workers.dev`. Change that `name` if you want a
+different URL; it does not affect the database binding. The D1 database happens to
+be named `scheduling-app` too, but the two are unrelated settings — renaming the
+Worker does not touch the database.
 
-That URL serves the management app *and* its backup API from the same origin — no
-CORS, no second deployment.
+That one URL now serves **both apps** and the API from the same origin — no CORS,
+no second deployment:
+
+| URL | What it is |
+|---|---|
+| `/` | Redirects to the Management App |
+| `/management-app/` | The Management App |
+| `/kid` | Redirects to the Child App — the short URL to type on a child's device |
+| `/child-app/` | The Child App |
+| `/api/…` | The API, for both |
+| `/admin/migrations` | The no-JS migration fallback |
 
 ## 6. Connect the app
 
@@ -211,6 +230,63 @@ CORS, no second deployment.
 
 You should see `Connected. Cloud holds N record(s).` The status line then tracks
 every change: `Up to date. Last synced: …`, or a pending count when offline.
+
+---
+
+## Part C — moving the Child App off GitHub Pages
+
+One time only, after the first deploy that includes the widened `[assets]`
+directory. Until this is done there are two live copies of the Child App: the new
+one at `/child-app/`, and the old GitHub Pages one, which cannot reach the API and
+will keep serving itself out of its own service worker cache indefinitely.
+
+**1. Check the new copy works.** Open `<your-worker-url>/kid`. It should redirect
+to `/child-app/` and load.
+
+**2. Turn off GitHub Pages.** On GitHub: **Settings → Pages**, set Source to
+**None**. This is deliberately step 2, not step 1 — confirm the replacement is up
+before removing the thing it replaces.
+
+**3. Re-add the home-screen icon on each child's device.** The old icon points at
+`github.io` and will not update itself, because a home-screen PWA keeps the origin
+it was installed from.
+
+- Delete the old icon.
+- Open `<your-worker-url>/kid` in the browser.
+- **Add to Home Screen.**
+
+**4. If a device still shows the old app,** its old service worker is still
+serving from cache on the old origin. Open the `github.io` URL directly in a
+browser tab (not the icon), and clear site data for it: on Android Chrome, tap the
+padlock → **Permissions/Site settings → Delete data**. Once Pages is off (step 2)
+this resolves on its own the next time the cache is evicted, but clearing is
+faster.
+
+> **Pairing has to be redone** on each child device if it was ever attempted from
+> the GitHub Pages copy — a device token stored there belongs to a different
+> origin's IndexedDB and does not travel. Mint a fresh pairing code from
+> **Settings → Devices** in the Management App.
+
+---
+
+## Verifying the asset boundary
+
+The assets directory is the whole repository now, so it is worth confirming by
+hand that `.assetsignore` is actually holding. **In a browser tab**, visit each of
+these on your deployed origin — all four must show the app's 404, not a file:
+
+| URL | Must not be downloadable |
+|---|---|
+| `/wrangler.toml` | Config |
+| `/management-app/worker/index.js` | The API's source |
+| `/migrations/0001_online_revamp_init.sql` | Schema |
+| `/docs/TDS_Slice_Online_Revamp.md` | Design docs |
+
+*(This is Revamp acceptance check §13.10. The slice writes it as a `curl`
+one-liner; the address bar tests exactly the same thing, and there is no CLI in
+this project — see CLAUDE.md §0.)*
+
+Do this again any time a new top-level directory is added to the repo.
 
 ---
 
@@ -273,10 +349,11 @@ commit or hit **Retry deployment**.
 
 ## Things worth knowing
 
-- **The Child App is untouched *by this guide*.** It is still on GitHub Pages as written
-  here. `TDS_Slice_Online_Revamp.md` §10 moves it onto this Worker so it is same-origin
-  with the API — at which point the kids re-add their home-screen icon once, and the
-  "fully offline" description stops being true (it becomes online-first, offline-tolerant).
+- **The Child App now ships from this Worker,** not GitHub Pages (Revamp §10) — see
+  Part C for the one-time move. It had to become same-origin with the API: it calls
+  `/api/…` with relative URLs, which from a `github.io` origin resolve to GitHub and
+  404. The cost is a one-time home-screen re-add per child, and the "fully offline"
+  description stops being true — it is online-first, offline-tolerant now.
 - **Deletes are tombstoned,** not removed, so a stale device cannot resurrect a
   record you deleted elsewhere. `SELECT` with `deleted = 0` to see live rows.
 - **One authoring device is the intended shape.** Conflict handling is

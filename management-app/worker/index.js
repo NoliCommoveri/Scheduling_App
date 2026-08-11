@@ -1,10 +1,10 @@
 /* Cloudflare Worker — the API for both apps.
  * Per TDS_Slice_Online_Revamp.md §3-§7 (schema, auth, lifecycle) and §5 (routes).
  *
- * Owns /api/* and /admin/migrations. Every other path falls through to the
- * static asset binding. Phase 1 of the revamp (§12): schema migrations and
- * every Worker route land here. Neither app's client code changes in this
- * phase — the Management App keeps using only /api/sync/*, exactly as before.
+ * Owns /api/*, /admin/migrations, and the two §10 short-URL redirects. Every
+ * other path falls through to the static asset binding, which now covers the
+ * whole repo (minus .assetsignore) so both apps are served from this one
+ * origin.
  */
 
 import { MIGRATIONS } from './migrations.js';
@@ -60,6 +60,8 @@ export default {
       }
 
       if (!url.pathname.startsWith('/api/')) {
+        const redirect = staticRedirect(url);
+        if (redirect) return redirect;
         return env.ASSETS.fetch(request);
       }
 
@@ -73,6 +75,27 @@ export default {
     }
   },
 };
+
+// §10 entry points. The assets directory widened from ./management-app to the
+// repo root so the Child App is same-origin with the API, which moved the
+// Management App off `/` and onto `/management-app/`. These keep the short URLs
+// working: `/` is the parent's existing bookmark, `/kid` is what goes on a
+// child's home screen.
+//
+// 302, not 301: a permanent redirect is cached by the browser indefinitely and
+// would be painful to walk back if these paths are ever rearranged again.
+function staticRedirect(url) {
+  const path = url.pathname.replace(/\/+$/, '');
+  if (path === '') return redirect(url, '/management-app/');
+  if (path === '/kid') return redirect(url, '/child-app/');
+  return null;
+}
+
+function redirect(url, pathname) {
+  const target = new URL(url);
+  target.pathname = pathname;
+  return Response.redirect(target.toString(), 302);
+}
 
 async function routeApi(request, env, ctx, url) {
   const { pathname } = url;

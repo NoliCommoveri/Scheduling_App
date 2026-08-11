@@ -1,0 +1,36 @@
+# Which repo files are NOT uploaded as public static assets.
+# Per TDS_Slice_Online_Revamp.md §10, verified by acceptance check §13.10.
+#
+# `[assets] directory` in wrangler.toml is the repo root, so without this file
+# every path below would be downloadable by anyone who knows the URL. Treat it
+# as a security boundary, not housekeeping: adding a directory of anything
+# non-public to the repo means adding it here in the same commit.
+#
+# Patterns are relative to the assets directory (the repo root).
+
+.git/
+.github/
+docs/
+fixtures/
+node_modules/
+
+# The API's own source. Bundled into the Worker by `main`, never served.
+management-app/worker/
+
+# Reaches the Worker as bundled text via the [[rules]] Text glob (§3.7.2), so
+# excluding it from *assets* does not stop the in-browser migration runner.
+migrations/
+
+# Config and tooling. `wrangler.toml` is not secret — database_id is an
+# identifier — but there is no reason to serve it.
+wrangler.toml
+package.json
+package-lock.json
+
+# Every Markdown file at any depth: CLAUDE.md, DEPLOY.md, the SRS/TDS set,
+# Interchange_Contract.md, Split_Build_Session_Guide.md.
+*.md
+
+# This file itself, and the other repo-root dotfiles.
+.assetsignore
+.gitignore
