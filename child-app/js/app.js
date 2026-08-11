@@ -14,7 +14,20 @@
         var child = r[0] || {};
         var semester = r[1] || {};
         g.Theming.applyTheme((r[2] || {}).theme);
-        g.PlannerUI.mount(root, { name: child.name, semester: semester.label });
+        var planner = g.PlannerUI.mount(root, { name: child.name, semester: semester.label });
+
+        // Online Revamp §8.4: mount first, then go to the network. The app opens
+        // from cache and renders the last known plan instantly; the fetch below
+        // is what makes it current, and it is allowed to fail.
+        //
+        // The catch-up walk above ran against the cache as it was. When a sync
+        // brings past days in for the first time it can change the answer, so
+        // it is re-run — never before the fetch, only after one that moved
+        // something. Judging a day with no data yields 'neutral', so the stale
+        // pass can only under-count a streak, never falsely break one.
+        g.PlanSync.start(function () {
+          g.Streak.reconcileOnOpen().then(function () { planner.reload(); });
+        });
       });
   }
 

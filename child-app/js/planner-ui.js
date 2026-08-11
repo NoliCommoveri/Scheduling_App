@@ -50,7 +50,7 @@
     };
 
     function reload() {
-      return Promise.all([g.DB.loadState(), g.DB.getAll("activityRecords"), g.Export.reminderState(), g.Reward.gatherDisplay()]).then(function (r) {
+      return Promise.all([g.DB.loadState(), g.DB.getAll("activityRecords"), g.Export.reminderState(), g.Reward.gatherDisplay(), g.PlanSync.status()]).then(function (r) {
         state.data = r[0];
         state.records = r[1]; // activityRecords — drives the daily completion visual
         var resolved = Object.create(null);
@@ -58,6 +58,7 @@
         state.isResolved = function (id) { return !!resolved[id]; };
         state.reminderInfo = r[2];
         state.rewards = r[3];
+        state.sync = r[4]; // Online Revamp §8.3 — link state, for the empty state and Settings
         render();
       });
     }
@@ -397,7 +398,13 @@
     function emptyState() {
       var e = node("div", "empty");
       e.appendChild(node("h2", null, "Nothing here yet"));
-      e.appendChild(node("p", null, "Import a packet to see today's school work, chores, and events."));
+      // A paired device gets its plan over the network (Online Revamp §8.3), so
+      // "import a packet" is the wrong first instruction — the honest answer is
+      // that nothing has been assigned yet. Import stays available underneath:
+      // §12 keeps the file path as a fallback through Phase 4.
+      e.appendChild(node("p", null, state.sync && state.sync.paired
+        ? "No work has been assigned yet. This fills in on its own once it's ready."
+        : "Import a packet to see today's school work, chores, and events."));
       var b = node("button", "btn", "Import a packet");
       var file = node("input", "hidden-file");
       file.type = "file"; file.accept = "application/json,.json";
@@ -974,9 +981,30 @@
       card.appendChild(node("div", "settings-label", "Linked device"));
       if (pairing && pairing.deviceToken) {
         card.appendChild(node("p", "modal-help", "Paired to " + (pairing.childName || ctx.name || "this child") + "."));
+        // Online Revamp §8.3/§8.4: the plan arrives by polling, so the one thing
+        // worth showing here is whether that is actually working. "unauthorized"
+        // is called out separately from "offline" because only one of the two
+        // resolves by waiting — a revoked device (§4.1) needs a new pairing code.
+        card.appendChild(node("div", "modal-help", syncStatusText(pairing)));
+        var checkBtn = node("button", "btn small ghost", "Check for new work");
+        card.appendChild(checkBtn);
         var forgetBtn = node("button", "btn small ghost", "Forget this device");
+        forgetBtn.style.marginLeft = "8px";
         card.appendChild(forgetBtn);
         var forgetErr = node("div", "err-text"); card.appendChild(forgetErr);
+        checkBtn.onclick = function () {
+          checkBtn.disabled = true;
+          g.PlanSync.syncNow().then(function (res) {
+            checkBtn.disabled = false;
+            if (res && res.error === "unauthorized") toast("This device is no longer linked. Ask for a new pairing code.", true);
+            else if (res && res.error) toast("Couldn't reach the server. Your saved plan is still here.", true);
+            else toast(res && res.changed ? "Plan updated." : "Already up to date.", false);
+            overlay.remove();
+            // Reopened rather than left closed, so the status line above redraws
+            // with the result of the check that was just asked for.
+            reload().then(openSettingsPanel);
+          });
+        };
         forgetBtn.onclick = function () {
           g.Pairing.forget().then(function () {
             toast("Device unlinked.", false);
@@ -997,12 +1025,17 @@
         pairBtn.onclick = function () {
           pairBtn.disabled = true;
           g.Pairing.redeem(codeInput.value, labelInput.value).then(function (res) {
-            pairBtn.disabled = false;
-            if (!res.ok) { pairErr.textContent = res.message; return; }
+            if (!res.ok) { pairBtn.disabled = false; pairErr.textContent = res.message; return; }
             pairErr.textContent = "";
-            toast("Device linked.", false);
-            overlay.remove();
-            openSettingsPanel();
+            // Fetch the plan immediately rather than waiting out the poll
+            // interval: a device is paired precisely because someone is standing
+            // there expecting work to appear.
+            return g.PlanSync.syncNow().then(function () {
+              pairBtn.disabled = false;
+              toast("Device linked.", false);
+              overlay.remove();
+              return reload().then(openSettingsPanel);
+            });
           });
         };
       }
@@ -1144,9 +1177,32 @@
     }
 
     reload();
+
+    // The handle app.js needs to re-render when plan-sync.js pulls new work in
+    // (Online Revamp §8.3). Everything above stays private to the mount.
+    return { reload: reload };
   }
 
   // ---------- helpers ----------
+
+  // Reads the syncMeta bookkeeping plan-sync.js writes on every attempt.
+  function syncStatusText(pairing) {
+    if (pairing.lastError === "unauthorized") {
+      return "This device is no longer linked — ask a parent for a new pairing code.";
+    }
+    if (!pairing.lastSyncedAt) {
+      return pairing.lastError
+        ? "Not connected yet. Check the wifi and try again."
+        : "Checking for work…";
+    }
+    var when = new Date(pairing.lastSyncedAt);
+    var stamp = g.DateUtil.localISODate(when) + " " +
+      String(when.getHours()).padStart(2, "0") + ":" + String(when.getMinutes()).padStart(2, "0");
+    return pairing.lastError
+      ? "Offline — showing the plan saved at " + stamp + "."
+      : "Up to date. Last checked " + stamp + ".";
+  }
+
   var toastTimer = null;
   function toast(message, isError) {
     var t = document.getElementById("toast");

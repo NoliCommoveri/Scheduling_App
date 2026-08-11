@@ -11,19 +11,22 @@
 //                 written back onto the stored row itself, per TDS §2's `{ id, type, categoryId, ... }` shape)
 // Online Revamp Phase 2 (§12) adds one more singleton at version 3:
 //   singleton:    syncMeta (device token, childId, childName — §4.3 step 5)
-// The rest of §8.1's v3 shape (dropping activities/chores/events/plannerMeta/
-// activityRecords/rewardLedgerSnapshot/rewardLedgerTail for `assignments` and
-// `outbox`) is Phase 3's job, once the planner itself reads from `/api/plan`.
-// Until then this app still runs entirely on the M1/M2 stores below.
+// Online Revamp Phase 3B adds the read side of §8.1 at version 4:
+//   keyed:        assignments (keyPath "id") — the /api/plan cache
+// The M1 stores it supersedes (activities/chores/events/plannerMeta) are NOT
+// dropped: §12 keeps file import as a fallback through Phase 4, and plannerMeta
+// is still where this device's own overrides live until the outbox exists.
+// `outbox` is deliberately absent — it belongs to Phase 4, which is the first
+// phase with anything to put in it; an empty store now would be dead schema.
 // No dailyPlan store — the day is derived at render time and never persisted.
 
 (function (g) {
   "use strict";
 
   var DB_NAME = "childAppDB";
-  var DB_VERSION = 3;
+  var DB_VERSION = 4;
   var SINGLETONS = ["child", "semester", "themeSettings", "streak", "syncMeta"];
-  var KEYED = ["activities", "chores", "events", "plannerMeta"];
+  var KEYED = ["activities", "chores", "events", "plannerMeta", "assignments"];
   var KEYED_CUSTOM = [
     { name: "activityRecords", keyPath: "activityId" },
     { name: "rewardLedgerSnapshot", keyPath: "categoryId" },
@@ -132,14 +135,66 @@
     });
   }
 
-  // Load everything the planner needs in one shot.
-  function loadState() {
+  // Ingest a /api/plan response in one transaction (Online Revamp §5.5).
+  // Upserts the rows that are still part of the plan and drops the ones the
+  // Worker sent purely so the client could remove them. plan-sync.js decides
+  // which is which; this is the atomic write.
+  function applyPlan(puts, deleteIds) {
+    if (!puts.length && !deleteIds.length) return Promise.resolve();
+    return tx(["assignments"], "readwrite").then(function (t) {
+      var store = t.objectStore("assignments");
+      puts.forEach(function (row) { store.put(row); });
+      deleteIds.forEach(function (id) { store.delete(id); });
+      return txDone(t);
+    });
+  }
+
+  // The pre-revamp local stores on their own — what a hand-imported packet file
+  // left behind. Packet Import merges against exactly this and must not see
+  // server assignments: they are not packet items, they were never in a packet,
+  // and letting them seed the merge's receipt counter would muddle the ordering
+  // of both paths for no gain.
+  function loadLocalState() {
     return Promise.all([getAll("activities"), getAll("chores"), getAll("events"), getAll("plannerMeta")])
       .then(function (r) {
         var metaMap = Object.create(null);
         r[3].forEach(function (m) { metaMap[m.id] = m; });
         return { activities: r[0], chores: r[1], events: r[2], meta: metaMap };
       });
+  }
+
+  // Load everything the planner needs in one shot.
+  //
+  // Online Revamp §8.2: this still returns { activities, chores, events, meta },
+  // because effectively all of planner-ui.js is built on that shape. What
+  // changed underneath is where it comes from — `assignments` rows fetched from
+  // /api/plan, reassembled by assignment-core.js, unioned with whatever the
+  // retained file-import fallback (§12, Phase 3) has left in the local stores.
+  // An explicit shim with a stated lifespan; Phase 5 collapses it.
+  //
+  // Ids cannot collide across the two sources: server rows carry server-minted
+  // UUIDs (§3.3.1) and packet ids are the four-segment / CHR- / EVT- forms the
+  // packet schema pins. Where a row does appear in both meta maps, the local
+  // one wins field-by-field: until Phase 4 uploads this device's overrides, the
+  // local plannerMeta entry is the newer of the two by construction.
+  function loadState() {
+    return Promise.all([loadLocalState(), getAll("assignments")]).then(function (r) {
+      var local = r[0];
+      var server = g.AssignmentCore.toState(r[1]);
+
+      var meta = Object.create(null);
+      Object.keys(server.meta).forEach(function (id) { meta[id] = server.meta[id]; });
+      Object.keys(local.meta).forEach(function (id) {
+        meta[id] = meta[id] ? Object.assign({}, meta[id], local.meta[id]) : local.meta[id];
+      });
+
+      return {
+        activities: server.activities.concat(local.activities),
+        chores: server.chores.concat(local.chores),
+        events: server.events.concat(local.events),
+        meta: meta
+      };
+    });
   }
 
   // Read/merge/write a single plannerMeta field, leaving other fields intact.
@@ -177,7 +232,9 @@
     delMany: delMany,
     putMany: putMany,
     applyMerge: applyMerge,
+    applyPlan: applyPlan,
     loadState: loadState,
+    loadLocalState: loadLocalState,
     setMeta: setMeta,
     devWipeAll: devWipeAll
   };

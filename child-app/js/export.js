@@ -127,11 +127,24 @@
 
   // FR-7: end-of-week reminder. lastSuccessfulExportDate is derived, never
   // stored — max(date) over any exported:true record, or "never" if none.
+  //
+  // Eligibility is narrowed to records this export can actually carry. Since
+  // Online Revamp Phase 3B the planner also shows server assignments, and
+  // completing one writes an activityRecord with no counterpart in the
+  // activities/chores stores — gatherEligible skips it as orphaned. Counting it
+  // here anyway would raise a banner promising N items and then export nothing.
+  // Those completions upload over the API in Phase 4 (§12); CSV is not their
+  // route and this reminder is not about them.
   function reminderState() {
-    return g.DB.getAll("activityRecords").then(function (all) {
-      var eligibleCount = all.filter(C.isEligible).length;
+    return Promise.all([g.DB.getAll("activityRecords"), loadSourceMaps()]).then(function (r) {
+      var all = r[0];
+      var sources = r[1];
+      var exportable = all.filter(function (rec) {
+        return C.isEligible(rec) && (sources.activities[rec.activityId] || sources.chores[rec.activityId]);
+      });
+      var eligibleCount = exportable.length;
       if (eligibleCount === 0) return { show: false };
-      var exportedDates = all.filter(function (r) { return r.exported === true; }).map(function (r) { return r.date; }).sort();
+      var exportedDates = all.filter(function (rec) { return rec.exported === true; }).map(function (rec) { return rec.date; }).sort();
       if (exportedDates.length === 0) return { show: true, eligibleCount: eligibleCount };
       var lastExport = exportedDates[exportedDates.length - 1];
       var days = g.DateUtil.daysBetween(lastExport, g.DateUtil.today());
