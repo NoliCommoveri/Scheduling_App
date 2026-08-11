@@ -14,7 +14,7 @@
         var resolved = Object.create(null);
         r[1].forEach(function (rec) { resolved[rec.activityId] = true; });
         var streak = r[2] || { currentStreak: 0, lastQualifyingDate: null };
-        return { activities: state.activities, chores: state.chores, meta: state.meta, resolved: resolved, streak: streak };
+        return { rows: state.rows, resolved: resolved, streak: streak };
       });
   }
 
@@ -46,7 +46,7 @@
   function recheckToday() {
     return loadContext().then(function (ctx) {
       var today = g.DateUtil.today();
-      var status = C.dayStatus(ctx.activities, ctx.chores, ctx.meta, ctx.resolved, today);
+      var status = C.dayStatus(ctx.rows, ctx.resolved, today);
       if (status !== "resolved") return; // FR-2: neutral/breaking never trigger a change
       if (ctx.streak.lastQualifyingDate === today) return; // already counted today
       return write(ctx.streak, {
@@ -69,7 +69,7 @@
       var today = g.DateUtil.today();
       var d = g.DateUtil.addDays(ctx.streak.lastQualifyingDate, 1);
       while (d < today) {
-        var status = C.dayStatus(ctx.activities, ctx.chores, ctx.meta, ctx.resolved, d);
+        var status = C.dayStatus(ctx.rows, ctx.resolved, d);
         if (status === "breaking") {
           // A reset keeps longestStreak — that is the point of a high-water
           // mark, and write() derives it from the run being ended.

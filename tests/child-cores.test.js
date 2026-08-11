@@ -13,11 +13,19 @@ import vm from 'node:vm';
 // completion-core.js first: reward-core.js and settings-core.js build their
 // ledger entries through CompletionCore.buildEntry, the same order the app
 // shell loads them in.
+// planner-core.js before streak-core.js: streak-core binds `g.PlannerCore` at
+// load time, the same order the app shell loads them in.
 const repo = new URL('../', import.meta.url);
-for (const file of ['outbox-core.js', 'assignment-core.js', 'completion-core.js', 'reward-core.js', 'settings-core.js']) {
+for (const file of [
+  'outbox-core.js', 'planner-core.js', 'assignment-core.js', 'streak-core.js',
+  'completion-core.js', 'reward-core.js', 'settings-core.js',
+]) {
   vm.runInThisContext(readFileSync(new URL(`child-app/js/${file}`, repo), 'utf8'), { filename: file });
 }
-const { OutboxCore, AssignmentCore, CompletionCore, RewardCore, SettingsCore } = globalThis;
+const {
+  OutboxCore, PlannerCore, AssignmentCore, StreakCore,
+  CompletionCore, RewardCore, SettingsCore,
+} = globalThis;
 
 // A row as /api/plan returns it (§3.3, snake_case).
 function row(overrides = {}) {
@@ -156,35 +164,37 @@ test('§6.4: a rescinded row the child completed stays off the plan', () => {
   assert.equal(AssignmentCore.isPlannable(row({ rescinded_at: 123, status: 'complete' })), false);
 });
 
-test('toState partitions rows by kind into the pre-revamp shape', () => {
+test('toState returns the decorated rows, and the pre-revamp keys alongside', () => {
+  // §14 phase 1: `rows` is what the planner works from. The other four keys are
+  // scaffolding CLAUDE.md §IV.B pins until the collapse finishes.
   const state = AssignmentCore.toState([
     row({ id: 'a1', kind: 'activity' }),
     row({ id: 'c1', kind: 'chore', title: 'Dishes' }),
     row({ id: 'e1', kind: 'event', title: 'Dentist', source_id: 'EV-1' }),
   ]);
-  assert.deepEqual(Object.keys(state).sort(), ['activities', 'chores', 'events', 'meta']);
+  assert.deepEqual(Object.keys(state).sort(), ['activities', 'chores', 'events', 'meta', 'rows']);
+  assert.equal(state.rows.length, 3);
   assert.equal(state.activities.length, 1);
   assert.equal(state.chores.length, 1);
   assert.equal(state.events.length, 1);
 });
 
-test('toState de-duplicates a multi-day event to one entry', () => {
-  // A multi-day event is committed as one row per in-range day; planner-core
-  // matches on the span, so all of them would render the event once per day.
-  const payload = JSON.stringify({ startDate: '2026-08-11', endDate: '2026-08-13' });
-  const state = AssignmentCore.toState([
-    row({ id: 'e1', kind: 'event', source_id: 'EV-1', date: '2026-08-11', payload }),
-    row({ id: 'e2', kind: 'event', source_id: 'EV-1', date: '2026-08-12', payload }),
-    row({ id: 'e3', kind: 'event', source_id: 'EV-1', date: '2026-08-13', payload }),
-  ]);
-  assert.equal(state.events.length, 1);
-  assert.equal(state.events[0].startDate, '2026-08-11');
-  assert.equal(state.events[0].endDate, '2026-08-13');
+test('decorate keeps the row it was given, and does not mutate it', () => {
+  // One object per assignment is the point of the phase — the planning columns
+  // have to survive decoration or planner-core has nothing to read.
+  const source = row({ sort_order: 3, child_sort_order: 9, deferred_to: '2026-08-14' });
+  const item = AssignmentCore.decorate(source);
+  assert.equal(item.sort_order, 3);
+  assert.equal(item.child_sort_order, 9);
+  assert.equal(item.deferred_to, '2026-08-14');
+  assert.equal(item.kind, 'activity');
+  assert.equal(source.payload, null, 'the cached row keeps its raw payload');
+  assert.ok(!('courseName' in source), 'aliases land on the copy, not the row');
 });
 
 test('toState ignores an unknown kind rather than crashing', () => {
   const state = AssignmentCore.toState([row({ id: 'x1', kind: 'somethingNew' })]);
-  assert.equal(state.activities.length + state.chores.length + state.events.length, 0);
+  assert.equal(state.rows.length, 0);
 });
 
 test('toState promotes payload fields and leaves them out of the payload', () => {
@@ -223,18 +233,61 @@ test('toState synthesises meta only from child-owned columns, and stays sparse',
   });
 });
 
-test('toState maps sort_order into receiptIndex (§3.3.3 read half)', () => {
-  assert.equal(AssignmentCore.toState([row({ sort_order: 4 })]).activities[0].receiptIndex, 4);
-  assert.equal(AssignmentCore.toState([row({ sort_order: null })]).activities[0].receiptIndex, 0);
-});
-
-test('toState omits optional fields rather than setting them empty', () => {
+test('toState omits optional aliases rather than setting them empty', () => {
   // Several planner-ui branches key off presence and would render an empty
   // element for "".
-  const item = AssignmentCore.toState([row({ course_name: null, activity_type: null, block_hint: null })]).activities[0];
+  const item = AssignmentCore.toState([row({ course_name: null, activity_type: null })]).rows[0];
   assert.ok(!('courseName' in item));
   assert.ok(!('activityType' in item));
+});
+
+test('toState no longer mints a second name for a planning column', () => {
+  // receiptIndex and blockHint existed only to feed planner-core, which now
+  // reads sort_order and block_hint off the row. Re-adding either would put the
+  // double representation §14 phase 1 removed straight back.
+  const item = AssignmentCore.toState([row({ sort_order: 4, block_hint: 'morning' })]).rows[0];
+  assert.ok(!('receiptIndex' in item));
   assert.ok(!('blockHint' in item));
+  assert.equal(item.sort_order, 4);
+  assert.equal(item.block_hint, 'morning');
+});
+
+test('applyLocalMeta writes a pending override as the column it becomes', () => {
+  // The overlay DB.loadState() runs. A deferral that has not drained yet has to
+  // reach the planner, or the child sees the item back on the day they moved it
+  // off until the network returns.
+  const [merged] = AssignmentCore.applyLocalMeta(
+    [row({ deferred_to: null, child_sort_order: null, child_block_hint: null })],
+    [{ id: 'a1', deferredDate: '2026-08-14', sortOrder: 7, blockHint: 'night' }]
+  );
+  assert.equal(merged.deferred_to, '2026-08-14');
+  assert.equal(merged.child_sort_order, 7);
+  assert.equal(merged.child_block_hint, 'night');
+  assert.equal(PlannerCore.effectiveDueDate(merged), '2026-08-14');
+  assert.equal(PlannerCore.effectiveSortKey(merged), 7);
+  assert.equal(PlannerCore.effectiveBlock(merged), 'night');
+});
+
+test('applyLocalMeta overlays field by field, and leaves other rows alone', () => {
+  // A local record only ever carries the fields that were written; the server's
+  // value for every other column has to survive.
+  const source = row({ deferred_to: '2026-08-12', child_sort_order: 3 });
+  const other = row({ id: 'a2' });
+  const [merged, untouched] = AssignmentCore.applyLocalMeta(
+    [source, other], [{ id: 'a1', sortOrder: 7 }]
+  );
+  assert.equal(merged.deferred_to, '2026-08-12', 'unmentioned column keeps the server value');
+  assert.equal(merged.child_sort_order, 7);
+  assert.equal(source.child_sort_order, 3, 'the cached row is not mutated');
+  assert.equal(untouched, other, 'a row with no override is passed straight through');
+});
+
+test('applyLocalMeta ignores an orphaned override', () => {
+  // plan-sync prunes rows that were rescinded or fell out of the window; an
+  // override left pointing at one must not resurrect anything.
+  const rows = AssignmentCore.applyLocalMeta([row()], [{ id: 'gone', sortOrder: 7 }]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].child_sort_order, null);
 });
 
 test('parsePayload survives null, objects and malformed JSON', () => {
@@ -242,6 +295,164 @@ test('parsePayload survives null, objects and malformed JSON', () => {
   assert.deepEqual(AssignmentCore.parsePayload('{"a":1}'), { a: 1 });
   assert.deepEqual(AssignmentCore.parsePayload({ a: 1 }), { a: 1 });
   assert.deepEqual(AssignmentCore.parsePayload('{not json'), {});
+});
+
+// ==========================================================  planner-core
+//
+// §14 phase 1: these all take assignment rows and no `meta` map. Rows go
+// through AssignmentCore.decorate first, exactly as DB.loadState() feeds them,
+// because `required` and an event's span are promoted out of payload.
+
+const TODAY = '2026-08-11';
+const plan = (...rows) => rows.map(AssignmentCore.decorate);
+const ids = (list) => list.map((r) => r.id);
+const nothingResolved = () => false;
+
+test('effectiveDueDate prefers the child deferral over the assigned date', () => {
+  assert.equal(PlannerCore.effectiveDueDate(row()), '2026-08-11');
+  assert.equal(PlannerCore.effectiveDueDate(row({ deferred_to: '2026-08-14' })), '2026-08-14');
+});
+
+test('effectiveBlock: child override, then parent hint, then morning', () => {
+  assert.equal(PlannerCore.effectiveBlock(row({ block_hint: 'evening' })), 'evening');
+  assert.equal(PlannerCore.effectiveBlock(row({ block_hint: 'evening', child_block_hint: 'night' })), 'night');
+  assert.equal(PlannerCore.effectiveBlock(row({ block_hint: null })), 'morning');
+  // Out-of-set values fall back the same way an absent one does, on both sides.
+  assert.equal(PlannerCore.effectiveBlock(row({ block_hint: 'Morning' })), 'morning');
+  assert.equal(PlannerCore.effectiveBlock(row({ block_hint: 'evening', child_block_hint: 'brunch' })), 'evening');
+});
+
+test('effectiveSortKey is COALESCE(child_sort_order, sort_order) (§3.3.3)', () => {
+  assert.equal(PlannerCore.effectiveSortKey(row({ sort_order: 4 })), 4);
+  assert.equal(PlannerCore.effectiveSortKey(row({ sort_order: 4, child_sort_order: 1 })), 1);
+  assert.equal(PlannerCore.effectiveSortKey(row({ sort_order: null })), 0);
+  // 0 is a real key on either side, not an absence.
+  assert.equal(PlannerCore.effectiveSortKey(row({ sort_order: 4, child_sort_order: 0 })), 0);
+});
+
+test('onToday: due today, or overdue and required (§2.1 roll-forward)', () => {
+  const due = AssignmentCore.decorate(row({ payload: JSON.stringify({ required: true }) }));
+  assert.equal(PlannerCore.onToday(due, TODAY, nothingResolved), true);
+
+  const overdueRequired = AssignmentCore.decorate(
+    row({ date: '2026-08-09', payload: JSON.stringify({ required: true }) })
+  );
+  assert.equal(PlannerCore.onToday(overdueRequired, TODAY, nothingResolved), true);
+
+  const overdueOptional = AssignmentCore.decorate(row({ date: '2026-08-09' }));
+  assert.equal(PlannerCore.onToday(overdueOptional, TODAY, nothingResolved), false);
+
+  const future = AssignmentCore.decorate(row({ date: '2026-08-20' }));
+  assert.equal(PlannerCore.onToday(future, TODAY, nothingResolved), false);
+});
+
+test('onToday drops a resolved row, and follows a deferral off the day', () => {
+  const item = AssignmentCore.decorate(row());
+  assert.equal(PlannerCore.onToday(item, TODAY, (id) => id === 'a1'), false);
+
+  const moved = AssignmentCore.decorate(row({ deferred_to: '2026-08-14' }));
+  assert.equal(PlannerCore.onToday(moved, TODAY, nothingResolved), false);
+  assert.equal(PlannerCore.onToday(moved, '2026-08-14', nothingResolved), true);
+});
+
+test('assembleToday groups by effective block, in canonical order', () => {
+  const today = PlannerCore.assembleToday(plan(
+    row({ id: 'a1', block_hint: 'evening' }),
+    row({ id: 'a2', block_hint: 'morning' }),
+    row({ id: 'c1', kind: 'chore', block_hint: 'evening' })
+  ), TODAY, nothingResolved);
+
+  assert.deepEqual(today.blocks.map((b) => b.name), ['morning', 'evening'], 'empty blocks omitted');
+  assert.deepEqual(ids(today.blocks[0].school), ['a2']);
+  assert.deepEqual(ids(today.blocks[1].school), ['a1']);
+  assert.deepEqual(ids(today.blocks[1].chores), ['c1']);
+});
+
+test('assembleToday sorts within a block by effective key, then id', () => {
+  const today = PlannerCore.assembleToday(plan(
+    row({ id: 'a3', sort_order: 2 }),
+    row({ id: 'a1', sort_order: 9, child_sort_order: 0 }), // child override wins
+    row({ id: 'a2', sort_order: 2 })                       // ties break on id
+  ), TODAY, nothingResolved);
+  assert.deepEqual(ids(today.blocks[0].school), ['a1', 'a2', 'a3']);
+});
+
+test('a multi-day event renders once, however many rows carry it', () => {
+  // It is committed as one row per in-range day, each with the same span, so
+  // every one of them matches the same `today`.
+  const payload = JSON.stringify({ startDate: '2026-08-10', endDate: '2026-08-13' });
+  const rows = plan(
+    row({ id: 'e1', kind: 'event', source_id: 'EV-1', date: '2026-08-10', payload }),
+    row({ id: 'e2', kind: 'event', source_id: 'EV-1', date: '2026-08-11', payload }),
+    row({ id: 'e3', kind: 'event', source_id: 'EV-1', date: '2026-08-12', payload })
+  );
+  assert.equal(PlannerCore.assembleToday(rows, TODAY, nothingResolved).events.length, 1);
+  assert.equal(PlannerCore.eventsView(rows, TODAY).length, 1);
+});
+
+test('an event out of span does not reach the day, and one without a source_id still shows', () => {
+  const rows = plan(
+    row({
+      id: 'e1', kind: 'event', source_id: 'EV-1',
+      payload: JSON.stringify({ startDate: '2026-08-01', endDate: '2026-08-03' }),
+    }),
+    row({ id: 'e2', kind: 'event', source_id: null, date: TODAY, payload: null })
+  );
+  assert.deepEqual(ids(PlannerCore.eventsView(rows, TODAY)), ['e2']);
+});
+
+test('filterView selects one kind, ordered by block then position', () => {
+  const rows = plan(
+    row({ id: 'a1', block_hint: 'evening', sort_order: 1 }),
+    row({ id: 'a2', block_hint: 'morning', sort_order: 5 }),
+    row({ id: 'c1', kind: 'chore', block_hint: 'morning' })
+  );
+  assert.deepEqual(ids(PlannerCore.filterView(rows, TODAY, nothingResolved, 'school')), ['a2', 'a1']);
+  assert.deepEqual(ids(PlannerCore.filterView(rows, TODAY, nothingResolved, 'chores')), ['c1']);
+});
+
+test('subjectsView groups activities by course_name, in first-seen order', () => {
+  const groups = PlannerCore.subjectsView(plan(
+    row({ id: 'a1', course_name: 'History', sort_order: 2 }),
+    row({ id: 'a2', course_name: 'Maths' }),
+    row({ id: 'a3', course_name: 'History', sort_order: 1 }),
+    row({ id: 'c1', kind: 'chore', course_name: 'History' })
+  ), TODAY, nothingResolved);
+
+  assert.deepEqual(groups.map((g) => g.courseName), ['History', 'Maths']);
+  assert.deepEqual(ids(groups[0].items), ['a3', 'a1'], 'grouped items keep position order');
+  assert.deepEqual(ids(groups[1].items), ['a2']);
+});
+
+// ===========================================================  streak-core
+
+test('requiredDueOn takes only required rows, on their effective date', () => {
+  const required = JSON.stringify({ required: true });
+  const rows = plan(
+    row({ id: 'a1', payload: required }),
+    row({ id: 'a2' }),                                            // not required
+    row({ id: 'a3', payload: required, deferred_to: '2026-08-14' }), // moved away
+    row({ id: 'c1', kind: 'chore' })                              // chores default to required
+  );
+  assert.deepEqual(ids(StreakCore.requiredDueOn(rows, TODAY)), ['a1', 'c1']);
+  assert.deepEqual(ids(StreakCore.requiredDueOn(rows, '2026-08-14')), ['a3']);
+});
+
+test('an event never counts toward the streak', () => {
+  // It carries no `required` flag and there is nothing about it to resolve.
+  const rows = plan(row({ id: 'e1', kind: 'event', date: TODAY, payload: null }));
+  assert.deepEqual(StreakCore.requiredDueOn(rows, TODAY), []);
+  assert.equal(StreakCore.dayStatus(rows, {}, TODAY), 'neutral');
+});
+
+test('dayStatus: neutral with nothing due, resolved only when all are', () => {
+  const required = JSON.stringify({ required: true });
+  const rows = plan(row({ id: 'a1', payload: required }), row({ id: 'a2', payload: required }));
+
+  assert.equal(StreakCore.dayStatus([], {}, TODAY), 'neutral');
+  assert.equal(StreakCore.dayStatus(rows, {}, TODAY), 'breaking');
+  assert.equal(StreakCore.dayStatus(rows, { a1: true }, TODAY), 'breaking');
+  assert.equal(StreakCore.dayStatus(rows, { a1: true, a2: true }, TODAY), 'resolved');
 });
 
 // =======================================================  completion-core
