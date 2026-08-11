@@ -468,3 +468,132 @@ button.secondary {
 .status-waived { color: #8a6d1f; }
 .status-pending { color: #555; }
 .status-rescinded { color: var(--color-error); text-decoration: line-through; }
+
+/* ---- Assignments view (Revamp §9) ----
+   Reuses .report-controls for the child/date-range bar and .day-section for the
+   per-day grouping, so this view reads as the same app as Assign and Reporting
+   rather than a third dialect. Only what is genuinely new is defined here. */
+
+.assign-summary {
+  color: #555;
+  font-size: 0.9rem;
+  margin: 0.25rem 0 1rem;
+}
+
+.batch-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.75rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  margin-bottom: 0.5rem;
+  background: #fff;
+}
+
+/* A UUID is long, meaningless to read, and must not push the counts and the
+   Rescind button off a narrow screen. */
+.batch-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  color: #555;
+  overflow-wrap: anywhere;
+  flex: 1 1 12rem;
+}
+
+.batch-when, .batch-counts {
+  font-size: 0.85rem;
+  color: #555;
+}
+
+.assign-row {
+  display: block;
+  padding: 0.6rem;
+}
+
+.assign-row-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.75rem;
+}
+
+.assign-title {
+  font-weight: 600;
+}
+
+.assign-detail, .assign-child-notes, .assign-why-locked {
+  font-size: 0.85rem;
+  color: #555;
+}
+
+.assign-child-notes, .assign-why-locked {
+  margin: 0.35rem 0 0;
+}
+
+/* Child-owned columns are never editable here (§4.2), so they are marked as
+   quoted context rather than styled like the parent's own fields. */
+.assign-child-notes {
+  border-left: 2px solid var(--color-border);
+  padding-left: 0.5rem;
+  font-style: italic;
+}
+
+.assign-locked {
+  opacity: 0.75;
+}
+
+.assign-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.assign-actions:empty {
+  margin-top: 0;
+}
+
+.assign-edit {
+  margin: 0.75rem 0 0;
+  padding: 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: #fbfaf8;
+}
+
+.assign-edit textarea {
+  padding: 0.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+  resize: vertical;
+}
+
+.assign-edit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+/* ---- Archived children (Revamp §3.2's `active`) ----
+   Archived is a resting state, not an error, so it reads as dimmed-and-labelled
+   rather than red. The row keeps all its controls: Open and Restore have to
+   stay reachable. */
+
+.child-archived {
+  opacity: 0.6;
+}
+
+.child-archived-tag {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #6b5b2d;
+  background: #fff3cd;
+  border: 1px solid #e0c264;
+  border-radius: 3px;
+  padding: 0.05rem 0.35rem;
+}

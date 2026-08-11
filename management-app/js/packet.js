@@ -695,14 +695,14 @@ const Packet = (() => {
       });
     } catch (err) {
       return {
-        // Names the batch because it is the only handle on those rows. There is
-        // no rescind UI yet — the Assignments view (§9) is not built — so this
-        // is currently a note-it-down-and-report-it path rather than a
-        // self-service one. Wiring it to POST /api/assignments/rescind is the
-        // first thing that view should do.
+        // Names the batch because it is the only handle on those rows. The
+        // Assignments view (§9) lists batches newest-first and rescinds one in
+        // a single press, so this is a self-service recovery path now rather
+        // than a note-it-down-and-report-it one.
         error: `${assignedCount} assignments reached D1, but the local Generation Log write failed — ` +
-          `${(err && err.message) || err}. Write down batch ${batchId}: those rows are live for the ` +
-          'child and must be rescinded before this range is committed again, or it will be assigned twice.',
+          `${(err && err.message) || err}. Those rows are live for the child and must be rescinded before ` +
+          `this range is committed again, or it will be assigned twice. Go to Assignments, find batch ` +
+          `${batchId} at the top of the Batches list, and rescind it.`,
         batchId,
       };
     }
@@ -752,7 +752,10 @@ const Packet = (() => {
   }
 
   async function renderProposeForm(root) {
-    const children = await Storage.getAll('children');
+    // Archived children are not offered here at all (§3.2's `active`): this is
+    // the form that generates new work, and there is no already-selected child
+    // to preserve the way the Chores and Events pickers have.
+    const children = Children.activeOnly(await Storage.getAll('children'));
     const form = document.createElement('form');
     const opts = ['<option value="">(select)</option>']
       .concat(children.map((c) => `<option value="${c.id}">${escapeHtml(c.name)}</option>`))

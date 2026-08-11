@@ -149,7 +149,13 @@ const Chores = (() => {
     return Array.from(form.querySelectorAll('input[name="daysOfWeek"]:checked')).map((el) => el.value);
   }
 
-  function childOptions(children, selected) {
+  // Authoring picker, so archived children are not offered (§3.2's `active`).
+  // One that is already on the chore being edited stays in the list regardless:
+  // dropping it would leave the select showing a different child and silently
+  // reassign the chore on the next save. The browse filter above is built from
+  // the full list, so an archived child's existing chores stay reachable.
+  function childOptions(allChildren, selected) {
+    const children = allChildren.filter((c) => Children.isActive(c) || c.id === selected);
     return ['<option value="">(select)</option>']
       .concat(children.map((c) => `<option value="${c.id}" ${c.id === selected ? 'selected' : ''}>${escapeHtml(c.name)}</option>`))
       .join('');

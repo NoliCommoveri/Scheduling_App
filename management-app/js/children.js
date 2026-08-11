@@ -31,12 +31,31 @@ const Children = (() => {
 
   // ---- Child CRUD (FR-1-3) ----
 
+  // `active` is the source for the `children.active` column in D1
+  // (TDS_Slice_Online_Revamp.md §3.2), which had no source until now. A child
+  // is archived rather than deleted when they finish or take a break: deletion
+  // cascades away chores, events and pacing history (see cascadeDeleteChild),
+  // and "this kid is done for the year" must not mean losing their record.
+  //
+  // Stored as an explicit boolean rather than an omit-when-false flag, because
+  // the D1 projection needs a value to write and `undefined` is not one.
   function buildChildRecord(id, fields) {
-    const record = { id, name: fields.name.trim() };
+    const record = { id, name: fields.name.trim(), active: fields.active !== false };
     if (fields.gradeLabel) record.gradeLabel = fields.gradeLabel.trim();
     if (fields.notes) record.notes = fields.notes.trim();
     if (fields.themeHint) record.themeHint = fields.themeHint.trim();
     return record;
+  }
+
+  // A record written before `active` existed has no such field, and a child
+  // authored on an older device is not archived — they are simply older than
+  // the flag. Absent therefore reads as active, everywhere, with no migration.
+  function isActive(child) {
+    return !!child && child.active !== false;
+  }
+
+  function activeOnly(children) {
+    return (children || []).filter(isActive);
   }
 
   async function createChild(fields) {
@@ -48,7 +67,20 @@ const Children = (() => {
 
   async function editChild(id, fields) {
     if (!fields.name || !fields.name.trim()) return { error: 'Name is required.' };
-    const record = buildChildRecord(id, fields);
+    // buildChildRecord rebuilds the whole record from the form, and the edit
+    // form does not carry `active` — it is set from the list's Archive button.
+    // Without threading it through, renaming a child would silently un-archive
+    // them.
+    const existing = await Storage.get('children', id);
+    const record = buildChildRecord(id, { active: isActive(existing), ...fields });
+    await Storage.put('children', record);
+    return { record };
+  }
+
+  async function setChildActive(id, active) {
+    const existing = await Storage.get('children', id);
+    if (!existing) return { error: 'Child not found.' };
+    const record = { ...existing, active: !!active };
     await Storage.put('children', record);
     return { record };
   }
@@ -454,16 +486,37 @@ const Children = (() => {
 
     const list = document.createElement('ul');
     list.className = 'child-list';
-    for (const child of children) {
+    // Active first, then archived, each alphabetical — so the list reads as
+    // "who I am teaching" with the finished ones settled underneath.
+    const ordered = children.slice().sort((a, b) =>
+      (isActive(b) ? 1 : 0) - (isActive(a) ? 1 : 0) || String(a.name).localeCompare(String(b.name)));
+
+    for (const child of ordered) {
       const item = document.createElement('li');
+      if (!isActive(child)) item.classList.add('child-archived');
       item.innerHTML = `
         <span class="child-name">${escapeHtml(child.name)}</span>
+        ${isActive(child) ? '' : '<span class="child-archived-tag">archived</span>'}
         <button data-action="open">Open</button>
+        <button data-action="archive">${isActive(child) ? 'Archive' : 'Restore'}</button>
         <button data-action="delete">Delete</button>
         <span class="child-error" hidden></span>
       `;
       item.querySelector('[data-action="open"]').addEventListener('click', () => {
         viewChildId = child.id;
+        render(root);
+      });
+      item.querySelector('[data-action="archive"]').addEventListener('click', async () => {
+        if (isActive(child)) {
+          const warned = window.confirm(
+            `Archive "${child.name}"?\n\n` +
+            'They stop appearing when you assign work, set pacing, author chores or events, ' +
+            'or pair a device. Everything already assigned stays exactly as it is, and they ' +
+            'keep showing up in Assignments and Reporting. You can restore them at any time.'
+          );
+          if (!warned) return;
+        }
+        await setChildActive(child.id, !isActive(child));
         render(root);
       });
       item.querySelector('[data-action="delete"]').addEventListener('click', async () => {
@@ -1021,6 +1074,13 @@ const Children = (() => {
     render,
     createChild,
     editChild,
+    setChildActive,
+    // Exported because this module owns the child record's shape: every other
+    // view that lists children needs the same "absent means active" reading,
+    // and eight copies of `c.active !== false` is eight chances to write one
+    // of them as `c.active === true` and quietly hide every legacy record.
+    isActive,
+    activeOnly,
     deleteChildTier1,
     cascadeDeleteChild,
     stampCourse,

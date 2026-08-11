@@ -46,8 +46,13 @@ const Devices = (() => {
 
     const childById = new Map(children.map((c) => [c.id, c]));
 
+    // The device list gets every child, so a device already paired to an
+    // archived one still shows a name instead of a raw id. The pair form gets
+    // active children only — archiving a child should stop new devices being
+    // handed out for them, while leaving the ones they have (revoke is the
+    // separate, deliberate act for those).
     renderDeviceList(root, devicesResult.devices, childById);
-    renderPairForm(root, children);
+    renderPairForm(root, Children.activeOnly(children));
   }
 
   function renderDeviceList(root, devices, childById) {
@@ -100,7 +105,10 @@ const Devices = (() => {
 
     if (children.length === 0) {
       const p = document.createElement('p');
-      p.textContent = 'Add a child first.';
+      // The caller has already filtered to active children, so an empty list
+      // here means either none exist or they are all archived. Saying "add a
+      // child" to someone who has three archived ones sends them the wrong way.
+      p.textContent = 'No active children. Add one, or restore an archived child from the Children page.';
       root.appendChild(p);
       return;
     }

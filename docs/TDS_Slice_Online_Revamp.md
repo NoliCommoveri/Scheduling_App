@@ -3,6 +3,13 @@
 ## Scope: Online Revamp — Shared-Table Assignment Model on Cloudflare D1
 
 **Status:** Authored 2026-08-10. Authorized by Ray in-session.
+**Amended 2026-08-11**, authorized in-session, after a standing review found three places
+where this document and the built system disagreed. In each case the code was the better
+design and the document moved:
+§3.2 records who maintains the `children` projection and gives `active` a source (it had
+none); §5.6 and §13.1/§13.3 replace a request-level `400` and an unreachable `403` with the
+per-row rejection the Worker actually implements, and note the one client-side gap that
+leaves open. No behaviour was changed to match the old text.
 **Applies to:** Both apps, the Worker, and the interchange layer between them.
 **Supersedes:** `TDS_Slice_D1_Sync_Management_App.md` (the mirror becomes a
 curriculum-only backup), `Interchange_Contract.md` (replaced by §5's API),
@@ -135,6 +142,32 @@ CREATE TABLE IF NOT EXISTS children (
   updated_at INTEGER NOT NULL
 );
 ```
+
+**3.2.1 Who maintains it.** `handleSyncPush` writes this table in the same `batch()` as the
+`records` upsert whenever a change touches the `children` store — one implicit transaction,
+so the projection and the mirror cannot disagree. A `put` upserts; a `delete` removes the
+row while the mirror keeps its tombstone. A record with no usable `name` is skipped rather
+than failing the push, since `name` is `NOT NULL` and one malformed record must not block a
+curriculum sync.
+
+Migration `0002_backfill_children_projection.sql` derives the table from `records` for
+everything authored before the Worker maintained it. That is not the backfill §12 forbids:
+§12 is about curriculum that never reached D1 at all and cannot be recovered, whereas this
+denormalises rows already sitting in this same database.
+
+**3.2.2 Where `active` comes from.** As originally written this column had no source — the
+child record was `{ id, name }` and nothing in either app had a notion of an inactive
+child, so `active` would have read `1` forever. It is now a real field on the child record,
+set by **Archive / Restore** on the Children page. Archiving withdraws a child from every
+picker that starts new work — Assign, Chores, Events, and device pairing — while leaving
+them fully present in Assignments and Reporting, and leaving everything already assigned
+exactly as it was. It is the non-destructive alternative to delete, which cascades away
+chores, events and pacing history.
+
+Absent means active, in both directions: a child record written before the flag existed is
+older than the flag, not archived. `Children.isActive()` in the Management App and the
+`CASE` in `0002` agree on that reading, and the Worker writes `1` for a record with no
+`active` key.
 
 ### 3.3 `assignments` — the shared table
 
@@ -451,9 +484,33 @@ blob mirror, parent credential, unchanged behaviour, narrowed store list per §3
 
 ### 5.6 Rejections
 
-`401` unknown or revoked bearer · `403` credential valid but wrong child · `400`
-attempted write to a column the credential does not own · `409` pairing code expired,
-consumed, or unknown · `413` batch over 500 rows.
+`401` unknown or revoked bearer · `400` attempted write to a column the credential does
+not own, **on single-row routes** · `409` pairing code expired, consumed, or unknown ·
+`413` batch over 500 rows.
+
+**Batch routes reject per row, not per request.** `POST /api/completions` returns `200`
+with `{ applied, rejected: [{ id, error }] }`. A row naming a column the credential does
+not own, or an assignment belonging to another child, is listed in `rejected` and the rest
+of the batch still lands.
+
+This is deliberate and it is not a softening of §4.2 — the write is refused either way and
+the stored row is untouched. It is about blast radius. The Child App's outbox treats any
+4xx other than 401/408/429 as permanent and **discards the rows that request carried**
+(`outbox.js`, `drainRequests`), so a request-level `400` for one malformed row would throw
+away every good completion queued alongside it. Per-row rejection is the only shape that
+lets a bad row fail without taking a day's work with it.
+
+`403` is **never returned**, and no route can return it. The Worker derives `child_id`
+from the token and ignores any child identifier in a request body or query string, so
+"valid credential, wrong child" is not a reachable state — a completion naming another
+child's assignment matches no row and comes back in `rejected`. Structural impossibility
+rather than a check.
+
+> **Known gap, not yet closed.** `outbox.js` inspects only the HTTP status, not the
+> `rejected` array, so a per-row rejection is dropped from the queue without a log. The
+> child's device believes the completion landed and the server disagrees, with nothing to
+> reconcile them. Closing this is Child App work: read `rejected`, and surface or re-queue
+> it. Recorded here so the next session finds it rather than rediscovering it.
 
 ---
 
@@ -691,10 +748,18 @@ throughout.
 ## 13. Acceptance checks
 
 1. Two devices paired to different children; each `GET /api/plan` returns only its own
-   child's rows. A device token used with another child's ID returns `403`.
+   child's rows. A device posting a completion for an assignment belonging to the other
+   child changes nothing and gets that row back in `rejected` — `/api/plan` takes no child
+   parameter to forge, and `/api/completions` ignores any `childId` in the body, so there
+   is no request that expresses "this child's token, that child's data."
+   *(Was: "a device token used with another child's ID returns `403`." That check could
+   never fail, because no route accepts a caller-supplied child id in the first place —
+   see §5.6. Rewritten to test the guarantee that actually holds.)*
 2. A child device token presented to `/api/sync/snapshot` returns `401`.
-3. A child request writing `title` or `reward_amount` returns `400`; the stored row is
-   unchanged.
+3. A child request writing `title` or `reward_amount` leaves the stored row unchanged and
+   names the offending column in `rejected`, while every well-formed row in the same batch
+   is applied. *(Was: "returns `400`." See §5.6 — a request-level 400 would make the
+   client discard the whole batch.)*
 4. Commit a batch, then rescind by `batch_id`: pending rows gain `rescinded_at`, completed
    rows are untouched, and every `reward_entries` row survives.
 5. Rescind a batch while a device is offline with a pending completion for one of its rows.
