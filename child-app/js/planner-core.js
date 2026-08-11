@@ -21,8 +21,14 @@
 //   - `required`    — drives the overdue roll-forward below.
 //   - `startDate` / `endDate` — a family event's true span. The row's own `date`
 //     is a single in-range day, so the span cannot come from the column.
-// They are named here so a later session collapsing the rest of the shim knows
-// these two do not simply fall out when the camelCase aliases go.
+// Phase 2 deleted the camelCase column aliases and these two stayed, which is
+// the distinction they were named here to make: they are payload fields with no
+// column, not second names for one.
+//
+// Everything else is read by its column name, including the one shape this file
+// synthesizes — subjectsView's groups are keyed `course_name`, because the value
+// is the column and inventing a second spelling for it is the thing §14 is
+// removing.
 
 (function (g) {
   "use strict";
@@ -163,7 +169,7 @@
       .forEach(function (r) {
         var name = r.course_name;
         if (!(name in index)) {
-          index[name] = { courseName: name, items: [] };
+          index[name] = { course_name: name, items: [] };
           groups.push(index[name]);
         }
         index[name].items.push(r);

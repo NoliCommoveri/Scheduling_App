@@ -4,10 +4,19 @@
 // (sortOrder, blockHint) via plannerMeta. The plan itself is derived here each
 // render and never persisted.
 //
-// Online Revamp §14: this file is phase 2 of the shim collapse and has not been
-// done. It still renders by the pre-revamp field names — `courseName`,
-// `sequenceNumber`, `choreType`, a parsed `payload` — which is the only reason
-// assignment-core.js still adds them to the row.
+// Online Revamp §14, shim collapse — **phase 2 is this file.** It used to render
+// by the pre-revamp field names — `courseName`, `sequenceNumber`, `activityType`
+// and a `payload` that assignment-core had quietly replaced with a parsed
+// object — which was the only reason those names were minted at all. It now
+// renders from the §3.3 columns themselves: `course_name`, `sequence_no`,
+// `activity_type`.
+//
+// The camelCase names that remain here are not columns and are not aliases:
+// `choreType`, `lessonTitle`, `capturesGrade`, `required`, `notes`, `time` and
+// an event's `startDate`/`endDate` come out of the row's `payload`, where the
+// Management App writes what §3.3 gives no column, and `content` is that
+// payload's kind-specific descriptor. `blockHint` / `sortOrder` in setMeta are
+// the `plannerMeta` store's vocabulary, and go with the store in phase 3.
 
 (function (g) {
   "use strict";
@@ -504,7 +513,7 @@
       var wrap = node("div");
       if (groups.length === 0) { wrap.appendChild(node("div", "section-empty", "No school work to group by subject for this date.")); return wrap; }
       groups.forEach(function (grp) {
-        wrap.appendChild(node("div", "subject-head", grp.courseName));
+        wrap.appendChild(node("div", "subject-head", grp.course_name));
         grp.items.forEach(function (a, i) {
           var blockName = P.effectiveBlock(a);
           var card = itemCard(a, "activity", blockName, grp.items, i);
@@ -524,18 +533,20 @@
       var main = node("div", "card-main");
 
       var tagrow = node("div", "tagrow");
-      var typeText = kind === "chore" ? item.choreType : item.activityType;
+      // A chore's type is a payload field (no column); an activity's is the
+      // `activity_type` column, carrying the parent's label rather than the key.
+      var typeText = kind === "chore" ? item.choreType : item.activity_type;
       if (typeText) tagrow.appendChild(node("span", "type-tag", typeText));
-      // sequenceNumber: rendered whenever present, keyed off presence (FR-10),
-      // distinct from the title, regardless of payload.kind.
-      if (typeof item.sequenceNumber === "number") {
-        tagrow.appendChild(node("span", "ordinal", "No. " + item.sequenceNumber));
+      // sequence_no: rendered whenever present, keyed off presence (FR-10),
+      // distinct from the title, regardless of the content descriptor's kind.
+      if (typeof item.sequence_no === "number") {
+        tagrow.appendChild(node("span", "ordinal", "No. " + item.sequence_no));
       }
       if (tagrow.childNodes.length) main.appendChild(tagrow);
 
-      // courseName label (FR-12) — above the title, activities only, only when present.
-      if (kind === "activity" && item.courseName) {
-        main.appendChild(node("div", "course-sub", item.courseName));
+      // course_name label (FR-12) — above the title, activities only, only when present.
+      if (kind === "activity" && item.course_name) {
+        main.appendChild(node("div", "course-sub", item.course_name));
       }
 
       main.appendChild(node("div", "title", item.title));
@@ -545,10 +556,11 @@
         main.appendChild(node("div", "lesson-sub", item.lessonTitle));
       }
 
-      // payload line by kind (FR-11) — activities only.
+      // content line by kind (FR-11) — activities only, and only an activity's
+      // payload carries a content descriptor at all.
       if (kind === "activity") {
-        var payloadEl = renderPayload(item.payload);
-        if (payloadEl) main.appendChild(payloadEl);
+        var contentEl = renderContent(item.content);
+        if (contentEl) main.appendChild(contentEl);
       }
 
       // instructions / notes (FR-9) — only when present.
@@ -605,15 +617,17 @@
       return card;
     }
 
-    function renderPayload(payload) {
-      if (!payload) return null;
-      switch (payload.kind) {
+    // `content` is what packet.js's projectPayload wrote: the kind-specific
+    // half of an activity's payload, promoted out of it by assignment-core.
+    function renderContent(content) {
+      if (!content) return null;
+      switch (content.kind) {
         case "pageRange":
-          return node("div", "payload", "Pages " + payload.pageRangeStart + "\u2013" + payload.pageRangeEnd);
+          return node("div", "payload", "Pages " + content.pageRangeStart + "\u2013" + content.pageRangeEnd);
         case "reference":
-          return node("div", "payload ref", payload.reference);
+          return node("div", "payload ref", content.reference);
         case "freeText":
-          return node("div", "payload", payload.text);
+          return node("div", "payload", content.text);
         case "none":
         default:
           return null; // a Practice Level's content is its ordinal (FR-10)
@@ -635,7 +649,7 @@
 
     // ---------- completion (Module 4) ----------
     // Grade entry is offered only when the item's own capturesGrade is true
-    // (never inferred from activityType/kind — Chores simply lack the field,
+    // (never inferred from activity_type/kind — Chores simply lack the field,
     // SRS Module 4 FR-1/FR-2). Either way completion always succeeds.
     function handleComplete(item) {
       if (item.capturesGrade) openGradeDialog(item);

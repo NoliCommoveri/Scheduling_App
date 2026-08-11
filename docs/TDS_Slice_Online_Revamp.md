@@ -67,6 +67,20 @@ now waiting on a proving period to be deleted. What is left of the §8.2 shim is
 its size — a rewrite of the largest file in the Child App, and an IndexedDB v8 migration —
 and that is the only reason it is deferred. §14 states it that way.
 
+**Amended a seventh time 2026-08-11**, authorized in-session, recording **phase 2 of the
+§8.2 shim collapse**. Phase 1 left one object per assignment answering to two vocabularies:
+`decorate()` minted a camelCase alias for six §3.3 columns because `planner-ui.js` and
+`completion.js` were written against the pre-revamp names, and it overwrote the `payload`
+column with a parsed, stripped object because the planner rendered from it. Both readers now
+read the columns, the aliases are deleted, and `payload` passes through as the column it is —
+what was parsed out of it is added under names of its own, including `content` for an
+activity's kind-specific descriptor. §8.2 is rewritten around what `decorate()` is left
+doing, which is one stateable thing: the row, plus the fields §3.3 gives no column. §14
+records phase 3 as the only remaining part, and notes that it now has no callers left to
+convert — only the IndexedDB v8 migration and an amendment to CLAUDE.md §IV.B. No API,
+schema, credential or rendering behaviour changed; the same plan renders from the same
+values under one set of names.
+
 **Applies to:** Both apps, the Worker, and the interchange layer between them.
 **Supersedes:** `TDS_Slice_D1_Sync_Management_App.md` (the mirror becomes a
 curriculum-only backup), `Interchange_Contract.md` (replaced by §5's API),
@@ -775,33 +789,52 @@ Balance display reads the local cache; the server's `SUM` is authoritative on re
 ### 8.2 The `loadState()` adapter
 
 `DB.loadState()` returns `{ rows, activities, chores, events, meta }`. `rows` is what the
-planner works from: the `assignments` rows for this device, live and pending only (§6.4),
-each decorated with the pre-revamp *names* `planner-ui.js` still renders by. The other four
-keys are the pre-revamp shape, retained because CLAUDE.md §IV.B pins them until the collapse
-finishes.
+whole Child App works from: the `assignments` rows for this device, live and pending only
+(§6.4), each decorated by `assignment-core.js`. The other four keys are the pre-revamp
+shape, retained because CLAUDE.md §IV.B pins them until the collapse finishes.
 
-This is an explicit compatibility shim with a stated lifespan: it exists so the planner UI
-does not have to be rewritten in the same change that replaces the data layer. Recording it
-here so a later session recognises it as scaffolding rather than design.
+This was an explicit compatibility shim with a stated lifespan: it existed so the planner UI
+did not have to be rewritten in the same change that replaced the data layer. Phases 1 and 2
+of §14 have since removed both halves of it; what remains under that name is described at
+the end of this section, and is the phase 3 store drop.
 
-**As of phase 1 of the collapse (§14), the shim no longer builds a second object.** It used
-to emit a packet-shaped record *plus* a parallel `meta` map holding the child-owned values
-under different names, so every planning decision consulted two objects and an id lookup to
-answer what one row already answered. `decorate()` now returns the row itself with the
-aliases added alongside its columns, and the derivation in `planner-core.js` reads
+**Phase 1 removed the second object.** `decorate()` used to emit a packet-shaped record
+*plus* a parallel `meta` map holding the child-owned values under different names, so every
+planning decision consulted two objects and an id lookup to answer what one row already
+answered. It now returns the row, and the derivation in `planner-core.js` reads
 `deferred_to`, `child_block_hint` and `child_sort_order` directly — §3.3.3's
 `COALESCE(child_sort_order, sort_order)`, evaluated on the client exactly as the server
 states it.
 
+**Phase 2 removed the second vocabulary.** `decorate()` used to add a camelCase alias for
+six columns — `courseName`, `sequenceNumber`, `activityType`, `rewardCategoryId`,
+`rewardAmount`, `expectedDurationMin` — and to overwrite the `payload` column with a parsed,
+stripped object, so a row answered to two names for one value and misreported one of its own
+columns. `planner-ui.js` and `completion.js` read the §3.3 columns now, and the aliases are
+deleted. `subjectsView`'s synthesized groups are keyed `course_name` for the same reason: the
+value is the column.
+
+What `decorate()` does is now exactly one thing — **the row, plus the fields §3.3 gives no
+column**, every one of them lifted out of `payload`:
+
+| Added | Applies to | Why it cannot be a column |
+|---|---|---|
+| `required` | activity, chore | §3.3 has none; drives the overdue roll-forward (§2.1) |
+| `capturesGrade` | activity | §3.3 has none; gates grade entry (Module 4 FR-2) |
+| `startDate` / `endDate` | event | The row's `date` is one in-range day, not the span |
+| `difficultyTier`, `lessonTitle`, `instructions`, `choreType`, `notes`, `time` | by kind | Parent-authored detail with no column |
+| `content` | activity | The kind-specific descriptor (`pageRange` / `reference` / `freeText` / `none`) that `packet.js`'s `projectPayload` writes |
+
+`content` is named for what it is rather than shadowing `payload`, which is passed through
+untouched — so the decorated object is still the row, with additions, and nothing has to know
+that a column was reinterpreted on the way past.
+
 An override this device has written but not yet drained lives in `plannerMeta` in the
 pre-revamp vocabulary; `loadState()` overlays it onto the row **as the column it is on its
 way to becoming**, field by field, so a pending deferral reaches the planner without a
-second shape surviving alongside the first. The store itself goes in phase 3.
-
-Two fields the derivation needs are not columns, because §3.3 gives them none — `required`,
-and a family event's `startDate`/`endDate` span. Both are promoted out of `payload` by
-`decorate()`, and they are the reason the row handed to `planner-core.js` is a decorated one
-rather than the raw cache row.
+second shape surviving alongside the first. The store itself goes in phase 3, and so do the
+four legacy keys: as of phase 2 nothing reads any of them — `planner-ui.js` and `streak.js`
+both take `rows`, and `meta` lost its last reader when `planner-core.js` stopped taking one.
 
 ### 8.3 Freshness
 
@@ -949,7 +982,7 @@ The current app keeps working throughout.
 | **2** | Pairing (§4.3) + Devices UI | Child App still on the old path. |
 | **3** | Commit writes assignments; Child App reads `/api/plan` | File import retained as fallback. |
 | **4** | Completions and rewards upload; Reporting view | CSV import retained as fallback. |
-| **5** | Delete §11, collapse the §8.2 shim, service worker fix | The §11 deletions and the service worker fix are **done**. The shim collapse is phased in its own right and only phase 1 is built — see §14. |
+| **5** | Delete §11, collapse the §8.2 shim, service worker fix | The §11 deletions and the service worker fix are **done**. The shim collapse is phased in its own right; phases 1 and 2 are built and phase 3 (the IndexedDB v8 store drop) is not — see §14. |
 
 ---
 
@@ -1042,7 +1075,7 @@ The current app keeps working throughout.
   missing is the field on the tier, and a decision about whether it is per tier or per
   activity. Until then §7 describes a path that carries a constant. The one way a row gets
   a real amount today is a parent editing it by hand in the Assignments view.
-- **Collapsing the §8.2 shim — phase 1 done, phases 2–3 open.** Deferred on size, not on
+- **Collapsing the §8.2 shim — phases 1–2 done, phase 3 open.** Deferred on size, not on
   readiness: §12's live-days gate is repealed (sixth amendment), so what is left here is
   waiting on someone choosing to spend the time, and nothing else.
 
@@ -1057,16 +1090,24 @@ The current app keeps working throughout.
   `DB.loadState()` overlays an unflushed `plannerMeta` record as the columns it is on its
   way to becoming rather than as a parallel map.
 
-  **Open (phase 2): the render names.** `planner-ui.js` is still written against the
-  pre-revamp field names (`courseName`, `sequenceNumber`, `choreType`, a parsed `payload`),
-  which is the only reason `decorate()` adds them. This is a rewrite of the largest file in
-  the Child App, not a tidy-up.
+  **Done (phase 2): the render names.** `planner-ui.js` renders from the §3.3 columns —
+  `course_name`, `sequence_no`, `activity_type` — and `completion.js` builds its earn entry
+  from `reward_category` and `reward_amount`. The six camelCase aliases `decorate()` minted
+  for them are deleted, `expectedDurationMin` among them (nothing had read it since the
+  packet era). `payload` is no longer overwritten with a parsed subset of itself: the column
+  passes through untouched and an activity's kind-specific descriptor is added as `content`.
+  `subjectsView`'s groups are keyed `course_name`. What `decorate()` adds is now only what
+  §3.3 gives no column — see §8.2's table.
 
   **Open (phase 3): the stores.** `activities`/`chores`/`events` survive as empty stores and
   `plannerMeta` remains a store rather than folding into the child-owned columns. Dropping
   them is an IndexedDB v8 migration, and it is what finally lets `DB.loadState()` return
-  `rows` alone — CLAUDE.md §IV.B pins the four legacy keys until then, so `toState()` keeps
-  returning them even though `streak.js` is the last consumer of any of them.
+  `rows` alone. CLAUDE.md §IV.B pins the four legacy keys until then, so `toState()` keeps
+  returning them — but as of phase 2 **nothing reads any of them**, so this is a deletion
+  with no callers to convert first, gated on the schema change and on amending §IV.B.
+  `export-core.js` is the one file still written against the pre-revamp field names; it
+  reads the legacy stores rather than an assignment row, and is dead by construction until
+  §11's "CSV as a report export" is rebuilt on `rows`. That rebuild belongs with this phase.
 
   > The **local ledger** half of this item, with which it was originally bundled, is
   > **done** — see the third amendment at the head of this document.
