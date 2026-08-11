@@ -3,14 +3,14 @@
 One-time setup, ~10 minutes. Everything here stays inside Cloudflare's free tier.
 
 > **Partially superseded — 2026-08-10.** `docs/TDS_Slice_Online_Revamp.md` makes D1 the
-> system of record and puts both apps behind one Worker. Two things in this guide change
-> when that lands:
+> system of record and puts both apps behind one Worker. Two things in this guide change:
 >
-> - **Step 3 (creating tables by pasting SQL into the D1 console) goes away.** Schema arrives
+> - **Step 3 no longer touches the D1 console.** *(Done — Revamp Phase 0.)* Schema arrives
 >   as numbered files in `/migrations`, applied by clicking **Apply** in Settings → Database
 >   or at `/admin/migrations`. No console, no CLI. See Revamp §3.7.
 > - **`[assets] directory` widens to `./`** so the Child App is served from the same origin,
->   and a repo-root `.assetsignore` becomes load-bearing. See Revamp §10.
+>   and a repo-root `.assetsignore` becomes load-bearing. *(Still pending — needed at Phase 3,
+>   when the Child App starts calling the API.)* See Revamp §10.
 >
 > Everything else below — the git connection, the repo-root `wrangler.toml`, the
 > `SYNC_TOKEN` secret, the troubleshooting section — is unchanged and still correct.
@@ -66,33 +66,27 @@ writing somewhere unexpected.
 > persist, because `wrangler.toml` is the source of truth and Cloudflare will not
 > let the two drift. The repo config above is the only place this belongs.
 
-## 3. Create the table
+## 3. Create the tables
 
-> **This step is retired once the migration runner lands** (Revamp §3.7). From then on the
-> schema applies itself from the browser and you never touch the console again. Until then,
-> the manual path below is how the `records` table got created, kept here because the live
-> database was built this way.
+**Nothing to do in the console.** The schema ships as numbered files in `/migrations`
+and applies itself from a button (Revamp §3.7). Do this once the Worker is deployed
+(Part B) and `SYNC_TOKEN` is set (step 4):
 
-Open the database, go to the **Console** tab, and run these two statements **one at
-a time**:
+- **Settings → Database**, in the Management App. It lists every migration with its
+  state and applies the pending ones. The app also checks on load and raises a banner
+  by itself when something is pending, so you do not have to remember to look.
+- **`/admin/migrations`** on the deployed origin — a plain page served by the Worker,
+  with a token field and a confirm box. Use this one if the Management App will not
+  start, which is exactly when a schema problem is most likely.
 
-```sql
-CREATE TABLE IF NOT EXISTS records (store TEXT NOT NULL, key TEXT NOT NULL, value TEXT, deleted INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, device_id TEXT, PRIMARY KEY (store, key));
-```
+Either surface needs the parent `SYNC_TOKEN`. Both are safe to press twice: applying
+with nothing pending writes nothing and says so.
 
-```sql
-CREATE INDEX IF NOT EXISTS idx_records_updated_at ON records (updated_at);
-```
-
-(These are the same statements as `worker/schema.sql`, flattened for the console.)
-
-Confirm it worked:
-
-```sql
-SELECT name FROM sqlite_master WHERE type IN ('table','index') ORDER BY name;
-```
-
-You should see `records` and `idx_records_updated_at`.
+> **The console path is retired.** The `records` table on the live database was created
+> by hand there before the runner existed, which is why `0001_online_revamp_init.sql`
+> uses `CREATE TABLE IF NOT EXISTS` throughout — it is a no-op against that table and
+> creates everything else. Applied migrations are tracked in `d1_migrations`, so nothing
+> is ever applied twice.
 
 ## 4. Set your sync token
 
