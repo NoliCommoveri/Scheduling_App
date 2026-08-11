@@ -34,7 +34,7 @@
   "use strict";
 
   var DB_NAME = "childAppDB";
-  var DB_VERSION = 5;
+  var DB_VERSION = 6;
   var SINGLETONS = ["child", "semester", "themeSettings", "streak", "syncMeta"];
   var KEYED = ["activities", "chores", "events", "plannerMeta", "assignments"];
   var KEYED_CUSTOM = [
@@ -44,7 +44,15 @@
     // In-line autoIncrement, same pattern as rewardLedgerTail: the generated
     // key is written back onto the stored row, so a drained row carries the
     // `seq` the drain has to delete without a second lookup.
-    { name: "outbox", keyPath: "seq", autoIncrement: true }
+    { name: "outbox", keyPath: "seq", autoIncrement: true },
+    // Rows the server accepted the request for but refused (§5.6's per-row
+    // `rejected` array). Its own store rather than a field on syncMeta, for the
+    // reason outbox.js records at length: plan-sync.js does a read-modify-write
+    // on that singleton around every poll, and a second writer would eventually
+    // clobber the device token. Durable rather than in-memory because unlike the
+    // rest of the upload bookkeeping this is a lost write, and a counter that
+    // resets on reload is how it stays lost.
+    { name: "rejections", keyPath: "seq", autoIncrement: true }
   ];
 
   var _db = null;
@@ -219,6 +227,53 @@
     return delMany("outbox", seqs);
   }
 
+  // ---- rejections (§5.6) ----
+  //
+  // A write the server took the request for and then refused. There is nothing
+  // the device can do about it on its own — a rejected row is rejected for a
+  // permanent reason (a column the credential does not own, a value outside its
+  // domain, an assignment belonging to someone else) — so these are kept to be
+  // shown, not retried.
+
+  function rejectionAddMany(rows) {
+    if (!rows.length) return Promise.resolve();
+    return tx(["rejections"], "readwrite").then(function (t) {
+      rows.forEach(function (row) { t.objectStore("rejections").add(row); });
+      return txDone(t);
+    });
+  }
+
+  function rejectionAll() {
+    return getAll("rejections");
+  }
+
+  function rejectionCount() {
+    return tx(["rejections"], "readonly").then(function (t) {
+      return reqToPromise(t.objectStore("rejections").count());
+    });
+  }
+
+  function rejectionClear() {
+    return tx(["rejections"], "readwrite").then(function (t) {
+      t.objectStore("rejections").clear();
+      return txDone(t);
+    });
+  }
+
+  // Drop the plannerMeta override for assignments the cache no longer holds.
+  // plan-sync prunes rows that were rescinded or that fell out of the window,
+  // and without this their overrides accumulate in a store nothing ever reads
+  // again — loadState() merges plannerMeta over the server rows by id, so an
+  // orphan is invisible and permanent.
+  function pruneMeta(liveIds) {
+    return getAll("plannerMeta").then(function (all) {
+      var dead = all
+        .filter(function (m) { return !liveIds[m.id]; })
+        .map(function (m) { return m.id; });
+      return dead.length ? delMany("plannerMeta", dead).then(function () { return dead.length; }) : 0;
+    });
+  }
+
   // Read/merge/write a single plannerMeta field, leaving other fields intact.
   function setMeta(id, patch) {
     return get("plannerMeta", id).then(function (existing) {
@@ -258,6 +313,11 @@
     outboxAll: outboxAll,
     outboxCount: outboxCount,
     outboxDelete: outboxDelete,
+    rejectionAddMany: rejectionAddMany,
+    rejectionAll: rejectionAll,
+    rejectionCount: rejectionCount,
+    rejectionClear: rejectionClear,
+    pruneMeta: pruneMeta,
     loadState: loadState,
     setMeta: setMeta,
     devWipeAll: devWipeAll

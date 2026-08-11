@@ -131,7 +131,20 @@
       cache: "no-store",
       body: JSON.stringify(request.body)
     }).then(function (res) {
-      if (res.ok) return { ok: true };
+      // §5.6's per-row rejections. A 200 does not mean every row landed: the
+      // batch routes answer { applied, rejected: [{ id, error }] } so one bad
+      // row cannot take a day's work with it. Reading only res.ok — which this
+      // did, and which §5.6 recorded as a known gap — deleted those rows from
+      // the queue and told the kid the work was saved while the server had
+      // refused it. Nothing on either side would ever have reconciled them.
+      if (res.ok) {
+        return res.json()
+          .catch(function () { return null; })  // 200 with no body (or a PUT) is a clean success
+          .then(function (parsed) {
+            var rejected = parsed && Array.isArray(parsed.rejected) ? parsed.rejected : [];
+            return rejected.length > 0 ? { ok: true, rejected: rejected } : { ok: true };
+          });
+      }
       if (res.status === 401) return { ok: false, unauthorized: true };
       // A 4xx that is not 401 means this request will never succeed: a column
       // the credential does not own (§5.6), a batch the server will not take,
@@ -142,6 +155,48 @@
         return { ok: false, permanent: true, status: res.status };
       }
       return { ok: false, retry: true, status: res.status };
+    });
+  }
+
+  // Write down what the server refused, before the queue rows that carried it
+  // are deleted. Two shapes reach here:
+  //
+  //   - result.rejected — §5.6's per-row array on an otherwise-2xx response.
+  //     The rest of the batch landed; these specific rows did not.
+  //   - result.permanent — a 4xx that killed the whole request, so every row it
+  //     carried is refused.
+  //
+  // Neither is retried. A rejection is permanent by construction (a column the
+  // credential does not own, a value outside its domain, an assignment
+  // belonging to another child), so re-queueing would spin forever against a
+  // server that will keep saying no. Recorded and surfaced instead, which is
+  // what §5.6's "read `rejected`, and surface or re-queue it" asked for.
+  function recordRejections(request, result) {
+    var rows = [];
+    var at = Date.now();
+
+    if (result.rejected) {
+      result.rejected.forEach(function (item) {
+        rows.push({ at: at, path: request.path, id: item && item.id ? item.id : null, error: (item && item.error) || "Rejected." });
+      });
+    } else if (result.permanent) {
+      rows.push({
+        at: at, path: request.path, id: null,
+        error: "The server refused this upload (HTTP " + result.status + "), and " +
+          request.seqs.length + " queued item(s) were dropped."
+      });
+    }
+
+    if (!rows.length) return Promise.resolve();
+
+    state.lastError = "rejected";
+    rows.forEach(function (row) {
+      console.error("[outbox] rejected " + row.path + (row.id ? " id=" + row.id : "") + ": " + row.error);
+    });
+    // A failure to record must not stop the drain: the queue rows are already
+    // spent, and losing the note is strictly better than wedging the queue.
+    return g.DB.rejectionAddMany(rows).catch(function (err) {
+      console.warn("[outbox] could not record rejections:", err && err.message ? err.message : err);
     });
   }
 
@@ -163,7 +218,9 @@
           // Deleted only after the response, and only the seqs this request
           // carried — a run that dies halfway leaves the rest queued rather
           // than losing them.
-          return g.DB.outboxDelete(request.seqs).then(function () { return null; });
+          return recordRejections(request, result)
+            .then(function () { return g.DB.outboxDelete(request.seqs); })
+            .then(function () { return null; });
         });
       });
     }, Promise.resolve(null));
@@ -261,10 +318,35 @@
     scheduleDrain(0);
   }
 
+  // `rejected` is read from the store, not from `state`, so it survives a
+  // reload the way the fact it describes does. Everything else here is the
+  // in-memory status line and is allowed to reset.
   function status() {
-    return g.DB.outboxCount().then(function (count) {
-      state.pending = count;
-      return { pending: count, lastUploadedAt: state.lastUploadedAt, error: state.lastError };
+    return Promise.all([g.DB.outboxCount(), g.DB.rejectionCount()]).then(function (r) {
+      state.pending = r[0];
+      return {
+        pending: r[0],
+        rejected: r[1],
+        lastUploadedAt: state.lastUploadedAt,
+        error: state.lastError
+      };
+    });
+  }
+
+  // What was refused, for the Settings panel. Newest first — a kid scrolling
+  // this wants the thing that just happened, not the first one ever.
+  function rejections() {
+    return g.DB.rejectionAll().then(function (rows) {
+      return rows.slice().sort(function (a, b) { return b.seq - a.seq; });
+    });
+  }
+
+  // Dismissal, once a parent has seen them. Clears the notice, not the facts:
+  // the completions themselves are still recorded locally, and the assignments
+  // they failed against are still on the server exactly as they were.
+  function clearRejections() {
+    return g.DB.rejectionClear().then(function () {
+      if (state.lastError === "rejected") state.lastError = null;
     });
   }
 
@@ -275,6 +357,8 @@
     enqueueStreak: enqueueStreak,
     drain: drain,
     start: start,
-    status: status
+    status: status,
+    rejections: rejections,
+    clearRejections: clearRejections
   };
 })(typeof window !== "undefined" ? window : globalThis);

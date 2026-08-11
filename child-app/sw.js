@@ -17,7 +17,12 @@
 // mirror image of v3's: a device still holding the v4 set would keep serving
 // six files that no longer exist on the server, and — because index.html is
 // itself cached — would keep <script>ing them from a stale shell forever.
-const CACHE_NAME = "daily-plan-shell-v5";
+// v6: no file was added or removed this time — db.js, outbox.js, plan-sync.js
+// and planner-ui.js changed contents. That still needs a bump: this handler is
+// cache-first for every shell path, so an unchanged CACHE_NAME would keep
+// serving the old copies indefinitely and the §5.6 rejection handling would
+// never reach a device that already has the app installed.
+const CACHE_NAME = "daily-plan-shell-v6";
 
 const APP_SHELL = [
   "./",
