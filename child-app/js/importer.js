@@ -32,7 +32,11 @@
     if (!result.ok) return Promise.resolve(result);
 
     var packet = result.packet;
-    return Promise.all([g.DB.loadState(), g.DB.getAll("activityRecords")]).then(function (r) {
+    // loadLocalState, not loadState: the merge's "what is already here" must be
+    // the packet-imported stores alone. Server assignments (Online Revamp §8.2)
+    // are in loadState's union but were never in a packet, so they are not
+    // candidates for refresh-on-pending and must not seed the receipt counter.
+    return Promise.all([g.DB.loadLocalState(), g.DB.getAll("activityRecords")]).then(function (r) {
       var state = r[0];
       var isResolved = buildIsResolved(r[1]);
       var existing = { activities: {}, chores: {}, events: {} };

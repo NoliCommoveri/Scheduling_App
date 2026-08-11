@@ -9,7 +9,10 @@
 //
 // v2, not v1: the shell moved origin (GitHub Pages → the Worker, §10) and the
 // handler changed shape, so every previously cached entry must be discarded.
-const CACHE_NAME = "daily-plan-shell-v2";
+// v3: Phase 3B adds assignment-core.js and plan-sync.js to the shell. A device
+// still holding the v2 set would boot an index.html that <script>s two files
+// the cache has never heard of.
+const CACHE_NAME = "daily-plan-shell-v3";
 
 const APP_SHELL = [
   "./",
@@ -23,6 +26,7 @@ const APP_SHELL = [
   "./js/import-core.js",
   "./js/merge-core.js",
   "./js/planner-core.js",
+  "./js/assignment-core.js",
   "./js/completion-core.js",
   "./js/deferment-core.js",
   "./js/streak-core.js",
@@ -33,6 +37,7 @@ const APP_SHELL = [
   "./js/settings-core.js",
   "./js/db.js",
   "./js/pairing.js",
+  "./js/plan-sync.js",
   "./js/theming.js",
   "./js/importer.js",
   "./js/completion.js",
