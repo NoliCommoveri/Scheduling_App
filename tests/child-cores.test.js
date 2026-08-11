@@ -165,8 +165,9 @@ test('§6.4: a rescinded row the child completed stays off the plan', () => {
 });
 
 test('toState returns the decorated rows, and the pre-revamp keys alongside', () => {
-  // §14 phase 1: `rows` is what the planner works from. The other four keys are
-  // scaffolding CLAUDE.md §IV.B pins until the collapse finishes.
+  // §14 phases 1–2: `rows` is what every consumer works from. The other four
+  // keys now have none at all, and are scaffolding CLAUDE.md §IV.B pins until
+  // the phase 3 store drop.
   const state = AssignmentCore.toState([
     row({ id: 'a1', kind: 'activity' }),
     row({ id: 'c1', kind: 'chore', title: 'Dishes' }),
@@ -188,8 +189,18 @@ test('decorate keeps the row it was given, and does not mutate it', () => {
   assert.equal(item.child_sort_order, 9);
   assert.equal(item.deferred_to, '2026-08-14');
   assert.equal(item.kind, 'activity');
-  assert.equal(source.payload, null, 'the cached row keeps its raw payload');
-  assert.ok(!('courseName' in source), 'aliases land on the copy, not the row');
+  assert.ok(!('content' in source), 'decoration lands on the copy, not the row');
+});
+
+test('decorate passes the payload column through untouched', () => {
+  // §14 phase 2: it used to overwrite `payload` with a parsed, stripped object,
+  // so the copy was not the row it claimed to be. What was parsed out of it is
+  // now added under its own names.
+  const raw = JSON.stringify({ kind: 'reference', reference: 'p. 40', lessonTitle: 'Rivers' });
+  const item = AssignmentCore.decorate(row({ payload: raw }));
+  assert.equal(item.payload, raw);
+  assert.equal(item.lessonTitle, 'Rivers');
+  assert.deepEqual(item.content, { kind: 'reference', reference: 'p. 40' });
 });
 
 test('toState ignores an unknown kind rather than crashing', () => {
@@ -197,21 +208,34 @@ test('toState ignores an unknown kind rather than crashing', () => {
   assert.equal(state.rows.length, 0);
 });
 
-test('toState promotes payload fields and leaves them out of the payload', () => {
+test('toState promotes payload fields and leaves them out of the content', () => {
   const state = AssignmentCore.toState([row({
     payload: JSON.stringify({
       kind: 'pageRange', pageRangeStart: 10, pageRangeEnd: 20,
       required: true, capturesGrade: true, difficultyTier: 'T2', instructions: 'Skim it',
     }),
   })]);
-  const item = state.activities[0];
+  const item = state.rows[0];
   assert.equal(item.required, true);
   assert.equal(item.capturesGrade, true);
   assert.equal(item.difficultyTier, 'T2');
   assert.equal(item.instructions, 'Skim it');
-  assert.equal(item.payload.pageRangeStart, 10);
-  assert.ok(!('required' in item.payload), 'promoted fields must not be duplicated in payload');
-  assert.ok(!('instructions' in item.payload));
+  assert.equal(item.content.pageRangeStart, 10);
+  assert.ok(!('required' in item.content), 'promoted fields must not be duplicated in content');
+  assert.ok(!('instructions' in item.content));
+});
+
+test('only an activity gets a content descriptor', () => {
+  // A chore's payload is a chore type and a flag; an event's is a span. Neither
+  // has a "what the work is" descriptor for planner-ui to render.
+  const [chore, event] = AssignmentCore.toState([
+    row({ id: 'c1', kind: 'chore', payload: JSON.stringify({ choreType: 'Daily' }) }),
+    row({ id: 'e1', kind: 'event', payload: JSON.stringify({ time: '18:00' }) }),
+  ]).rows;
+  assert.ok(!('content' in chore));
+  assert.ok(!('content' in event));
+  assert.equal(chore.choreType, 'Daily');
+  assert.equal(event.time, '18:00');
 });
 
 test('toState treats an absent chore `required` as true', () => {
@@ -233,23 +257,29 @@ test('toState synthesises meta only from child-owned columns, and stays sparse',
   });
 });
 
-test('toState omits optional aliases rather than setting them empty', () => {
-  // Several planner-ui branches key off presence and would render an empty
-  // element for "".
-  const item = AssignmentCore.toState([row({ course_name: null, activity_type: null })]).rows[0];
-  assert.ok(!('courseName' in item));
-  assert.ok(!('activityType' in item));
-});
-
-test('toState no longer mints a second name for a planning column', () => {
-  // receiptIndex and blockHint existed only to feed planner-core, which now
-  // reads sort_order and block_hint off the row. Re-adding either would put the
-  // double representation §14 phase 1 removed straight back.
-  const item = AssignmentCore.toState([row({ sort_order: 4, block_hint: 'morning' })]).rows[0];
-  assert.ok(!('receiptIndex' in item));
-  assert.ok(!('blockHint' in item));
+test('toState no longer mints a second name for any column', () => {
+  // §14 phases 1–2. receiptIndex and blockHint existed to feed planner-core; the
+  // six camelCase aliases existed to feed planner-ui and completion.js. All of
+  // them now read the column. Re-adding any would put the double representation
+  // the collapse removed straight back.
+  const item = AssignmentCore.toState([row({
+    sort_order: 4, block_hint: 'morning', sequence_no: 2,
+    reward_amount: 5, expected_duration_min: 20,
+  })]).rows[0];
+  for (const alias of [
+    'receiptIndex', 'blockHint', 'courseName', 'sequenceNumber', 'activityType',
+    'rewardCategoryId', 'rewardAmount', 'expectedDurationMin',
+  ]) {
+    assert.ok(!(alias in item), `${alias} must not be minted alongside its column`);
+  }
   assert.equal(item.sort_order, 4);
   assert.equal(item.block_hint, 'morning');
+  assert.equal(item.course_name, 'History');
+  assert.equal(item.activity_type, 'Reading');
+  assert.equal(item.sequence_no, 2);
+  assert.equal(item.reward_category, 'RC-1');
+  assert.equal(item.reward_amount, 5);
+  assert.equal(item.expected_duration_min, 20);
 });
 
 test('applyLocalMeta writes a pending override as the column it becomes', () => {
@@ -419,7 +449,7 @@ test('subjectsView groups activities by course_name, in first-seen order', () =>
     row({ id: 'c1', kind: 'chore', course_name: 'History' })
   ), TODAY, nothingResolved);
 
-  assert.deepEqual(groups.map((g) => g.courseName), ['History', 'Maths']);
+  assert.deepEqual(groups.map((g) => g.course_name), ['History', 'Maths']);
   assert.deepEqual(ids(groups[0].items), ['a3', 'a1'], 'grouped items keep position order');
   assert.deepEqual(ids(groups[1].items), ['a2']);
 });

@@ -1,28 +1,37 @@
-// assignment-core.js — the §8.2 compatibility shim, as pure functions.
+// assignment-core.js — decoration of an `assignments` row for the planner.
 // TDS_Slice_Online_Revamp.md §3.3 (the shared row), §6.4 (visibility), §8.2.
 //
-// **Online Revamp §14, shim collapse — phase 1.** This file used to build a
-// second object per assignment: it read a flat `assignments` row and emitted a
-// packet-shaped record, plus a parallel `meta` map holding the child-owned
-// values under different names. Every planning decision then had to consult two
-// objects and a lookup to answer a question one row already answered.
+// **Online Revamp §14, shim collapse — phases 1 and 2 are done here.**
 //
-// That half is gone. `decorate()` now *returns the row*, with camelCase aliases
-// and the payload's promoted fields added alongside the columns — one object per
-// assignment, carrying its own overrides. planner-core.js reads the columns
-// directly (`deferred_to`, `child_sort_order`, `child_block_hint`) and no longer
-// takes a `meta` argument at all.
+// Phase 1 removed the second object. This file used to read a flat `assignments`
+// row and emit a packet-shaped record, plus a parallel `meta` map holding the
+// child-owned values under different names, so every planning decision consulted
+// two objects and a lookup to answer a question one row already answered.
 //
-// What is left of the shim, and what phase 2 deletes:
-//   - the camelCase aliases below, which exist only because planner-ui.js is
-//     written against the pre-revamp field names;
-//   - `payload` handed back parsed and stripped, because planner-ui renders it;
-//   - `toState`'s `activities` / `chores` / `events` / `meta` keys, which now
-//     have exactly one consumer between them (streak.js reads the first two)
-//     and are otherwise kept because CLAUDE.md §IV.B pins `DB.loadState()`'s
-//     shape until the collapse finishes.
-// Recording that here so a later session recognises it as scaffolding rather
-// than design.
+// Phase 2 removed the second *vocabulary*. `decorate()` used to add a camelCase
+// alias for six columns — `courseName`, `sequenceNumber`, `activityType`,
+// `rewardCategoryId`, `rewardAmount`, `expectedDurationMin` — and to overwrite
+// the `payload` column with a parsed, stripped object, so a row answered to two
+// names for one value and misreported one of its own columns. Its readers
+// (planner-ui.js, completion.js) now read the columns §3.3 defines, and the
+// aliases are gone.
+//
+// What `decorate()` does now is exactly one thing: **the row, plus the fields
+// §3.3 gives no column.** Every one of those comes out of `payload`, which is
+// where the Management App puts what has nowhere else to go (packet.js's
+// assignmentFrom* projections):
+//   - promoted scalars — `required`, `capturesGrade`, `difficultyTier`,
+//     `lessonTitle`, `instructions`, `choreType`, `notes`, `time`;
+//   - a family event's true `startDate` / `endDate` span;
+//   - `content`, an activity's kind-specific descriptor (pageRange / reference /
+//     freeText / none) — named for what it is rather than shadowing the column
+//     it was parsed out of. The `payload` column itself is passed through
+//     untouched, so the copy is still the row.
+//
+// What is left for phase 3: `toState`'s `activities` / `chores` / `events` /
+// `meta` keys. Nothing reads any of them any more — they are kept only because
+// CLAUDE.md §IV.B pins `DB.loadState()`'s shape until the IndexedDB v8 store
+// drop, and they go in the same change.
 //
 // Pure — no fetch, no IndexedDB, no DOM — so the mapping can be exercised
 // directly against rows.
@@ -40,14 +49,18 @@
 
   // Fields the Management App tucks inside `payload` because §3.3 has no column
   // for them (packet.js's assignmentFrom* projections). They are promoted onto
-  // the row here, so they must not also be left in the payload object the
+  // the row here, so they must not also be left in the `content` descriptor the
   // planner renders from.
   var PROMOTED = [
     "required", "capturesGrade", "difficultyTier", "lessonTitle", "instructions",
     "choreType", "notes", "time", "startDate", "endDate"
   ];
 
-  function payloadOnly(p) {
+  // What is left of an activity's payload once the promoted fields are lifted
+  // out: `{ kind, …kind-specific }` — the descriptor of what the work actually
+  // is. Chores and events carry no such thing, so only the activity branch of
+  // decorate() sets it.
+  function contentOnly(p) {
     var out = {};
     Object.keys(p).forEach(function (k) {
       if (PROMOTED.indexOf(k) === -1) out[k] = p[k];
@@ -65,28 +78,25 @@
     return (row.status || "pending") === "pending" && row.rescinded_at == null;
   }
 
-  // Set a field only when the value is present, never as an empty string:
-  // several planner-ui branches key off presence (FR-8/FR-10/FR-12) and would
-  // render an empty element for "".
+  // Set a promoted field only when the value is present, never as an empty
+  // string: several planner-ui branches key off presence (FR-8/FR-9) and would
+  // render an empty element for "". A column needs no such care — it is either
+  // on the row or NULL, and both are falsy.
   function setIf(obj, key, value) {
     if (value != null && value !== "") obj[key] = value;
   }
 
-  // One assignment, one object: the row plus the names planner-ui still uses.
-  // The row is copied, never mutated — the cached row keeps its raw `payload`.
+  // One assignment, one object: the row, plus the fields §3.3 gives no column.
+  // The row is copied, never mutated, and every column on the copy — `payload`
+  // included — is still the column.
   function decorate(row) {
     var p = parsePayload(row.payload);
     var item = Object.assign({}, row);
 
-    // The payload the planner renders: parsed, minus everything promoted out of
-    // it below. Replaces the raw JSON string on the copy only.
-    item.payload = payloadOnly(p);
-
     // Promoted payload fields — these have no column, so they exist nowhere else.
-    // §7: the earned amount is the one snapshotted on the row, so a later edit to
-    // a tier never changes what was already earned. NULL today (packet.js has no
-    // per-tier amount to snapshot), which completion-core reads as the flat 1 the
-    // Child App has always used.
+    // `difficultyTier` is carried rather than read: nothing renders it today, but
+    // it has to come out of `content` either way, and it is what a per-tier
+    // reward amount (§14) would be looked up by.
     setIf(item, "difficultyTier", p.difficultyTier);
     setIf(item, "lessonTitle", p.lessonTitle);
     setIf(item, "instructions", p.instructions);
@@ -102,6 +112,10 @@
     } else if (row.kind === "activity") {
       item.required = !!p.required;
       item.capturesGrade = !!p.capturesGrade;
+      // What the work is, as packet.js's projectPayload wrote it. Only an
+      // activity has one — a chore is its title and a chore type, an event is
+      // its title and a span.
+      item.content = contentOnly(p);
     } else if (row.kind === "event") {
       // An event is left without `required` deliberately: it has no completion
       // lifecycle, and StreakCore.requiredDueOn walks every row now rather than
@@ -114,14 +128,6 @@
       item.startDate = p.startDate || row.date;
       item.endDate = p.endDate || row.date;
     }
-
-    // Column aliases — same value, pre-revamp name.
-    item.rewardCategoryId = row.reward_category;
-    if (row.reward_amount != null) item.rewardAmount = row.reward_amount;
-    setIf(item, "activityType", row.activity_type);
-    setIf(item, "courseName", row.course_name);
-    if (row.sequence_no != null) item.sequenceNumber = row.sequence_no;
-    if (row.expected_duration_min != null) item.expectedDurationMin = row.expected_duration_min;
 
     return item;
   }
@@ -157,9 +163,10 @@
     });
   }
 
-  // §8.2's "meta synthesized from the child-owned columns". Returns null when
-  // the row carries no child-side override, so the meta map stays sparse and any
-  // remaining `meta[id] || null` lookup behaves as before.
+  // §8.2's "meta synthesized from the child-owned columns". Nothing reads the
+  // result any more — see toState below — so this exists to keep the pinned
+  // shape honest rather than to be consulted. Returns null when the row carries
+  // no child-side override, so the map stays sparse.
   function metaFrom(row) {
     var m = null;
     if (row.deferred_to) (m = m || {}).deferredDate = row.deferred_to;
@@ -170,8 +177,11 @@
 
   // rows: assignment rows as `/api/plan` returns them (snake_case, §3.3).
   // Returns { rows, activities, chores, events, meta } — `rows` is the decorated
-  // set the planner now works from; the rest is the pre-revamp shape, kept per
-  // the note at the head of this file.
+  // set the planner works from, and is the only key with a consumer. As of phase
+  // 2 the other four have none at all: planner-ui.js and streak.js both read
+  // `rows`, and nothing ever read `meta` again once planner-core stopped taking
+  // it. They are kept because CLAUDE.md §IV.B pins this shape, and they go in
+  // phase 3 with the stores they mirror.
   function toState(rows) {
     var out = [];
     var activities = [];

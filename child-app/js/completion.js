@@ -65,7 +65,14 @@
       var record = C.buildActivityRecord(item.id, today, grade);
       // Minted before the row is stored, let alone sent, so the local entry and
       // the uploaded one are the same entry (§5.5).
-      var earn = C.buildEarnEntry(C.mintEntryId(), item.rewardCategoryId, today, item.id, item.rewardAmount, at);
+      //
+      // §7: both values come off the assignment row as snapshotted at assign
+      // time, so a later edit to a tier never changes what was already earned.
+      // `reward_amount` is NULL today — packet.js has no per-tier number to
+      // snapshot — which buildEarnEntry reads as the flat 1 the Child App has
+      // always used. (§14 phase 2: these were read as `rewardCategoryId` /
+      // `rewardAmount` until assignment-core stopped minting aliases.)
+      var earn = C.buildEarnEntry(C.mintEntryId(), item.reward_category, today, item.id, item.reward_amount, at);
 
       return g.DB.put("activityRecords", record)
         .then(function () { return g.DB.put("rewardEntries", earn); })
