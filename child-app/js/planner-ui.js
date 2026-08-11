@@ -44,13 +44,14 @@
       today: g.DateUtil.localISODate(new Date()),
       isResolved: function () { return false; },
       reminderInfo: { show: false },
+      upload: { pending: 0, error: null },
       // SRS Module 8 FR-7: dismissed only for this session — reappears on the
       // next app open as long as the condition still holds.
       reminderDismissed: false
     };
 
     function reload() {
-      return Promise.all([g.DB.loadState(), g.DB.getAll("activityRecords"), g.Export.reminderState(), g.Reward.gatherDisplay(), g.PlanSync.status()]).then(function (r) {
+      return Promise.all([g.DB.loadState(), g.DB.getAll("activityRecords"), g.Export.reminderState(), g.Reward.gatherDisplay(), g.PlanSync.status(), g.Outbox.status()]).then(function (r) {
         state.data = r[0];
         state.records = r[1]; // activityRecords — drives the daily completion visual
         var resolved = Object.create(null);
@@ -59,11 +60,20 @@
         state.reminderInfo = r[2];
         state.rewards = r[3];
         state.sync = r[4]; // Online Revamp §8.3 — link state, for the empty state and Settings
+        state.upload = r[5]; // Online Revamp §8.4 — how much is still queued to go up
         render();
       });
     }
 
-    function setMeta(id, patch) { return g.DB.setMeta(id, patch).then(reload); }
+    // The child's own block and order overrides (§3.3.3's child_block_hint /
+    // child_sort_order). Written locally first, then queued — the local write
+    // is what the next render reads, and the queue is what a parent's
+    // Reporting view eventually sees.
+    function setMeta(id, patch) {
+      return g.DB.setMeta(id, patch)
+        .then(function () { return g.Outbox.enqueueMeta(id, patch); })
+        .then(reload);
+    }
 
     function render() {
       root.innerHTML = "";
@@ -986,6 +996,12 @@
         // is called out separately from "offline" because only one of the two
         // resolves by waiting — a revoked device (§4.1) needs a new pairing code.
         card.appendChild(node("div", "modal-help", syncStatusText(pairing)));
+        // §8.4: the queue is the honest answer to "did my work get sent?" —
+        // shown only when there is something in it, so a device that is keeping
+        // up says nothing rather than reassuring anyone about plumbing.
+        if (state.upload && state.upload.pending > 0) {
+          card.appendChild(node("div", "modal-help", uploadStatusText(state.upload)));
+        }
         var checkBtn = node("button", "btn small ghost", "Check for new work");
         card.appendChild(checkBtn);
         var forgetBtn = node("button", "btn small ghost", "Forget this device");
@@ -994,7 +1010,10 @@
         var forgetErr = node("div", "err-text"); card.appendChild(forgetErr);
         checkBtn.onclick = function () {
           checkBtn.disabled = true;
-          g.PlanSync.syncNow().then(function (res) {
+          // Push before pull. The queue holds work this kid has already done,
+          // and sending it first means the plan that comes back down already
+          // reflects it instead of arriving one poll out of date.
+          g.Outbox.drain().then(function () { return g.PlanSync.syncNow(); }).then(function (res) {
             checkBtn.disabled = false;
             if (res && res.error === "unauthorized") toast("This device is no longer linked. Ask for a new pairing code.", true);
             else if (res && res.error) toast("Couldn't reach the server. Your saved plan is still here.", true);
@@ -1201,6 +1220,22 @@
     return pairing.lastError
       ? "Offline — showing the plan saved at " + stamp + "."
       : "Up to date. Last checked " + stamp + ".";
+  }
+
+  // Reads the in-memory drain state outbox.js keeps (Online Revamp §8.4).
+  // Deliberately reassuring rather than alarming: nothing has been lost in any
+  // of these cases — the queue is durable and the work is already recorded on
+  // this device. The only one worth acting on is a revoked link.
+  function uploadStatusText(upload) {
+    var n = upload.pending;
+    var what = n + " thing" + (n === 1 ? "" : "s") + " you finished ";
+    if (upload.error === "unauthorized") {
+      return what + "can't be sent — this device is no longer linked. Ask for a new pairing code.";
+    }
+    if (upload.error === "rejected") {
+      return what + "couldn't be sent. Show a parent — nothing here is lost.";
+    }
+    return what + (upload.error === "offline" ? "will be sent when you're back online." : "is still being sent.");
   }
 
   var toastTimer = null;

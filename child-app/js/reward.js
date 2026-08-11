@@ -76,6 +76,15 @@
         var entry = R.buildSpendEntry(categoryId, v.amount, today);
         return g.DB.put("rewardLedgerTail", entry)
           .then(function () { return g.Completion.foldIfDue(categoryId, today); })
+          // Online Revamp §3.4: the server ledger is append-only and signed, so
+          // a spend is a negative amount rather than a subtraction from a
+          // balance. Nothing on the server is decremented; the balance is a SUM.
+          .then(function () {
+            if (!g.Outbox) return;
+            return g.Outbox.enqueueReward({
+              category: categoryId, amount: -v.amount, reason: "spend", earnedAt: Date.now()
+            });
+          })
           .then(function () { return { ok: true }; });
       });
     });

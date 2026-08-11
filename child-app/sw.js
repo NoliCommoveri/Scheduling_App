@@ -12,7 +12,8 @@
 // v3: Phase 3B adds assignment-core.js and plan-sync.js to the shell. A device
 // still holding the v2 set would boot an index.html that <script>s two files
 // the cache has never heard of.
-const CACHE_NAME = "daily-plan-shell-v3";
+// v4: Phase 4 adds outbox-core.js and outbox.js, for the same reason.
+const CACHE_NAME = "daily-plan-shell-v4";
 
 const APP_SHELL = [
   "./",
@@ -35,9 +36,11 @@ const APP_SHELL = [
   "./js/theme-core.js",
   "./js/reward-core.js",
   "./js/settings-core.js",
+  "./js/outbox-core.js",
   "./js/db.js",
   "./js/pairing.js",
   "./js/plan-sync.js",
+  "./js/outbox.js",
   "./js/theming.js",
   "./js/importer.js",
   "./js/completion.js",

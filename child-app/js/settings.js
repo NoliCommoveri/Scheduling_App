@@ -61,6 +61,15 @@
     var entry = C.buildAdjustEntry(categoryId, v.amount, today);
     return g.DB.put("rewardLedgerTail", entry)
       .then(function () { return g.Completion.foldIfDue(categoryId, today); })
+      // Online Revamp §3.4/§6.3: a correction is a new compensating row, never
+      // an edit. Uploaded as 'adjustment' so a parent reading /api/rewards can
+      // tell a repair apart from work the child actually did.
+      .then(function () {
+        if (!g.Outbox) return;
+        return g.Outbox.enqueueReward({
+          category: categoryId, amount: v.amount, reason: "adjustment", earnedAt: Date.now()
+        });
+      })
       .then(function () { return { ok: true }; });
   }
 
@@ -72,8 +81,13 @@
     if (!v.ok) return Promise.resolve({ ok: false, message: v.message });
     var d = C.resolveRepairDate(rawDate, g.DateUtil.today());
     if (!d.ok) return Promise.resolve({ ok: false, message: d.message });
-    return g.DB.putSingleton("streak", { currentStreak: v.value, lastQualifyingDate: d.date })
-      .then(function () { return { ok: true }; });
+    // Through Streak.write rather than straight to the singleton: Module 7 FR-7
+    // makes streak.js the sole writer, and since Online Revamp §3.5 that is
+    // also where the upload and the longestStreak high-water mark live. A
+    // repair that bypassed it would leave the server holding the broken value.
+    return g.DB.getSingleton("streak").then(function (prev) {
+      return g.Streak.write(prev, { currentStreak: v.value, lastQualifyingDate: d.date });
+    }).then(function () { return { ok: true }; });
   }
 
   g.Settings = {
