@@ -1,7 +1,15 @@
 // export-core.js — pure logic for Completion CSV Export (Module 8), TDS_Slice_M2 §7.
 // No IndexedDB, no DOM, no file I/O here — same discipline as the other
-// -core.js modules. Column list/order matches Interchange Contract §2 and
-// SRS Module 08 §3 exactly, verified against fixtures/completions_sample.csv.
+// -core.js modules.
+//
+// Online Revamp §11: this file survives Phase 5, repurposed. CSV is no longer
+// transport — nothing reads it back, Management Module 09 was deleted rather
+// than ported — so the column list below is a report format for a parent who
+// wants a spreadsheet, not a contract with another program. SRS Module 08 §3
+// is the live reference. The Interchange Contract citations further down still
+// resolve — that document is retained as a historical record — but they
+// describe where a rule came from, not a format anything must still match.
+// fixtures/completions_sample.csv, which this was checked against, is gone.
 
 (function (g) {
   "use strict";
