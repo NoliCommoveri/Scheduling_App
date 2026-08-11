@@ -13,19 +13,18 @@
 // still holding the v2 set would boot an index.html that <script>s two files
 // the cache has never heard of.
 // v4: Phase 4 adds outbox-core.js and outbox.js, for the same reason.
-const CACHE_NAME = "daily-plan-shell-v4";
+// v5: Phase 5 deletes the packet import path (§11). The reason to bump is the
+// mirror image of v3's: a device still holding the v4 set would keep serving
+// six files that no longer exist on the server, and — because index.html is
+// itself cached — would keep <script>ing them from a stale shell forever.
+const CACHE_NAME = "daily-plan-shell-v5";
 
 const APP_SHELL = [
   "./",
   "./index.html",
   "./manifest.json",
   "./css/style.css",
-  "./sample-packet.js",
-  "./js/schema.js",
-  "./js/validator.js",
   "./js/date-util.js",
-  "./js/import-core.js",
-  "./js/merge-core.js",
   "./js/planner-core.js",
   "./js/assignment-core.js",
   "./js/completion-core.js",
@@ -42,7 +41,6 @@ const APP_SHELL = [
   "./js/plan-sync.js",
   "./js/outbox.js",
   "./js/theming.js",
-  "./js/importer.js",
   "./js/completion.js",
   "./js/deferment.js",
   "./js/streak.js",
