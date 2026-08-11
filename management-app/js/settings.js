@@ -93,6 +93,12 @@ const Settings = (() => {
     root.appendChild(syncSection);
     renderSyncPanel(syncSection);
 
+    // Settings → Database, the everyday migration surface (Revamp §3.7.5).
+    // Placed after the sync panel because it reuses that panel's token.
+    const migrationsSection = document.createElement('section');
+    root.appendChild(migrationsSection);
+    Migrations.renderPanel(migrationsSection);
+
     const devicesSection = document.createElement('section');
     root.appendChild(devicesSection);
     Devices.render(devicesSection);

@@ -72,6 +72,12 @@ const App = (() => {
     // Starts the D1 mirror drain (TDS_Slice_D1_Sync §6). Deliberately after
     // the gate, and deliberately not awaited — no view waits on the network.
     Sync.init().catch((err) => console.warn('[sync] init failed:', err));
+
+    // Pending-migration check (Revamp §3.7.5): announces a schema change
+    // without being asked. Same placement and same reasoning as Sync.init —
+    // after the gate, never awaited.
+    Migrations.mountBanner(document.getElementById('app-banner'))
+      .catch((err) => console.warn('[migrations] banner failed:', err));
   }
 
   return { boot, navigate };

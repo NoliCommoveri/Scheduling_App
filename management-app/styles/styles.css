@@ -38,6 +38,47 @@ body {
   padding: 1.5rem 1rem;
 }
 
+/* Pending-migration banner (Revamp §3.7.5). Full-bleed under the nav rather
+   than inside #app-root, so it is not wiped by a route render. */
+#app-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding: 0.6rem 1rem;
+  background: #fff3cd;
+  border-bottom: 1px solid #e0c264;
+  font-size: 0.9rem;
+}
+
+/* An author `display` rule beats the UA stylesheet's [hidden] { display: none },
+   so the attribute needs honouring explicitly or the empty bar always shows. */
+#app-banner[hidden] {
+  display: none;
+}
+
+#app-banner .banner-text {
+  flex: 1;
+  min-width: 14rem;
+}
+
+#app-banner button {
+  padding: 0.3rem 0.7rem;
+  font-size: 0.85rem;
+}
+
+#app-banner.banner-error {
+  background: #f8e3e3;
+  border-bottom-color: var(--color-error);
+  color: var(--color-error);
+}
+
+#app-banner.banner-success {
+  background: #e4f2e6;
+  border-bottom-color: var(--color-success);
+  color: var(--color-success);
+}
+
 form {
   display: flex;
   flex-direction: column;
@@ -138,6 +179,26 @@ fieldset {
 fieldset legend {
   flex-basis: 100%;
   padding: 0 0.25rem;
+  font-size: 0.85rem;
+  color: #555;
+}
+
+/* Settings → Database (Revamp §3.7.5) */
+.migrations-list li {
+  justify-content: space-between;
+}
+
+.migrations-list .migration-name {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+}
+
+.migrations-list .migration-state {
+  font-size: 0.8rem;
+  color: #666;
+}
+
+.migrations-fallback {
   font-size: 0.85rem;
   color: #555;
 }
