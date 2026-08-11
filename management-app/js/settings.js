@@ -93,6 +93,10 @@ const Settings = (() => {
     root.appendChild(syncSection);
     renderSyncPanel(syncSection);
 
+    const devicesSection = document.createElement('section');
+    root.appendChild(devicesSection);
+    Devices.render(devicesSection);
+
     const devToolsSection = document.createElement('section');
     root.appendChild(devToolsSection);
     DevTools.render(devToolsSection);

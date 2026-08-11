@@ -1,5 +1,6 @@
-// db.js — IndexedDB access for the Child App. childAppDB, version 2 (TDS_Slice_M1 §4, TDS_Slice_M2 §2).
-// M1 stores (version 1), unchanged by the version 2 upgrade:
+// db.js — IndexedDB access for the Child App. childAppDB, version 3
+// (TDS_Slice_M1 §4, TDS_Slice_M2 §2, TDS_Slice_Online_Revamp.md §8.1).
+// M1 stores (version 1), unchanged since:
 //   singletons: child, semester, themeSettings  (fixed out-of-line keys)
 //   received:   activities, chores, events       (keyPath "id")
 //   overrides:  plannerMeta                       (keyPath "id")
@@ -8,14 +9,20 @@
 //   keyed:        activityRecords (keyPath "activityId"), rewardLedgerSnapshot (keyPath "categoryId"),
 //                 rewardLedgerTail (keyPath "id", autoIncrement — in-line, so the generated key is
 //                 written back onto the stored row itself, per TDS §2's `{ id, type, categoryId, ... }` shape)
+// Online Revamp Phase 2 (§12) adds one more singleton at version 3:
+//   singleton:    syncMeta (device token, childId, childName — §4.3 step 5)
+// The rest of §8.1's v3 shape (dropping activities/chores/events/plannerMeta/
+// activityRecords/rewardLedgerSnapshot/rewardLedgerTail for `assignments` and
+// `outbox`) is Phase 3's job, once the planner itself reads from `/api/plan`.
+// Until then this app still runs entirely on the M1/M2 stores below.
 // No dailyPlan store — the day is derived at render time and never persisted.
 
 (function (g) {
   "use strict";
 
   var DB_NAME = "childAppDB";
-  var DB_VERSION = 2;
-  var SINGLETONS = ["child", "semester", "themeSettings", "streak"];
+  var DB_VERSION = 3;
+  var SINGLETONS = ["child", "semester", "themeSettings", "streak", "syncMeta"];
   var KEYED = ["activities", "chores", "events", "plannerMeta"];
   var KEYED_CUSTOM = [
     { name: "activityRecords", keyPath: "activityId" },

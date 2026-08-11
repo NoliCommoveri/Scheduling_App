@@ -902,6 +902,10 @@
     }
 
     function openSettingsPanel() {
+      g.Pairing.getStatus().then(buildSettingsPanel);
+    }
+
+    function buildSettingsPanel(pairing) {
       var overlay = node("div", "modal-overlay");
       var card = node("div", "modal-card wide");
       card.appendChild(node("h2", "modal-title", "Settings"));
@@ -965,6 +969,43 @@
           toast("PIN changed.", false);
         });
       };
+
+      // --- Linked device (Online Revamp §4.3) ---
+      card.appendChild(node("div", "settings-label", "Linked device"));
+      if (pairing && pairing.deviceToken) {
+        card.appendChild(node("p", "modal-help", "Paired to " + (pairing.childName || ctx.name || "this child") + "."));
+        var forgetBtn = node("button", "btn small ghost", "Forget this device");
+        card.appendChild(forgetBtn);
+        var forgetErr = node("div", "err-text"); card.appendChild(forgetErr);
+        forgetBtn.onclick = function () {
+          g.Pairing.forget().then(function () {
+            toast("Device unlinked.", false);
+            overlay.remove();
+            openSettingsPanel();
+          });
+        };
+      } else {
+        card.appendChild(node("p", "modal-help", "Enter the pairing code shown in the Management App to link this device."));
+        var codeInput = node("input", "modal-input");
+        codeInput.type = "text"; codeInput.autocomplete = "off"; codeInput.placeholder = "Pairing code";
+        var labelInput = node("input", "modal-input");
+        labelInput.type = "text"; labelInput.autocomplete = "off"; labelInput.placeholder = "Label this device (optional)"; labelInput.style.marginTop = "8px";
+        card.appendChild(codeInput); card.appendChild(labelInput);
+        var pairBtn = node("button", "btn small", "Pair"); pairBtn.style.marginTop = "8px";
+        card.appendChild(pairBtn);
+        var pairErr = node("div", "err-text"); card.appendChild(pairErr);
+        pairBtn.onclick = function () {
+          pairBtn.disabled = true;
+          g.Pairing.redeem(codeInput.value, labelInput.value).then(function (res) {
+            pairBtn.disabled = false;
+            if (!res.ok) { pairErr.textContent = res.message; return; }
+            pairErr.textContent = "";
+            toast("Device linked.", false);
+            overlay.remove();
+            openSettingsPanel();
+          });
+        };
+      }
 
       // --- Repair form (FR-7) ---
       card.appendChild(node("div", "settings-label", "Recovery / repair"));

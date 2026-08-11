@@ -89,6 +89,10 @@ const Sync = (() => {
 
   // ---- HTTP ----
 
+  // Exported (not just used internally): the parent SYNC_TOKEN this reads is
+  // the same credential every parent-authenticated route needs, so
+  // devices.js's pairing/device calls (§5.3) go through this rather than
+  // duplicating the fetch/401/error-body handling.
   async function api(path, { method = 'GET', body } = {}) {
     const { token } = await getConfig();
     if (!token) throw new Error('Sync is not configured on this device.');
@@ -308,6 +312,6 @@ const Sync = (() => {
 
   return {
     init, drain, subscribe, getState, getConfig, setToken,
-    restoreFromCloud, status, countOutbox,
+    restoreFromCloud, status, countOutbox, api,
   };
 })();
