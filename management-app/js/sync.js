@@ -89,6 +89,10 @@ const Sync = (() => {
 
   // ---- HTTP ----
 
+  // Exported (not just used internally): the parent SYNC_TOKEN this reads is
+  // the same credential every parent-authenticated route needs, so
+  // migrations.js (§5.3a) and devices.js (§5.3) call this rather than storing
+  // or re-deriving the token a second time.
   async function api(path, { method = 'GET', body } = {}) {
     const { token } = await getConfig();
     if (!token) throw new Error('Sync is not configured on this device.');
@@ -306,9 +310,6 @@ const Sync = (() => {
     if (enabled) scheduleDrain(0);
   }
 
-  // `api` is exported so migrations.js can call §5.3a with the parent
-  // credential without storing or re-deriving the token a second time. It is
-  // the only sanctioned way to reach a parent endpoint from another module.
   return {
     init, drain, subscribe, getState, getConfig, setToken,
     restoreFromCloud, status, countOutbox, api,
