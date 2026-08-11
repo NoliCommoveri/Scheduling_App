@@ -254,6 +254,10 @@ const Reporting = (() => {
           rows: assignments.assignments || [],
           balances: rewards.balances || [],
           entries: rewards.entries || [],
+          // A report built on a capped query is a wrong report, not a short
+          // one: every rate and average below would be computed over a subset
+          // and presented as the range's answer.
+          truncated: assignments.truncated ? assignments.limit : null,
         });
       } catch (err) {
         results.innerHTML = '';
@@ -268,12 +272,22 @@ const Reporting = (() => {
   }
 
   function renderResults(root, report) {
-    const { childName, from, to, rows, balances, entries } = report;
+    const { childName, from, to, rows, balances, entries, truncated } = report;
     root.innerHTML = '';
 
     if (rows.length === 0) {
       root.innerHTML = `<p>Nothing assigned to ${escapeHtml(childName)} between ${from} and ${to}.</p>`;
       return;
+    }
+
+    if (truncated) {
+      const warning = document.createElement('p');
+      warning.className = 'error';
+      warning.setAttribute('role', 'status');
+      warning.textContent =
+        `This range holds more than ${truncated} rows and the report below covers only the first ` +
+        `${truncated}. Every figure on it is therefore partial — narrow the dates and run it again.`;
+      root.appendChild(warning);
     }
 
     const totals = summarize(rows);

@@ -216,6 +216,10 @@ const Packet = (() => {
       childId, childName: child.name, semesterLabel: (semesterLabel || '').trim(),
       coversFrom, coversTo, days, maps, coursesById,
       droppedChores: new Map(), excluded: new Set(), pendingByInstance,
+      // Commit bookkeeping (see the [DECISION] above commit()). batchId is
+      // minted on the first Commit attempt and reused by every retry of this
+      // same proposal; partial records that some of it reached D1.
+      batchId: null, postedRows: 0, partial: false,
     };
     return { session };
   }
@@ -232,6 +236,19 @@ const Packet = (() => {
 
   // ---- Review (FR-7) — in-memory mutations only, writes nothing ----
 
+  // Every Review action goes through this first. Once part of a batch is live
+  // in D1, editing the proposal underneath it is genuinely ambiguous: the retry
+  // resumes by chunk position, so changing which rows sit at those positions
+  // would skip some and duplicate others. Two coherent ways out, both offered.
+  function reviewGuard() {
+    if (!session.partial) return null;
+    return {
+      error: `${session.postedRows} of this proposal's rows are already live in D1 ` +
+        `(batch ${session.batchId}). Press Commit again to finish sending it, or Abandon ` +
+        'to pull those rows back — the proposal cannot be edited in between.',
+    };
+  }
+
   function findItem(kind, date, id) {
     const day = session.days.get(date);
     if (!day) return null;
@@ -241,6 +258,8 @@ const Packet = (() => {
   }
 
   function relocate(kind, fromDate, id, toDate) {
+    const blocked = reviewGuard();
+    if (blocked) return blocked;
     if (!isValidDate(toDate)) return { error: 'Enter a valid YYYY-MM-DD date.' };
     if (toDate < session.coversFrom || toDate > session.coversTo) return { error: 'Target date is outside the covered range.' };
     const found = findItem(kind, fromDate, id);
@@ -253,6 +272,8 @@ const Packet = (() => {
   }
 
   function excludeActivity(fromDate, id) {
+    const blocked = reviewGuard();
+    if (blocked) return blocked;
     const found = findItem('activity', fromDate, id);
     if (!found) return { error: 'Item not found.' };
     found.arr.splice(found.i, 1);
@@ -261,6 +282,8 @@ const Packet = (() => {
   }
 
   function deferActivity(fromDate, id) {
+    const blocked = reviewGuard();
+    if (blocked) return blocked;
     const found = findItem('activity', fromDate, id);
     if (!found) return { error: 'Item not found.' };
     found.arr.splice(found.i, 1); // absence keeps it pending; no write at Commit
@@ -268,6 +291,8 @@ const Packet = (() => {
   }
 
   function dropChore(fromDate, id) {
+    const blocked = reviewGuard();
+    if (blocked) return blocked;
     const found = findItem('chore', fromDate, id);
     if (!found) return { error: 'Item not found.' };
     found.arr.splice(found.i, 1);
@@ -276,6 +301,8 @@ const Packet = (() => {
   }
 
   function pullForward(instanceId, activityId, toDate) {
+    const blocked = reviewGuard();
+    if (blocked) return blocked;
     if (!isValidDate(toDate)) return { error: 'Enter a valid YYYY-MM-DD date.' };
     if (toDate < session.coversFrom || toDate > session.coversTo) return { error: 'Target date is outside the covered range.' };
     const remainder = session.pendingByInstance.get(instanceId) || [];
@@ -414,21 +441,46 @@ const Packet = (() => {
   // path, not an edge case.
   const POST_CHUNK = 500;
 
-  // Every chunk carries the SAME batchId. That is the whole reason the id is
-  // minted per Commit rather than per request: a run that dies on chunk three
-  // of four leaves a partial batch that one statement reverses (§6.2) —
-  // POST /api/assignments/rescind {batchId} — instead of a date-range hunt.
-  async function postAssignments(batchId, rows) {
+  // Every chunk carries the SAME batchId and its own chunkIndex. The pair is
+  // what the Worker's commit_chunks table (migration 0003) keys idempotency on,
+  // which is what finally makes §6.1's "replay-safe" claim true: re-posting a
+  // chunk that already landed inserts nothing and reports what the first
+  // attempt applied. So a run that dies on chunk three of four is resumed by
+  // pressing Commit again — chunks one and two are recognised and skipped —
+  // rather than duplicated, and a batch that is abandoned instead still
+  // reverses in one statement (§6.2).
+  //
+  // Reports progress through onChunk after every accepted chunk, so a failure
+  // partway leaves the caller knowing exactly how much is live.
+  async function postAssignments(batchId, rows, onChunk) {
     let posted = 0;
     for (let i = 0; i < rows.length; i += POST_CHUNK) {
       const chunk = rows.slice(i, i + POST_CHUNK);
       const result = await Sync.api('/api/assignments', {
         method: 'POST',
-        body: { batchId, childId: session.childId, assignments: chunk },
+        body: {
+          batchId,
+          chunkIndex: i / POST_CHUNK,
+          childId: session.childId,
+          assignments: chunk,
+        },
       });
-      posted += result && Array.isArray(result.ids) ? result.ids.length : chunk.length;
+      // `applied` covers both cases: rows this request inserted, or — when the
+      // Worker recognised a replay — rows the first attempt inserted. Falling
+      // back to ids.length keeps this working against a Worker deployed before
+      // 0003 landed.
+      posted += result && typeof result.applied === 'number'
+        ? result.applied
+        : (result && Array.isArray(result.ids) ? result.ids.length : chunk.length);
+      if (onChunk) onChunk(posted);
     }
     return posted;
+  }
+
+  // Pull back a batch that only partly landed. Used by Abandon, which is the
+  // parent's way out of a half-committed proposal they no longer want to finish.
+  async function rescindBatch(batchId) {
+    return Sync.api('/api/assignments/rescind', { method: 'POST', body: { batchId } });
   }
 
   // ---- Commit (FR-8–FR-11) — the only writes ----
@@ -440,11 +492,28 @@ const Packet = (() => {
     // only output, and the empty-source test below reads their count.
     const rows = projectAssignments();
 
+    // [DECISION] What a retry of a partly-sent Commit does
+    // Decided: reuse the proposal's batchId, and re-post from chunk zero. The
+    //   Worker recognises the chunks that already landed and inserts nothing
+    //   for them, so the retry resumes rather than duplicating. reviewGuard()
+    //   freezes the proposal while a batch is partly live, because resumption
+    //   is by chunk position and editing the rows underneath it would move
+    //   which rows sit at those positions.
+    // Rationale: the alternative — mint a fresh batchId each attempt — is what
+    //   the code did, and it meant a POST that failed on chunk three left 1,000
+    //   rows live with no handle on them and no warning, then assigned all
+    //   1,800 again on the retry. A full-semester Commit is four chunks, so
+    //   that was the ordinary path, not a corner.
+    // Consequence: Abandon has to rescind a partial batch rather than merely
+    //   dropping the session, or the orphan survives.
+    // Locked for: this remediation. Revisit if Commit ever streams.
+    //
     // Minted before the log rows are built so both the D1 batch and the local
     // decisions that produced it carry the same id. A 'dropped' row has no D1
     // counterpart — nothing was assigned — but recording which Commit decided
     // it is what makes the log auditable against the batch.
-    const batchId = mintBatchId();
+    const batchId = session.batchId || mintBatchId();
+    session.batchId = batchId;
     const generatedAt = new Date().toISOString();
     const sentRows = [];
     for (const [, o] of session.days) {
@@ -488,11 +557,31 @@ const Packet = (() => {
         return { error: 'Commit needs the parent sync token — set it in Settings → Sync, then Commit again. Nothing was written.' };
       }
       try {
-        assignedCount = await postAssignments(batchId, rows);
+        assignedCount = await postAssignments(batchId, rows, (posted) => {
+          session.postedRows = posted;
+          session.partial = true;
+        });
+        session.partial = false;
       } catch (err) {
+        const reason = (err && err.message) || err;
+        // Two genuinely different failures, and telling the parent the wrong
+        // one is how a semester gets assigned twice. Nothing sent at all is
+        // simply retriable; a partial send has live rows on the child's plan
+        // right now, and the message has to say so and name the batch.
+        if (session.postedRows > 0) {
+          return {
+            error: `Sending stopped partway — ${reason}. ${session.postedRows} of ${rows.length} rows ` +
+              `are already live for ${session.childName} under batch ${batchId}. Nothing was recorded ` +
+              'locally. Press Commit again to send the rest (the rows already there are recognised and ' +
+              'not duplicated), or Abandon to pull them back.',
+            batchId,
+            postedRows: session.postedRows,
+            partial: true,
+          };
+        }
         return {
-          error: `Assignments were not written to D1 — ${(err && err.message) || err}. ` +
-            'Nothing was recorded locally; press Commit again to retry.',
+          error: `Assignments were not written to D1 — ${reason}. ` +
+            'Nothing was recorded locally or sent; press Commit again to retry.',
         };
       }
     }
@@ -620,15 +709,56 @@ const Packet = (() => {
 
     const abandonBtn = document.createElement('button');
     abandonBtn.className = 'secondary';
-    abandonBtn.textContent = 'Abandon (write nothing)';
-    abandonBtn.addEventListener('click', () => {
-      session = null;
-      lastResult = { message: 'Proposal abandoned. Nothing was written.' };
+    // The label tells the truth about which of the two situations this is.
+    // Dropping a partly-sent proposal without rescinding would strand live rows
+    // on the child's plan that no local record mentions.
+    abandonBtn.textContent = session.partial
+      ? `Abandon (pull back ${session.postedRows} sent rows)`
+      : 'Abandon (write nothing)';
+    abandonBtn.addEventListener('click', async () => {
+      if (!session.partial) {
+        session = null;
+        lastResult = { message: 'Proposal abandoned. Nothing was written.' };
+        render(root);
+        return;
+      }
+
+      const partialBatchId = session.batchId;
+      const sent = session.postedRows;
+      if (!window.confirm(
+        `${sent} rows from this proposal are already live for ${session.childName}. ` +
+        'Abandoning rescinds them, so they come off the plan on the child\'s next sync. ' +
+        'Anything the child has already completed is left alone and keeps its reward.'
+      )) return;
+
+      abandonBtn.disabled = true;
+      abandonBtn.textContent = 'Pulling back…';
+      try {
+        const result = await rescindBatch(partialBatchId);
+        session = null;
+        lastResult = { message: `Proposal abandoned. Rescinded ${result.rescinded} of ${sent} sent rows; nothing was recorded locally.` };
+      } catch (err) {
+        abandonBtn.disabled = false;
+        abandonBtn.textContent = `Abandon (pull back ${sent} sent rows)`;
+        lastResult = {
+          error: `Could not pull the sent rows back — ${(err && err.message) || err}. ` +
+            `Batch ${partialBatchId} is still live. Try Abandon again, or rescind it from the Assignments view.`,
+        };
+      }
       render(root);
     });
     bar.appendChild(commitBtn);
     bar.appendChild(abandonBtn);
     root.appendChild(bar);
+
+    if (session.partial) {
+      const warning = document.createElement('p');
+      warning.className = 'error';
+      warning.textContent =
+        `${session.postedRows} rows from this proposal are already live under batch ${session.batchId}. ` +
+        'Commit again to send the rest, or Abandon to pull them back. Editing is locked until then.';
+      root.appendChild(warning);
+    }
 
     // Pending remainder (Pull-forward source) per instance.
     for (const [instanceId, remainder] of session.pendingByInstance) {

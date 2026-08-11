@@ -234,7 +234,12 @@ const Assignments = (() => {
         const childName = (children.find((c) => c.id === childId) || {}).name || childId;
         renderResults(results, {
           rows: data.assignments || [],
-          childName, from, to, reload, notice,
+          childName, from, to, reload,
+          // A capped answer must never be presented as the whole range — a
+          // parent rescinding "everything shown" would leave rows behind.
+          notice: data.truncated
+            ? { text: `Showing the first ${data.limit} rows of a longer range — narrow the dates to see the rest.`, error: true }
+            : notice,
         });
       } catch (err) {
         results.innerHTML = '';
