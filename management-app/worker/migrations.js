@@ -5,7 +5,9 @@
 // what makes it visible to the in-app runner (worker/index.js).
 
 import m0001 from '../../migrations/0001_online_revamp_init.sql';
+import m0002 from '../../migrations/0002_backfill_children_projection.sql';
 
 export const MIGRATIONS = [
   { name: '0001_online_revamp_init.sql', sql: m0001 },
+  { name: '0002_backfill_children_projection.sql', sql: m0002 },
 ];

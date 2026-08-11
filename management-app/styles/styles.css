@@ -577,3 +577,23 @@ button.secondary {
   flex-wrap: wrap;
   gap: 0.5rem;
 }
+
+/* ---- Archived children (Revamp §3.2's `active`) ----
+   Archived is a resting state, not an error, so it reads as dimmed-and-labelled
+   rather than red. The row keeps all its controls: Open and Restore have to
+   stay reachable. */
+
+.child-archived {
+  opacity: 0.6;
+}
+
+.child-archived-tag {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #6b5b2d;
+  background: #fff3cd;
+  border: 1px solid #e0c264;
+  border-radius: 3px;
+  padding: 0.05rem 0.35rem;
+}

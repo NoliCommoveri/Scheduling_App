@@ -466,6 +466,18 @@ async function handleSyncPush(request, env) {
        device_id  = excluded.device_id`
   );
 
+  // §3.2's queryable projection of the child records that live as opaque blobs
+  // in `records`. Maintained here, in the same batch as the mirror write, so
+  // the two can never disagree: one implicit transaction, both or neither.
+  // Until now nothing populated this table and the schema comment claiming
+  // otherwise was simply false; 0002 backfills what predates this code.
+  const upsertChild = env.DB.prepare(
+    `INSERT INTO children (id, name, active, updated_at) VALUES (?1, ?2, ?3, ?4)
+     ON CONFLICT (id) DO UPDATE SET
+       name = excluded.name, active = excluded.active, updated_at = excluded.updated_at`
+  );
+  const deleteChild = env.DB.prepare(`DELETE FROM children WHERE id = ?1`);
+
   const statements = [];
   for (const change of changes) {
     const problem = validateChange(change);
@@ -486,11 +498,40 @@ async function handleSyncPush(request, env) {
         deviceId
       )
     );
+
+    if (change.store === 'children') {
+      const child = (!isDelete && change.value && typeof change.value === 'object') ? change.value : null;
+      const id = child && typeof child.id === 'string' ? child.id : keyToId(change.key);
+      if (id) {
+        if (isDelete) {
+          statements.push(deleteChild.bind(id));
+        } else if (typeof child.name === 'string' && child.name) {
+          // Absent `active` reads as active, matching Children.isActive() in
+          // the Management App — a record written before the flag existed is
+          // older than the flag, not archived.
+          statements.push(upsertChild.bind(id, child.name, child.active === false ? 0 : 1, now));
+        }
+        // A put with no usable name is left out of the projection rather than
+        // failing the batch: `name` is NOT NULL, and one malformed record must
+        // not block an otherwise good curriculum push.
+      }
+    }
   }
 
   if (statements.length > 0) await env.DB.batch(statements);
 
   return json({ applied: statements.length, serverTime: now });
+}
+
+// `records.key` is JSON.stringify of the IndexedDB key, so a child's key is a
+// quoted string. Used only as the fallback when a delete carries no value.
+function keyToId(key) {
+  try {
+    const parsed = JSON.parse(key);
+    return typeof parsed === 'string' && parsed ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 function validateChange(change) {
@@ -837,13 +878,22 @@ async function handlePair(request, env) {
     ).bind(deviceId, row.child_id, label, tokenHash, now),
   ]);
 
-  // childName comes from the curriculum mirror (§3.1) — the `children`
-  // relational table (§3.2) is a read projection nothing populates yet in
-  // this phase, so `records` is the only source of truth available here.
-  const childRecord = await env.DB.prepare(
-    `SELECT value FROM records WHERE store = 'children' AND key = ?1 AND deleted = 0`
-  ).bind(JSON.stringify(row.child_id)).first();
-  const childName = childRecord ? (JSON.parse(childRecord.value) || {}).name || null : null;
+  // childName comes from the §3.2 projection, which is what that table is for:
+  // reading a child's name without parsing a JSON blob. The `records` fallback
+  // stays for the case where the projection has not caught up — a database
+  // where 0002 has not been applied yet, or a child authored by a device that
+  // has not pushed since. Pairing is not the place to discover a stale table.
+  const projected = await env.DB.prepare(
+    `SELECT name FROM children WHERE id = ?1`
+  ).bind(row.child_id).first();
+
+  let childName = projected ? projected.name : null;
+  if (!childName) {
+    const childRecord = await env.DB.prepare(
+      `SELECT value FROM records WHERE store = 'children' AND key = ?1 AND deleted = 0`
+    ).bind(JSON.stringify(row.child_id)).first();
+    childName = childRecord ? (JSON.parse(childRecord.value) || {}).name || null : null;
+  }
 
   return json({ token, childId: row.child_id, childName });
 }

@@ -752,7 +752,10 @@ const Packet = (() => {
   }
 
   async function renderProposeForm(root) {
-    const children = await Storage.getAll('children');
+    // Archived children are not offered here at all (§3.2's `active`): this is
+    // the form that generates new work, and there is no already-selected child
+    // to preserve the way the Chores and Events pickers have.
+    const children = Children.activeOnly(await Storage.getAll('children'));
     const form = document.createElement('form');
     const opts = ['<option value="">(select)</option>']
       .concat(children.map((c) => `<option value="${c.id}">${escapeHtml(c.name)}</option>`))

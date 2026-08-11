@@ -211,7 +211,7 @@ const Reporting = (() => {
     form.className = 'report-controls';
     form.innerHTML = `
       <label>Child<select name="childId">
-        ${children.map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`).join('')}
+        ${children.map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}${Children.isActive(c) ? '' : ' (archived)'}</option>`).join('')}
       </select></label>
       <label>From<input type="date" name="from" value="${daysAgo(DEFAULT_WINDOW_DAYS)}"></label>
       <label>To<input type="date" name="to" value="${today()}"></label>

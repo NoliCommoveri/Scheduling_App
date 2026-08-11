@@ -126,8 +126,11 @@ const Events = (() => {
     return Array.from(form.querySelectorAll('input[name="childIds"]:checked')).map((el) => el.value);
   }
 
-  function childCheckboxesHtml(children, selected) {
-    return children.map((c) => `
+  // Same rule as the Chores picker: archived children are not offered for a new
+  // event, but one already fanned out to on this event keeps its box so saving
+  // does not quietly drop them from it.
+  function childCheckboxesHtml(allChildren, selected) {
+    return allChildren.filter((c) => Children.isActive(c) || selected.includes(c.id)).map((c) => `
       <label class="child-option">
         <input type="checkbox" name="childIds" value="${c.id}" ${selected.includes(c.id) ? 'checked' : ''}> ${escapeHtml(c.name)}
       </label>
