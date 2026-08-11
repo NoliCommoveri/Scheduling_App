@@ -40,27 +40,19 @@
   }
 
   // Category balances for the recovery note (TDS_Slice_M2 §7, closed by
-  // TDS_Slice_M3 §9): union of every category in rewardLedgerSnapshot plus
-  // any category with tail-only (unfolded) entries. themeDisplayName now
-  // resolves through the active theme's mapping — the same generic-default
-  // fallback the on-screen display uses (§4) — never the raw categoryId.
+  // TDS_Slice_M3 §9): every category the ledger mentions, folded by the same
+  // shared function the on-screen display and the spend ceiling use, so the note
+  // can never quote a balance the app does not show. themeDisplayName resolves
+  // through the active theme's mapping — the same generic-default fallback the
+  // display uses (§4) — never the raw categoryId.
   function gatherCategoryBalances() {
-    return Promise.all([g.DB.getAll("rewardLedgerSnapshot"), g.DB.getAll("rewardLedgerTail"), g.Theming.getActiveTheme()])
+    return Promise.all([g.DB.getAll("rewardEntries"), g.Theming.getActiveTheme()])
       .then(function (r) {
-        var snapshots = Object.create(null);
-        r[0].forEach(function (s) { snapshots[s.categoryId] = s; });
-        var tailByCategory = Object.create(null);
-        r[1].forEach(function (t) {
-          (tailByCategory[t.categoryId] = tailByCategory[t.categoryId] || []).push(t);
-        });
-        var themeId = r[2].id;
-        var categoryIds = Object.create(null);
-        Object.keys(snapshots).forEach(function (id) { categoryIds[id] = true; });
-        Object.keys(tailByCategory).forEach(function (id) { categoryIds[id] = true; });
-        return Object.keys(categoryIds).sort().map(function (id) {
-          var balance = g.CompletionCore.readBalance(snapshots[id], tailByCategory[id] || []);
+        var balances = g.CompletionCore.balancesByCategory(r[0]);
+        var themeId = r[1].id;
+        return Object.keys(balances).sort().map(function (id) {
           var display = g.ThemeCore.resolveCategoryDisplay(themeId, id);
-          return { categoryId: id, themeDisplayName: display.label, balance: balance };
+          return { categoryId: id, themeDisplayName: display.label, balance: balances[id] };
         });
       });
   }

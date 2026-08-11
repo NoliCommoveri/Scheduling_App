@@ -50,25 +50,21 @@
     });
   }
 
-  // FR-7a: appends one 'adjust' entry and runs the same fold check earn/spend
-  // use (Module 6, TDS §5/§10) — no special-cased fold path for corrections.
-  // A negative adjust that would go below zero is written as entered and
-  // floored only at fold/read time (§4), never rejected here.
+  // FR-7a: appends one 'adjustment' entry to the same append-only ledger earn
+  // and spend write (Module 6, TDS §5/§10; Online Revamp §3.4/§6.3) — a
+  // correction is a new compensating entry, never an edit to an existing one.
+  // A negative adjust that would take the category below zero is written as
+  // entered and floored only at read time (§4), never rejected here.
   function adjustBalance(categoryId, rawAmount) {
     var v = C.validateAdjustAmount(rawAmount);
     if (!v.ok) return Promise.resolve({ ok: false, message: v.message });
     var today = g.DateUtil.today();
-    var entry = C.buildAdjustEntry(categoryId, v.amount, today);
-    return g.DB.put("rewardLedgerTail", entry)
-      .then(function () { return g.Completion.foldIfDue(categoryId, today); })
-      // Online Revamp §3.4/§6.3: a correction is a new compensating row, never
-      // an edit. Uploaded as 'adjustment' so a parent reading /api/rewards can
-      // tell a repair apart from work the child actually did.
+    var at = Date.now();
+    var entry = C.buildAdjustEntry(g.CompletionCore.mintEntryId(), categoryId, v.amount, today, at);
+    return g.DB.put("rewardEntries", entry)
       .then(function () {
         if (!g.Outbox) return;
-        return g.Outbox.enqueueReward({
-          category: categoryId, amount: v.amount, reason: "adjustment", earnedAt: Date.now()
-        });
+        return g.Outbox.enqueueReward(entry);
       })
       .then(function () { return { ok: true }; });
   }

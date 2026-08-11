@@ -18,7 +18,7 @@
 > | "the interchange" / the Packet (Management → Child) | **Repealed.** One shared `assignments` table; the parent writes rows, the child completes them. Revamp §3.3. |
 > | The Completion CSV (Child → Management) | **Repealed as transport.** CSV survives only as a report download. Revamp §11. |
 > | "Received Packet", per-occurrence chore IDs, `CHR-{token}-{date}` | **Repealed.** IDs are server-minted opaque UUIDs. Revamp §3.3.1. |
-> | Reward Ledger "checkpointed snapshot + tail" | **Repealed server-side** — `reward_entries` is append-only and balance is a `SUM`. The local IndexedDB fold survives pending the §8.1 collapse. Revamp §3.4. |
+> | Reward Ledger "checkpointed snapshot + tail" | **Repealed on both sides** (2026-08-11). `reward_entries` in D1 and `rewardEntries` in IndexedDB are both append-only; balance is a fold, never a stored number, and the N=100 checkpoint is deleted. Revamp §3.4, §8.1. |
 > | Packet Import (Child Module 02), Completion CSV Export (Child Module 08), Completion Import (Mgmt Module 09) | **Retired.** Their code is deleted. Revamp §11. |
 > | "Export to Drive" | **Abandoned.** It solved a problem that no longer exists. |
 > | Principle 3, "no required server" | **Repealed.** Principles 1 and 2 (zero cost) hold. |
@@ -146,7 +146,7 @@ Each milestone must produce a working app and must not depend on unfinished feat
 - **Chore occurrence IDs are deterministic** (`CHR-{choreToken}-{YYYYMMDD}`) — never randomized, never parsed for scheduling.
 - Keep the two apps' schemas separate; the only shared thing is the interchange contract. **Do not add a spend channel to the interchange** — spends are local to the child device.
 - The completion CSV carries a **stable activity ID** and a reserved **`waived`** status — do not drop either to make the CSV prettier.
-- The child app has exactly **three** sanctioned bounded-intelligence exceptions (ledger snapshot, streak, local date-edit for deferment) — anything beyond these is scope creep.
+- The child app has exactly **three** sanctioned bounded-intelligence exceptions (the reward balance fold, streak, local date-edit for deferment) — anything beyond these is scope creep. *(Was "ledger snapshot". The snapshot store is gone as of 2026-08-11 — Revamp §8.1 — but the exception it named survives: the device still folds a balance out of its own ledger entries rather than asking the server for one.)*
 - Ledger/Streak recovery is note-plus-repair-form only — never add a machine-readable backup/restore path, and never make any module read the recovery note.
 - Keep everything zero-cost and framework-free. Optimize the child app hard for budget Android; the management app can be heavier. *(Amended 2026-08-10: "mostly offline" is repealed — see `TDS_Slice_Online_Revamp.md`. Zero-cost and framework-free stand.)*
 - **Standing rule:** any SRS-level decision that changes domain semantics (adds a field, changes a behavior like Packet Import's refresh logic) gets reflected in the Domain Model doc the same session it's decided — not batched into a future leveling pass.

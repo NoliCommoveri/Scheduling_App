@@ -50,9 +50,16 @@
     return amount <= currentBalance;
   }
 
-  // TDS §5: the exact tail-entry shape a spend writes.
-  function buildSpendEntry(categoryId, amount, today) {
-    return { type: "spend", categoryId: categoryId, amount: amount, date: today };
+  // TDS §5, in §3.4's shape: a spend is a negative amount appended to the same
+  // ledger, never a subtraction from a stored balance. `amount` arrives positive
+  // from validateSpendAmount and is signed here, in one place.
+  //
+  // Through CompletionCore.buildEntry rather than an object literal so the three
+  // writers — earn, spend, adjust — cannot drift apart in shape. That file loads
+  // before this one in the app shell and in the test harness, and this is a call
+  // at write time rather than at load time either way.
+  function buildSpendEntry(id, categoryId, amount, today, at) {
+    return g.CompletionCore.buildEntry(id, categoryId, -amount, "spend", today, at, null);
   }
 
   g.RewardCore = {

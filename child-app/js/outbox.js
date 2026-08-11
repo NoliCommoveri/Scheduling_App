@@ -102,8 +102,15 @@
   }
 
   // §7: earning is a side effect of completion, posted in the same drain. The
-  // id is minted here — before the row is stored, let alone sent — so a replay
-  // hits the ON CONFLICT DO NOTHING in the Worker instead of appending twice.
+  // id is minted before the row is stored, let alone sent, so a replay hits the
+  // ON CONFLICT DO NOTHING in the Worker instead of appending twice.
+  //
+  // Since the §8.1 collapse the caller has already minted it — the entry handed
+  // in here is the very row sitting in `rewardEntries`, so local and server hold
+  // one id for one earning. Minting a fresh one here would break that: a device
+  // that queued an entry, was wiped, and re-queued would upload the same earning
+  // under two ids and the append-only ledger would count it twice. The fallback
+  // stays for any caller that has no id of its own.
   //
   // assignmentId is optional: a spend (Module 6) and a repair adjustment
   // (Module 11 FR-7a) have no assignment behind them, and §3.4 allows NULL.
@@ -111,7 +118,8 @@
     return link().then(function (paired) {
       if (!paired) return false;
       if (!entry || !entry.category) return false; // an uncategorised local entry has nowhere to land
-      return append(paired.childId, C.buildRewardOp(Object.assign({ id: mintId() }, entry), Date.now()));
+      var withId = entry.id ? entry : Object.assign({ id: mintId() }, entry);
+      return append(paired.childId, C.buildRewardOp(withId, Date.now()));
     });
   }
 

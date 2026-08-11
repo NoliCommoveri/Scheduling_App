@@ -22,7 +22,14 @@
 // cache-first for every shell path, so an unchanged CACHE_NAME would keep
 // serving the old copies indefinitely and the §5.6 rejection handling would
 // never reach a device that already has the app installed.
-const CACHE_NAME = "daily-plan-shell-v6";
+// v7: the §8.1 ledger collapse, and the most consequential bump so far. db.js
+// carries the IndexedDB v7 upgrade that migrates rewardLedgerSnapshot/Tail into
+// rewardEntries; completion.js, reward.js, settings.js and export.js read and
+// write the new store. A device left on the v6 shell would run the old files
+// against whichever schema its browser happens to hold — writing to two stores
+// the upgrade has already deleted the moment any other tab triggers it. The
+// files must land as a set.
+const CACHE_NAME = "daily-plan-shell-v7";
 
 const APP_SHELL = [
   "./",

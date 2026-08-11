@@ -10,11 +10,14 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
+// completion-core.js first: reward-core.js and settings-core.js build their
+// ledger entries through CompletionCore.buildEntry, the same order the app
+// shell loads them in.
 const repo = new URL('../', import.meta.url);
-for (const file of ['outbox-core.js', 'assignment-core.js', 'completion-core.js']) {
+for (const file of ['outbox-core.js', 'assignment-core.js', 'completion-core.js', 'reward-core.js', 'settings-core.js']) {
   vm.runInThisContext(readFileSync(new URL(`child-app/js/${file}`, repo), 'utf8'), { filename: file });
 }
-const { OutboxCore, AssignmentCore, CompletionCore } = globalThis;
+const { OutboxCore, AssignmentCore, CompletionCore, RewardCore, SettingsCore } = globalThis;
 
 // A row as /api/plan returns it (§3.3, snake_case).
 function row(overrides = {}) {
@@ -246,14 +249,125 @@ test('parsePayload survives null, objects and malformed JSON', () => {
 test('buildEarnEntry uses the snapshotted amount when there is one', () => {
   // §7: the amount comes from the assignment row, so a later edit to a tier
   // never changes what was already earned.
-  assert.equal(CompletionCore.buildEarnEntry('RC-1', '2026-08-11', 'a1', 5).amount, 5);
-  assert.equal(CompletionCore.buildEarnEntry('RC-1', '2026-08-11', 'a1', 0).amount, 0);
+  assert.equal(CompletionCore.buildEarnEntry('e1', 'RC-1', '2026-08-11', 'a1', 5, 100).amount, 5);
+  assert.equal(CompletionCore.buildEarnEntry('e1', 'RC-1', '2026-08-11', 'a1', 0, 100).amount, 0);
 });
 
 test('buildEarnEntry falls back to the flat 1 when no amount is snapshotted', () => {
   // reward_amount is NULL on every row today — tiers carry no number. See the
   // deferred item in Revamp §14.
-  assert.equal(CompletionCore.buildEarnEntry('RC-1', '2026-08-11', 'a1', undefined).amount, 1);
-  assert.equal(CompletionCore.buildEarnEntry('RC-1', '2026-08-11', 'a1', null).amount, 1);
-  assert.equal(CompletionCore.buildEarnEntry('RC-1', '2026-08-11', 'a1', NaN).amount, 1);
+  assert.equal(CompletionCore.buildEarnEntry('e1', 'RC-1', '2026-08-11', 'a1', undefined, 100).amount, 1);
+  assert.equal(CompletionCore.buildEarnEntry('e1', 'RC-1', '2026-08-11', 'a1', null, 100).amount, 1);
+  assert.equal(CompletionCore.buildEarnEntry('e1', 'RC-1', '2026-08-11', 'a1', NaN, 100).amount, 1);
+});
+
+// ---- the §8.1 ledger: one append-only store, balance as a fold ----
+
+test('an earn entry is stored in the shape the server ledger uses', () => {
+  // §3.4/§8.1: the local row and the uploaded row are the same row, so the
+  // stored shape has to be the one buildRewardOp accepts — signed `amount`,
+  // `reason` from the server enum, and the id the caller minted.
+  const earn = CompletionCore.buildEarnEntry('e1', 'RC-1', '2026-08-11', 'a1', 3, 1700);
+  assert.deepEqual(earn, {
+    id: 'e1', assignmentId: 'a1', category: 'RC-1', amount: 3,
+    reason: 'earned', earnedAt: 1700, date: '2026-08-11',
+  });
+  // The round trip that matters: it survives buildRewardOp without translation.
+  const op = OutboxCore.buildRewardOp(earn, 9999);
+  assert.equal(op.entry.id, 'e1');
+  assert.equal(op.entry.amount, 3);
+  assert.equal(op.entry.reason, 'earned');
+  assert.equal(op.entry.earnedAt, 1700);
+});
+
+test('a spend is a negative entry, not a subtraction', () => {
+  // §3.4: nothing is ever decremented at either end. validateSpendAmount hands
+  // over a positive number and the sign is applied exactly once.
+  const spend = RewardCore.buildSpendEntry('e2', 'RC-1', 5, '2026-08-11', 1800);
+  assert.equal(spend.amount, -5);
+  assert.equal(spend.reason, 'spend');
+  assert.equal(spend.assignmentId, null);
+  assert.equal(OutboxCore.buildRewardOp(spend, 0).entry.reason, 'spend');
+});
+
+test('a repair adjustment keeps the sign it was given', () => {
+  // Module 11 FR-7a: a correction may go either way, and is uploaded under
+  // 'adjustment' so a parent can tell it from work the child did.
+  assert.equal(SettingsCore.buildAdjustEntry('e3', 'RC-1', -12, '2026-08-11', 1900).amount, -12);
+  assert.equal(SettingsCore.buildAdjustEntry('e4', 'RC-1', 12, '2026-08-11', 1900).amount, 12);
+  assert.equal(SettingsCore.buildAdjustEntry('e3', 'RC-1', -12, '2026-08-11', 1900).reason, 'adjustment');
+});
+
+test('balanceOf sums the entries in earnedAt order', () => {
+  const entries = [
+    CompletionCore.buildEarnEntry('e2', 'RC-1', '2026-08-11', 'a2', 3, 200),
+    CompletionCore.buildEarnEntry('e1', 'RC-1', '2026-08-10', 'a1', 4, 100),
+  ];
+  assert.equal(CompletionCore.balanceOf(entries), 7);
+  assert.equal(CompletionCore.balanceOf([]), 0);
+});
+
+test('balanceOf floors per step, not at the end', () => {
+  // The behaviour the old two-store fold had, preserved exactly: 30, then a -50
+  // adjustment (floors to 0), then a +10 earn gives 10 — not 0, which a
+  // max(0, sum) would give, and not -10, which a plain sum would.
+  const entries = [
+    CompletionCore.buildEarnEntry('e1', 'RC-1', '2026-08-10', 'a1', 30, 100),
+    SettingsCore.buildAdjustEntry('e2', 'RC-1', -50, '2026-08-11', 200),
+    CompletionCore.buildEarnEntry('e3', 'RC-1', '2026-08-12', 'a2', 10, 300),
+  ];
+  assert.equal(CompletionCore.balanceOf(entries), 10);
+});
+
+test('balanceOf order does not depend on the order rows come out of the store', () => {
+  // IndexedDB returns getAll() in key order, and the key is now a random UUID —
+  // so the fold has to sort, where the old autoincrement key sorted for free.
+  const build = () => [
+    CompletionCore.buildEarnEntry('zzz', 'RC-1', '2026-08-10', 'a1', 30, 100),
+    SettingsCore.buildAdjustEntry('aaa', 'RC-1', -50, '2026-08-11', 200),
+    CompletionCore.buildEarnEntry('mmm', 'RC-1', '2026-08-12', 'a2', 10, 300),
+  ];
+  const inOrder = build();
+  const shuffled = [build()[1], build()[2], build()[0]];
+  assert.equal(CompletionCore.balanceOf(inOrder), CompletionCore.balanceOf(shuffled));
+});
+
+test('entries written in the same millisecond fold deterministically', () => {
+  // Two completions tapped together share an earnedAt; the id breaks the tie so
+  // the balance is the same on every read rather than depending on store order.
+  const a = SettingsCore.buildAdjustEntry('aaa', 'RC-1', -5, '2026-08-11', 500);
+  const b = CompletionCore.buildEarnEntry('bbb', 'RC-1', '2026-08-11', 'a1', 5, 500);
+  assert.equal(CompletionCore.balanceOf([a, b]), CompletionCore.balanceOf([b, a]));
+  // 'aaa' sorts first: -5 floors to 0, then +5 -> 5. Not 0, which is what the
+  // opposite order would give.
+  assert.equal(CompletionCore.balanceOf([b, a]), 5);
+});
+
+test('balancesByCategory keeps categories independent', () => {
+  const entries = [
+    CompletionCore.buildEarnEntry('e1', 'RC-1', '2026-08-10', 'a1', 4, 100),
+    CompletionCore.buildEarnEntry('e2', 'RC-2', '2026-08-10', 'a2', 6, 200),
+    RewardCore.buildSpendEntry('e3', 'RC-1', 1, '2026-08-11', 300),
+  ];
+  const balances = CompletionCore.balancesByCategory(entries);
+  assert.equal(balances['RC-1'], 3);
+  assert.equal(balances['RC-2'], 6);
+  assert.deepEqual(Object.keys(balances).sort(), ['RC-1', 'RC-2']);
+});
+
+test('balancesByCategory ignores entries with no category', () => {
+  // A category is the only thing that makes an entry mean anything, and
+  // enqueueReward already refuses to upload one without it.
+  const balances = CompletionCore.balancesByCategory([
+    { id: 'x', amount: 5, earnedAt: 1 },
+    CompletionCore.buildEarnEntry('e1', 'RC-1', '2026-08-10', 'a1', 2, 100),
+  ]);
+  assert.deepEqual(Object.keys(balances), ['RC-1']);
+  assert.equal(balances['RC-1'], 2);
+});
+
+test('mintEntryId returns something unique enough to be a primary key', () => {
+  const seen = new Set();
+  for (let i = 0; i < 500; i++) seen.add(CompletionCore.mintEntryId());
+  assert.equal(seen.size, 500);
 });

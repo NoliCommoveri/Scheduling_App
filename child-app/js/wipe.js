@@ -1,9 +1,11 @@
 // wipe.js — Wipe (Module 9), wired to IndexedDB. TDS_Slice_M2 §8.
 // Runs as a single transaction opened against exactly these four stores —
-// rewardLedgerSnapshot/rewardLedgerTail/streak are never named here, which is
-// what makes FR-6's "never touches either, under any circumstance" a
-// structural guarantee rather than a discipline the code has to remember
-// (inspectable directly from WIPE_STORES below, per the TDS's own acceptance check).
+// rewardEntries and streak are never named here, which is what makes FR-6's
+// "never touches either, under any circumstance" a structural guarantee rather
+// than a discipline the code has to remember (inspectable directly from
+// WIPE_STORES below, per the TDS's own acceptance check). The ledger store was
+// renamed by the §8.1 collapse; the guarantee is unchanged, and a store that is
+// not in this list cannot be reached by this transaction at all.
 
 (function (g) {
   "use strict";

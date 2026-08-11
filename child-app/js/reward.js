@@ -8,37 +8,27 @@
   var C = g.CompletionCore;
   var R = g.RewardCore;
 
-  // FR-1/FR-2: every category the child has ever earned into (union of the
-  // snapshot and any tail-only categories), theme-skinned, balance via the
-  // single shared fold (CompletionCore.foldBalance — TDS §4/§10).
+  // FR-1/FR-2: every category the child has ever earned into, theme-skinned,
+  // balance via the single shared fold (CompletionCore.balanceOf — TDS §4/§10,
+  // Online Revamp §3.4). One store read now rather than two: since the §8.1
+  // collapse the categories are whatever the entries mention, so there is no
+  // union to take and no per-category row that could disagree with them.
   function gatherBalances(themeId) {
-    return Promise.all([g.DB.getAll("rewardLedgerSnapshot"), g.DB.getAll("rewardLedgerTail")])
-      .then(function (r) {
-        var snapshots = Object.create(null);
-        r[0].forEach(function (s) { snapshots[s.categoryId] = s; });
-        var tailByCategory = Object.create(null);
-        r[1].forEach(function (t) {
-          (tailByCategory[t.categoryId] = tailByCategory[t.categoryId] || []).push(t);
-        });
-        var categoryIds = Object.create(null);
-        Object.keys(snapshots).forEach(function (id) { categoryIds[id] = true; });
-        Object.keys(tailByCategory).forEach(function (id) { categoryIds[id] = true; });
-        return Object.keys(categoryIds).sort().map(function (id) {
-          var balance = C.foldBalance(snapshots[id], tailByCategory[id] || []);
-          var display = g.ThemeCore.resolveCategoryDisplay(themeId, id);
-          return { categoryId: id, balance: balance, label: display.label, icon: display.icon };
-        });
+    return g.DB.getAll("rewardEntries").then(function (entries) {
+      var balances = C.balancesByCategory(entries);
+      return Object.keys(balances).sort().map(function (id) {
+        var display = g.ThemeCore.resolveCategoryDisplay(themeId, id);
+        return { categoryId: id, balance: balances[id], label: display.label, icon: display.icon };
       });
+    });
   }
 
   // One current-balance read for a single category — used by the spend
   // ceiling check so it reads the exact same fold the display shows.
   function currentBalance(categoryId) {
-    return Promise.all([g.DB.get("rewardLedgerSnapshot", categoryId), g.DB.getAll("rewardLedgerTail")])
-      .then(function (r) {
-        var tailForCategory = r[1].filter(function (e) { return e.categoryId === categoryId; });
-        return C.foldBalance(r[0], tailForCategory);
-      });
+    return g.DB.getAll("rewardEntries").then(function (entries) {
+      return C.balanceOf(entries.filter(function (e) { return e.category === categoryId; }));
+    });
   }
 
   // FR-3: completions this week + a read-only streak reference, never
@@ -73,17 +63,15 @@
         if (!R.checkSpendCeiling(v.amount, balance)) return { ok: false, ceilingError: true, balance: balance };
 
         var today = g.DateUtil.today();
-        var entry = R.buildSpendEntry(categoryId, v.amount, today);
-        return g.DB.put("rewardLedgerTail", entry)
-          .then(function () { return g.Completion.foldIfDue(categoryId, today); })
-          // Online Revamp §3.4: the server ledger is append-only and signed, so
-          // a spend is a negative amount rather than a subtraction from a
-          // balance. Nothing on the server is decremented; the balance is a SUM.
+        var at = Date.now();
+        // Online Revamp §3.4: the ledger is append-only and signed, so a spend
+        // is a negative entry rather than a subtraction from a balance. Nothing
+        // is ever decremented at either end; the balance is a fold.
+        var entry = R.buildSpendEntry(C.mintEntryId(), categoryId, v.amount, today, at);
+        return g.DB.put("rewardEntries", entry)
           .then(function () {
             if (!g.Outbox) return;
-            return g.Outbox.enqueueReward({
-              category: categoryId, amount: -v.amount, reason: "spend", earnedAt: Date.now()
-            });
+            return g.Outbox.enqueueReward(entry);
           })
           .then(function () { return { ok: true }; });
       });
