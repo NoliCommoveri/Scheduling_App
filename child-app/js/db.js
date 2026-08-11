@@ -20,24 +20,27 @@
 //   rewardLedgerTail are migrated into a single append-only `rewardEntries`
 //   store (keyPath "id") and then deleted. See migrateLedgerToEntries below;
 //   the balance math that used to fold them lives in completion-core.js.
-//
-// Phase 5 deleted the packet import (§11), so nothing writes activities/chores/
-// events any more. They are still not dropped: they belong to phase 3 of the
-// §8.2 planner collapse, which is an IndexedDB v8 upgrade and has not been
-// built. Nothing gates it — §12's live-days rule was repealed on 2026-08-11 —
-// so a session that wants these gone can take them, along with the four legacy
-// keys loadState() still returns. plannerMeta is a different case and is still
-// live: it is where this device's own overrides are written, and the outbox
-// uploads a copy rather than replacing it.
+// Version 8 is phase 3 of the §8.2 planner shim collapse (§14): `activities`,
+//   `chores` and `events` are dropped. Phase 5 had already deleted the packet
+//   import that used to fill them, and phase 2 removed their last reader —
+//   `decorate()` works from the assignment row alone — so nothing in the app
+//   consulted them going into this upgrade. Nothing is migrated out of them:
+//   an upgrading device drops them empty. `plannerMeta` is a different case
+//   and stays: it is where this device's own overrides are written ahead of
+//   the outbox uploading a copy, not a mirror of anything else.
 // No dailyPlan store — the day is derived at render time and never persisted.
 
 (function (g) {
   "use strict";
 
   var DB_NAME = "childAppDB";
-  var DB_VERSION = 7;
+  var DB_VERSION = 8;
   var SINGLETONS = ["child", "semester", "themeSettings", "streak", "syncMeta"];
-  var KEYED = ["activities", "chores", "events", "plannerMeta", "assignments"];
+  var KEYED = ["plannerMeta", "assignments"];
+  // Stores dropped at version 8 (§14 phase 3). Deleted only if present, so a
+  // fresh install (which never created them) upgrades through this step as a
+  // no-op.
+  var DROPPED_V8 = ["activities", "chores", "events"];
   var KEYED_CUSTOM = [
     { name: "activityRecords", keyPath: "activityId" },
     // §3.4/§8.1's append-only ledger. Keyed on the client-minted entry id, which
@@ -164,6 +167,10 @@
         // After the creates: the migration writes into `rewardEntries`, which
         // the loop above has just made on any database old enough to need it.
         migrateLedgerToEntries(db, req.transaction);
+        // v8 (§14 phase 3): drop the stores nothing has written to since Phase 5.
+        DROPPED_V8.forEach(function (name) {
+          if (db.objectStoreNames.contains(name)) db.deleteObjectStore(name);
+        });
       };
       req.onsuccess = function () { _db = req.result; resolve(_db); };
       req.onerror = function () { reject(req.error); };
@@ -253,19 +260,14 @@
 
   // Load everything the planner needs in one shot.
   //
-  // Online Revamp §8.2/§14: the planner now works from `rows` — decorated
+  // Online Revamp §8.2/§14: the planner works from `rows` — decorated
   // `assignments` rows, each carrying its own overrides. This device's unflushed
   // overrides are overlaid first, as the child-owned columns they are on their
   // way to becoming, so nothing downstream has to consult a second object to
-  // know when an item is due or where it sits. The `activities` / `chores` /
-  // `events` / `meta` keys come back alongside because CLAUDE.md §IV.B pins this
-  // shape until the collapse finishes; streak.js is the only remaining consumer
-  // of any of them.
-  //
-  // `assignments` is the one source: Phase 5 deleted the packet import that used
-  // to fill the legacy activities/chores/events stores locally, and nothing has
-  // written them since. Dropping those stores is a schema change (§8.1) and
-  // belongs with the rest of the collapse, not here.
+  // know when an item is due or where it sits. `assignments` is the one source;
+  // phase 3 (§14) dropped the legacy activities/chores/events stores and the
+  // four pre-revamp keys this function used to return alongside `rows` — the
+  // shape CLAUDE.md §IV.B pinned until the collapse finished.
   function loadState() {
     return Promise.all([getAll("plannerMeta"), getAll("assignments")]).then(function (r) {
       return g.AssignmentCore.toState(g.AssignmentCore.applyLocalMeta(r[1], r[0]));

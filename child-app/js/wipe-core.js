@@ -1,5 +1,9 @@
 // wipe-core.js — pure predicates for Wipe (Module 9), TDS_Slice_M2 §8.
 // No IndexedDB access here — same discipline as the other -core.js modules.
+//
+// §14 phase 3 dropped `isPastEvent` (FR-4): it read the `events` store, which
+// this upgrade drops, and had nothing to clear since Phase 5 deleted the
+// packet import that used to fill it.
 
 (function (g) {
   "use strict";
@@ -11,13 +15,5 @@
     return record.exported === true;
   }
 
-  // FR-4: a Family Event clears once its effective date — endDate, or
-  // startDate if no endDate (the same field the Daily Planner reads for a
-  // Family Event's date, M1 §2/§4) — is strictly before device-local today.
-  function isPastEvent(event, today) {
-    var effectiveDate = event.endDate || event.startDate;
-    return effectiveDate < today;
-  }
-
-  g.WipeCore = { isClearable: isClearable, isPastEvent: isPastEvent };
+  g.WipeCore = { isClearable: isClearable };
 })(typeof window !== "undefined" ? window : globalThis);

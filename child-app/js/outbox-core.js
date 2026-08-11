@@ -35,7 +35,9 @@
   // §3.3.3 gives each of the latter two its own column precisely so the
   // parent's intent and the child's adjustment never contend. This is the
   // rename between the two vocabularies, kept in one place so deferment.js and
-  // planner-ui.js cannot drift apart on it.
+  // planner-ui.js cannot drift apart on it. §14 phase 3 dropped the stores
+  // this rename has nothing to do with (`activities`/`chores`/`events`);
+  // plannerMeta itself is still live, and this translation with it.
   var META_TO_COLUMN = {
     deferredDate: "deferredTo",
     blockHint: "childBlockHint",

@@ -76,12 +76,15 @@
   // ---- enqueue (called from the write sites, inside their promise chains) ----
 
   // Only rows that came from /api/plan may be uploaded. Phase 5 deleted the
-  // packet import, but this guard is not therefore dead: a device that imported
-  // a packet before upgrading still has those rows in activities/chores/events
-  // until the §8.1 store drop runs, and POSTing one's id would earn a "Not
-  // found for this child" rejection per item, forever. Cache presence is the
-  // test rather than the shape of the id, because §3.3.1 is explicit that
-  // nothing parses an id.
+  // packet import, but this guard is not therefore dead: a device that
+  // imported a packet before upgrading may still have an `activityRecords`
+  // row for it — §14 phase 3 dropped the `activities`/`chores`/`events`
+  // stores those items lived in, but not any `activityRecords` row a
+  // completion already wrote against one, and its id (the old
+  // `CHR-{token}-{date}` scheme) will never match a server-minted UUID.
+  // POSTing it would earn a "Not found for this child" rejection per item,
+  // forever. Cache presence is the test rather than the shape of the id,
+  // because §3.3.1 is explicit that nothing parses an id.
   function isServerAssignment(assignmentId) {
     if (!assignmentId) return Promise.resolve(false);
     return g.DB.get("assignments", assignmentId).then(function (row) { return !!row; });

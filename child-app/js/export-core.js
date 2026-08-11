@@ -10,6 +10,13 @@
 // resolve — that document is retained as a historical record — but they
 // describe where a rule came from, not a format anything must still match.
 // fixtures/completions_sample.csv, which this was checked against, is gone.
+//
+// §14 phase 3: `buildRow` used to be handed the received Activity or Chore
+// object — the source item from the (now-dropped) `activities`/`chores`
+// stores — plus an `isChore` flag the caller derived from which store the
+// item came out of. It now takes the assignment row itself, decorated by
+// AssignmentCore.decorate() so `choreType` is present, and reads `kind`
+// directly rather than being told it.
 
 (function (g) {
   "use strict";
@@ -24,21 +31,23 @@
     return (record.status === "complete" || record.status === "waived") && record.exported === false;
   }
 
-  // sourceItem: the received Activity or Chore matching record.activityId.
-  // isChore distinguishes column sourcing (course/sequenceNumber blank, per §3).
-  function buildRow(record, sourceItem, isChore, childName, semesterLabel) {
+  // assignmentRow: the decorated `assignments` row matching record.activityId
+  // (§3.3), the same shape planner-ui.js and completion.js render from.
+  // course/sequenceNumber are blank for a chore, per §3 — a chore has neither.
+  function buildRow(record, assignmentRow, childName, semesterLabel) {
+    var isChore = assignmentRow.kind === "chore";
     return {
       activityId: record.activityId,
       date: record.date,
-      course: isChore ? "" : (sourceItem.courseName || ""),
-      activity: sourceItem.title || "",
-      activityType: isChore ? (sourceItem.choreType || "") : (sourceItem.activityType || ""),
-      plannedBlock: sourceItem.blockHint || "",
+      course: isChore ? "" : (assignmentRow.course_name || ""),
+      activity: assignmentRow.title || "",
+      activityType: isChore ? (assignmentRow.choreType || "") : (assignmentRow.activity_type || ""),
+      plannedBlock: assignmentRow.block_hint || "",
       status: record.status,
       grade: typeof record.grade === "number" ? record.grade : "",
       childName: childName || "",
       semesterLabel: semesterLabel || "",
-      sequenceNumber: typeof sourceItem.sequenceNumber === "number" ? sourceItem.sequenceNumber : ""
+      sequenceNumber: isChore ? "" : (typeof assignmentRow.sequence_no === "number" ? assignmentRow.sequence_no : "")
     };
   }
 
