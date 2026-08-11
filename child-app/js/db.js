@@ -22,11 +22,13 @@
 //   the balance math that used to fold them lives in completion-core.js.
 //
 // Phase 5 deleted the packet import (§11), so nothing writes activities/chores/
-// events any more. They are still not dropped: they belong to the §8.2 planner
-// collapse, which §12 gates on phases 3-4 having carried live days, and that
-// gate is not met yet. plannerMeta is a different case and is still live — it is
-// where this device's own overrides are written, and the outbox uploads a copy
-// rather than replacing it.
+// events any more. They are still not dropped: they belong to phase 3 of the
+// §8.2 planner collapse, which is an IndexedDB v8 upgrade and has not been
+// built. Nothing gates it — §12's live-days rule was repealed on 2026-08-11 —
+// so a session that wants these gone can take them, along with the four legacy
+// keys loadState() still returns. plannerMeta is a different case and is still
+// live: it is where this device's own overrides are written, and the outbox
+// uploads a copy rather than replacing it.
 // No dailyPlan store — the day is derived at render time and never persisted.
 
 (function (g) {

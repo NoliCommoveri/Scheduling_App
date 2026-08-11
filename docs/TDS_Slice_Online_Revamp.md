@@ -32,7 +32,8 @@ original text: a local entry now carries the *same* client-minted id the outbox 
 one earning is one row at both ends rather than two constructions that happen to agree; and
 §14 gains an open item recording that the device's zero-floored balance and §3.4's flat
 `SUM` disagree in a case nothing reconciles. The §8.2 planner shim is untouched and stays
-deferred — §12 gates it on live days.
+deferred. *(That deferral was gated on live days when this was written; the sixth amendment
+repeals the gate. What is left of the shim is deferred on its size alone.)*
 
 **Amended a fourth time 2026-08-11**, authorized in-session, closing the last gap between
 this design and a device someone can actually start using. §4.3 has always said the child
@@ -45,13 +46,26 @@ device is, and how it differs from an offline one and an unlinked one; §13 gain
 No API, schema or credential behaviour changed — this is the client reaching the design.
 
 **Amended a fifth time 2026-08-11**, authorized in-session, recording **phase 1 of the §8.2
-shim collapse**. Ray waived §12's "only after phases 3–4 have carried live days" gate for
-this phase specifically; the gate stands for what is left. §8.2 and §14 are rewritten to
-say which half is built: the planning derivation now reads the child-owned columns off the
-assignment row and the parallel `meta` map is gone, so one assignment is one object rather
-than a record plus a lookup. The two halves still deferred are named separately in §14 —
-`planner-ui.js`'s field names, and the IndexedDB v8 store drop. No API, schema, credential
-or rendering behaviour changed; this is the same plan derived from one object instead of two.
+shim collapse**. §8.2 and §14 are rewritten to say which half is built: the planning
+derivation now reads the child-owned columns off the assignment row and the parallel `meta`
+map is gone, so one assignment is one object rather than a record plus a lookup. The two
+halves still deferred are named separately in §14 — `planner-ui.js`'s field names, and the
+IndexedDB v8 store drop. No API, schema, credential or rendering behaviour changed; this is
+the same plan derived from one object instead of two.
+
+**Amended a sixth time 2026-08-11**, authorized in-session, **repealing §12's live-days
+gate**. Every phase of the cutover was gated on the replacement having "carried real days"
+before its fallback could be deleted. That gate has been removed, not satisfied: Ray waived
+it for phase 1 of the shim collapse in the same session, and rather than leave a rule
+standing that the project has already stepped around once, it is withdrawn. §12 now says
+what remains true — the sequencing constraint, and the reason the gate existed — without
+blocking work on it.
+
+What this does **not** change: the fallbacks are already gone. Phase 5 deleted the packet
+import and the CSV transport, and the service worker fix landed with them, so nothing is
+now waiting on a proving period to be deleted. What is left of the §8.2 shim is deferred on
+its size — a rewrite of the largest file in the Child App, and an IndexedDB v8 migration —
+and that is the only reason it is deferred. §14 states it that way.
 
 **Applies to:** Both apps, the Worker, and the interchange layer between them.
 **Supersedes:** `TDS_Slice_D1_Sync_Management_App.md` (the mirror becomes a
@@ -903,8 +917,22 @@ export for a parent who wants a spreadsheet. It is no longer on any critical pat
 
 ## 12. Phasing and cutover
 
-Nothing is deleted until the replacement carries real days. The current app keeps working
-throughout.
+The current app keeps working throughout.
+
+> **The live-days gate is repealed** (sixth amendment). This section used to open "nothing
+> is deleted until the replacement carries real days", and Phase 5 was marked "only after
+> phases 3–4 have carried live days". Both are withdrawn.
+>
+> The rule was written when every phase still had a fallback behind it — a file import, a
+> CSV import — and the worry it answered was deleting one before the replacement had been
+> trusted with a real week. Phase 5 has since deleted those fallbacks, so there is nothing
+> left for the gate to protect; what it was still doing was blocking the §8.2 shim collapse,
+> which deletes no fallback at all and only removes scaffolding this document has called
+> scaffolding since it was written.
+>
+> Judgement replaces it: **do not delete a path while something still depends on it**, which
+> is a thing to check rather than a period to wait out. Work that is deferred from here is
+> deferred for a stated reason of its own — see §14, where each open item carries one.
 
 > **No backfill phase.** An earlier draft opened with one, because `sync.js`'s outbox only
 > ever captured writes made *after* a sync token was set — curriculum authored before that
@@ -921,7 +949,7 @@ throughout.
 | **2** | Pairing (§4.3) + Devices UI | Child App still on the old path. |
 | **3** | Commit writes assignments; Child App reads `/api/plan` | File import retained as fallback. |
 | **4** | Completions and rewards upload; Reporting view | CSV import retained as fallback. |
-| **5** | Delete §11, collapse the §8.2 shim, service worker fix | Only after phases 3–4 have carried live days. |
+| **5** | Delete §11, collapse the §8.2 shim, service worker fix | The §11 deletions and the service worker fix are **done**. The shim collapse is phased in its own right and only phase 1 is built — see §14. |
 
 ---
 
@@ -1014,8 +1042,9 @@ throughout.
   missing is the field on the tier, and a decision about whether it is per tier or per
   activity. Until then §7 describes a path that carries a constant. The one way a row gets
   a real amount today is a parent editing it by hand in the Assignments view.
-- **Collapsing the §8.2 shim — phase 1 done, phases 2–3 open.** Ray waived §12's
-  live-days gate on 2026-08-11 and authorized the first phase; the rest is still deferred.
+- **Collapsing the §8.2 shim — phase 1 done, phases 2–3 open.** Deferred on size, not on
+  readiness: §12's live-days gate is repealed (sixth amendment), so what is left here is
+  waiting on someone choosing to spend the time, and nothing else.
 
   **Done (phase 1): the derivation moved onto the row.** `planner-core.js` and
   `streak-core.js` read the child-owned columns (`deferred_to`, `child_block_hint`,
