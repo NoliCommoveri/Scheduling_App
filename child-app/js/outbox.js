@@ -97,11 +97,12 @@
     });
   }
 
-  // plannerMeta's vocabulary ({ deferredDate, blockHint, sortOrder }) rather
-  // than the column names, so deferment.js and planner-ui.js can pass the exact
-  // patch they already write locally and the rename lives in one place.
+  // `patch` is the same column-vocabulary object deferment.js and planner-ui.js
+  // just wrote onto the cached row (§14's fold retired the separate plannerMeta
+  // vocabulary); this rewrites it into the API's camelCase field names, kept in
+  // one place so this and the write these two callers already made cannot drift.
   function enqueueMeta(assignmentId, patch) {
-    return enqueueCompletion(assignmentId, C.completionFieldsFromMeta(patch));
+    return enqueueCompletion(assignmentId, C.completionFieldsFromOverride(patch));
   }
 
   // §7: earning is a side effect of completion, posted in the same drain. The

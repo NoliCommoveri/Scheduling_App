@@ -21,11 +21,12 @@
     return typeof enteredPin === "string" && enteredPin.length > 0 && enteredPin === storedPin;
   }
 
-  // TDS §6: Reschedule writes only { deferredDate } — merged into the item's
-  // existing plannerMeta record by the caller (DB.setMeta already does the
-  // read-merge-write upsert, TDS_Slice_M1 §4), so sortOrder/blockHint survive.
+  // TDS §6: Reschedule writes only `deferred_to` — merged onto the item's
+  // cached `assignments` row by the caller (DB.setAssignmentFields does the
+  // read-merge-write, Online Revamp §14), so child_block_hint/child_sort_order
+  // survive untouched.
   function buildReschedulePatch(newDate) {
-    return { deferredDate: newDate };
+    return { deferred_to: newDate };
   }
 
   // TDS §6: Waive — same store/shape as Module 4's completion, status 'waived',

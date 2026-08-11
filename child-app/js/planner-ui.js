@@ -1,26 +1,26 @@
 // planner-ui.js — the Daily Planner's rendering and interactions (SRS Module 3).
 // Presentation and light organization only: it reads the assignment rows
-// DB.loadState() hands back, and writes just two child-owned override fields
-// (sortOrder, blockHint) via plannerMeta. The plan itself is derived here each
-// render and never persisted.
+// DB.loadState() hands back, and writes just two child-owned columns
+// (child_sort_order, child_block_hint) straight onto the cached row via
+// DB.setAssignmentFields (§14 — plannerMeta folded into the columns). The plan
+// itself is derived here each render and never persisted.
 //
-// Online Revamp §14, shim collapse — **phase 2 is this file.** It used to render
-// by the pre-revamp field names — `courseName`, `sequenceNumber`, `activityType`
-// and a `payload` that assignment-core had quietly replaced with a parsed
-// object — which was the only reason those names were minted at all. It now
-// renders from the §3.3 columns themselves: `course_name`, `sequence_no`,
-// `activity_type`.
+// Online Revamp §14, shim collapse — **phase 2 was this file's render side.**
+// It used to render by the pre-revamp field names — `courseName`,
+// `sequenceNumber`, `activityType` and a `payload` that assignment-core had
+// quietly replaced with a parsed object — which was the only reason those
+// names were minted at all. It now renders from the §3.3 columns themselves:
+// `course_name`, `sequence_no`, `activity_type`.
 //
 // The camelCase names that remain here are not columns and are not aliases:
 // `choreType`, `lessonTitle`, `capturesGrade`, `required`, `notes`, `time` and
 // an event's `startDate`/`endDate` come out of the row's `payload`, where the
 // Management App writes what §3.3 gives no column, and `content` is that
-// payload's kind-specific descriptor. `blockHint` / `sortOrder` in setMeta are
-// the `plannerMeta` store's vocabulary. Phase 3 (§14) dropped the
+// payload's kind-specific descriptor. Phase 3 (§14) dropped the
 // `activities`/`chores`/`events` stores and the four legacy `loadState()` keys;
-// folding `plannerMeta` itself into `child_block_hint`/`child_sort_order` is
-// still open — §8.1's table names it as the target shape, but nothing has
-// picked up the write-path redesign that requires.
+// folding `plannerMeta` into `child_block_hint`/`child_sort_order` — split out
+// of that collapse as its own write-path item — is also done: setOverride
+// below writes the column directly rather than a separate store's vocabulary.
 
 (function (g) {
   "use strict";
@@ -87,9 +87,11 @@
     // The child's own block and order overrides (§3.3.3's child_block_hint /
     // child_sort_order). Written locally first, then queued — the local write
     // is what the next render reads, and the queue is what a parent's
-    // Reporting view eventually sees.
-    function setMeta(id, patch) {
-      return g.DB.setMeta(id, patch)
+    // Reporting view eventually sees. `patch` is keyed by column name, the
+    // same vocabulary DB.setAssignmentFields writes and OutboxCore translates
+    // for the wire.
+    function setOverride(id, patch) {
+      return g.DB.setAssignmentFields(id, patch)
         .then(function () { return g.Outbox.enqueueMeta(id, patch); })
         .then(reload);
     }
@@ -602,7 +604,7 @@
         if (b === blockName) opt.selected = true;
         pick.appendChild(opt);
       });
-      pick.onchange = function () { setMeta(item.id, { blockHint: pick.value }); };
+      pick.onchange = function () { setOverride(item.id, { child_block_hint: pick.value }); };
       footer.appendChild(pick);
 
       var doneBtn = node("button", "btn small", "Mark done");
@@ -1157,7 +1159,7 @@
         if (j === group.length - 1) newKey = keyAt(j) + 1;
         else newKey = (keyAt(j) + keyAt(j + 1)) / 2;
       }
-      setMeta(moved.id, { sortOrder: newKey });
+      setOverride(moved.id, { child_sort_order: newKey });
     }
 
     // ---------- export (Module 8) ----------

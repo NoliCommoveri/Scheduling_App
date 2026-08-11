@@ -132,37 +132,6 @@
     return item;
   }
 
-  // `plannerMeta` is the store where this device's own overrides are written
-  // ahead of the outbox uploading a copy, in the pre-revamp vocabulary. Each
-  // field is the child-owned column it is on its way to becoming (§3.3), so the
-  // overlay below writes it as that column rather than keeping a second name for
-  // it alive through the planner. outbox-core.js holds the same translation in
-  // the API's vocabulary (`deferredTo`, `childSortOrder`); both die with the
-  // store, in the phase that folds plannerMeta into the columns (§8.1).
-  var META_TO_COLUMN = {
-    deferredDate: "deferred_to",
-    blockHint: "child_block_hint",
-    sortOrder: "child_sort_order"
-  };
-
-  // A pending override is by construction newer than the column it has not yet
-  // been flushed to, so the local value wins field by field. Rows are copied,
-  // never mutated: the cache still holds what the server last said.
-  function applyLocalMeta(rows, local) {
-    var byId = Object.create(null);
-    (local || []).forEach(function (m) { if (m && m.id) byId[m.id] = m; });
-
-    return (rows || []).map(function (row) {
-      var m = byId[row && row.id];
-      if (!m) return row;
-      var merged = Object.assign({}, row);
-      Object.keys(META_TO_COLUMN).forEach(function (field) {
-        if (m[field] != null) merged[META_TO_COLUMN[field]] = m[field];
-      });
-      return merged;
-    });
-  }
-
   // rows: assignment rows as `/api/plan` returns them (snake_case, §3.3).
   // Returns { rows } — the decorated, plannable set the planner works from.
   function toState(rows) {
@@ -182,7 +151,6 @@
   g.AssignmentCore = {
     toState: toState,
     decorate: decorate,
-    applyLocalMeta: applyLocalMeta,
     isPlannable: isPlannable,
     parsePayload: parsePayload
   };

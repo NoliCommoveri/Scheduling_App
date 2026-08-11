@@ -25,18 +25,22 @@
 //   import that used to fill them, and phase 2 removed their last reader —
 //   `decorate()` works from the assignment row alone — so nothing in the app
 //   consulted them going into this upgrade. Nothing is migrated out of them:
-//   an upgrading device drops them empty. `plannerMeta` is a different case
-//   and stays: it is where this device's own overrides are written ahead of
-//   the outbox uploading a copy, not a mirror of anything else.
+//   an upgrading device drops them empty.
+// Version 9 folds `plannerMeta` into the assignment row's own columns (§14,
+//   split out of the §8.2 collapse as its own write-path item): any override
+//   this device wrote but had not yet drained is carried onto the `assignments`
+//   row it overrides, and the store is dropped. See foldPlannerMetaIntoAssignments
+//   below. Local writes now go straight onto the cached row (setAssignmentFields)
+//   instead of a separate keyed store.
 // No dailyPlan store — the day is derived at render time and never persisted.
 
 (function (g) {
   "use strict";
 
   var DB_NAME = "childAppDB";
-  var DB_VERSION = 8;
+  var DB_VERSION = 9;
   var SINGLETONS = ["child", "semester", "themeSettings", "streak", "syncMeta"];
-  var KEYED = ["plannerMeta", "assignments"];
+  var KEYED = ["assignments"];
   // Stores dropped at version 8 (§14 phase 3). Deleted only if present, so a
   // fresh install (which never created them) upgrades through this step as a
   // no-op.
@@ -147,6 +151,46 @@
     };
   }
 
+  // v9 (§14): fold `plannerMeta` into the `assignments` row's own columns and
+  // drop the store. An override this device wrote but has not yet drained is
+  // still live in `plannerMeta` on any device reaching this upgrade — it is
+  // carried onto the row it overrides before the store goes away, so a
+  // pending deferral or reorder is not silently lost the moment the upgrade
+  // runs. An override with no matching row (the assignment already fell out
+  // of the cache) is dropped along with it: nothing would ever have read it
+  // again either way, same as pruneMeta used to do at runtime.
+  //
+  // Runs inside the versionchange transaction, same discipline as
+  // migrateLedgerToEntries: the store is deleted only after every fold-in
+  // read/write against it has resolved, so an interrupted upgrade retries
+  // against untouched data rather than losing an override partway through.
+  function foldPlannerMetaIntoAssignments(db, upgradeTx) {
+    if (!db.objectStoreNames.contains("plannerMeta")) return;
+    var metaStore = upgradeTx.objectStore("plannerMeta");
+    var rowStore = upgradeTx.objectStore("assignments");
+
+    var metaReq = metaStore.getAll();
+    metaReq.onsuccess = function () {
+      var overrides = (metaReq.result || []).filter(function (m) { return m && m.id; });
+      if (overrides.length === 0) { db.deleteObjectStore("plannerMeta"); return; }
+
+      var remaining = overrides.length;
+      overrides.forEach(function (m) {
+        var patch = {};
+        if (m.deferredDate != null) patch.deferred_to = m.deferredDate;
+        if (m.blockHint != null) patch.child_block_hint = m.blockHint;
+        if (m.sortOrder != null) patch.child_sort_order = m.sortOrder;
+
+        var rowReq = rowStore.get(m.id);
+        rowReq.onsuccess = function () {
+          var row = rowReq.result;
+          if (row && Object.keys(patch).length) rowStore.put(Object.assign({}, row, patch));
+          if (--remaining === 0) db.deleteObjectStore("plannerMeta");
+        };
+      });
+    };
+  }
+
   function open() {
     return new Promise(function (resolve, reject) {
       if (_db) return resolve(_db);
@@ -171,6 +215,10 @@
         DROPPED_V8.forEach(function (name) {
           if (db.objectStoreNames.contains(name)) db.deleteObjectStore(name);
         });
+        // v9 (§14): fold plannerMeta onto the assignments rows it overrides,
+        // then drop it. Must run after the KEYED loop above has ensured
+        // `assignments` exists.
+        foldPlannerMetaIntoAssignments(db, req.transaction);
       };
       req.onsuccess = function () { _db = req.result; resolve(_db); };
       req.onerror = function () { reject(req.error); };
@@ -248,29 +296,46 @@
   // Upserts the rows that are still part of the plan and drops the ones the
   // Worker sent purely so the client could remove them. plan-sync.js decides
   // which is which; this is the atomic write.
+  //
+  // Before a row is stored, any of this device's own planner-column writes
+  // still sitting in the outbox are reapplied on top of it (§14 — folding
+  // plannerMeta into the row means the row itself is now the only place those
+  // overrides live). The outbox is the ground truth for what has not reached
+  // the server yet; a plan fetched before the drain caught up must not
+  // silently revert a deferral or reorder the child made moments ago.
   function applyPlan(puts, deleteIds) {
     if (!puts.length && !deleteIds.length) return Promise.resolve();
-    return tx(["assignments"], "readwrite").then(function (t) {
+    return tx(["assignments", "outbox"], "readwrite").then(function (t) {
       var store = t.objectStore("assignments");
-      puts.forEach(function (row) { store.put(row); });
-      deleteIds.forEach(function (id) { store.delete(id); });
-      return txDone(t);
+      return reqToPromise(t.objectStore("outbox").getAll()).then(function (queued) {
+        var pendingById = Object.create(null);
+        (queued || []).forEach(function (op) {
+          if (!op || op.kind !== "completion" || !op.assignmentId) return;
+          var patch = g.OutboxCore.columnsFromCompletionFields(op.fields);
+          if (Object.keys(patch).length === 0) return;
+          pendingById[op.assignmentId] = Object.assign(pendingById[op.assignmentId] || {}, patch);
+        });
+
+        puts.forEach(function (row) {
+          var patch = pendingById[row.id];
+          store.put(patch ? Object.assign({}, row, patch) : row);
+        });
+        deleteIds.forEach(function (id) { store.delete(id); });
+        return txDone(t);
+      });
     });
   }
 
   // Load everything the planner needs in one shot.
   //
   // Online Revamp §8.2/§14: the planner works from `rows` — decorated
-  // `assignments` rows, each carrying its own overrides. This device's unflushed
-  // overrides are overlaid first, as the child-owned columns they are on their
-  // way to becoming, so nothing downstream has to consult a second object to
-  // know when an item is due or where it sits. `assignments` is the one source;
-  // phase 3 (§14) dropped the legacy activities/chores/events stores and the
-  // four pre-revamp keys this function used to return alongside `rows` — the
-  // shape CLAUDE.md §IV.B pinned until the collapse finished.
+  // `assignments` rows, each carrying its own overrides. §14 folded
+  // `plannerMeta` into the row's own child-owned columns, so `assignments` is
+  // now the only store this reads: a local override is just a column value,
+  // not a second object merged in at read time.
   function loadState() {
-    return Promise.all([getAll("plannerMeta"), getAll("assignments")]).then(function (r) {
-      return g.AssignmentCore.toState(g.AssignmentCore.applyLocalMeta(r[1], r[0]));
+    return getAll("assignments").then(function (rows) {
+      return g.AssignmentCore.toState(rows);
     });
   }
 
@@ -338,25 +403,17 @@
     });
   }
 
-  // Drop the plannerMeta override for assignments the cache no longer holds.
-  // plan-sync prunes rows that were rescinded or that fell out of the window,
-  // and without this their overrides accumulate in a store nothing ever reads
-  // again — loadState() merges plannerMeta over the server rows by id, so an
-  // orphan is invisible and permanent.
-  function pruneMeta(liveIds) {
-    return getAll("plannerMeta").then(function (all) {
-      var dead = all
-        .filter(function (m) { return !liveIds[m.id]; })
-        .map(function (m) { return m.id; });
-      return dead.length ? delMany("plannerMeta", dead).then(function () { return dead.length; }) : 0;
-    });
-  }
-
-  // Read/merge/write a single plannerMeta field, leaving other fields intact.
-  function setMeta(id, patch) {
-    return get("plannerMeta", id).then(function (existing) {
-      var rec = Object.assign({ id: id }, existing || {}, patch);
-      return put("plannerMeta", rec);
+  // Merge a patch of child-owned columns directly onto the cached `assignments`
+  // row (§14 — plannerMeta folded into the row it used to stage ahead of).
+  // Read-modify-write, so a block/order/deferral override lands next to
+  // whatever the server last sent for every other column. A no-op when the
+  // row is not cached: there is nothing yet for the child to have overridden,
+  // and nothing this device could be pruning either — an override now lives
+  // and dies with the row it is on, so there is no separate orphan to prune.
+  function setAssignmentFields(id, patch) {
+    return get("assignments", id).then(function (existing) {
+      if (!existing) return;
+      return put("assignments", Object.assign({}, existing, patch));
     });
   }
 
@@ -395,9 +452,8 @@
     rejectionAll: rejectionAll,
     rejectionCount: rejectionCount,
     rejectionClear: rejectionClear,
-    pruneMeta: pruneMeta,
     loadState: loadState,
-    setMeta: setMeta,
+    setAssignmentFields: setAssignmentFields,
     devWipeAll: devWipeAll
   };
 })(typeof window !== "undefined" ? window : globalThis);

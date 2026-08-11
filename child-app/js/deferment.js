@@ -52,7 +52,7 @@
         var dateCheck = C.validateRescheduleDate(newDate, g.DateUtil.today());
         if (!dateCheck.ok) return { ok: false, dateError: dateCheck.message };
         var patch = C.buildReschedulePatch(newDate);
-        return g.DB.setMeta(item.id, patch)
+        return g.DB.setAssignmentFields(item.id, patch)
           .then(function () { return queueMeta(item.id, patch); })
           .then(notifyStreak)
           .then(function () { return { ok: true }; });
