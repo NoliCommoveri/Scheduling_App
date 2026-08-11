@@ -64,7 +64,7 @@ const App = (() => {
       <a href="#/chores">Chores</a>
       <a href="#/events">Events</a>
       <a href="#/pacing">Pacing</a>
-      <a href="#/packet">Packet</a>
+      <a href="#/packet">Assign</a>
       <a href="#/settings">Settings</a>
     `;
     startRouter();
