@@ -34,6 +34,16 @@ one earning is one row at both ends rather than two constructions that happen to
 `SUM` disagree in a case nothing reconciles. The §8.2 planner shim is untouched and stays
 deferred — §12 gates it on live days.
 
+**Amended a fourth time 2026-08-11**, authorized in-session, closing the last gap between
+this design and a device someone can actually start using. §4.3 has always said the child
+opens the app and types a code; what the built app did was run the pre-revamp Startup Wizard,
+ask someone to *type the child's name*, and drop into a planner with no token — leaving
+pairing reachable only from behind the parent PIN in Settings, which is to say leaving a
+fresh install looking like an app that does not work. §4.3.1 is new and records pairing as a
+step of first-run setup rather than a Settings errand; §4.4 is new and states what an unpaired
+device is, and how it differs from an offline one and an unlinked one; §13 gains checks 22–25.
+No API, schema or credential behaviour changed — this is the client reaching the design.
+
 **Applies to:** Both apps, the Worker, and the interchange layer between them.
 **Supersedes:** `TDS_Slice_D1_Sync_Management_App.md` (the mirror becomes a
 curriculum-only backup), `Interchange_Contract.md` (replaced by §5's API),
@@ -496,6 +506,44 @@ arbitrate. That is a stronger guarantee than the mirror's, achieved with less co
 Rate limit: 10 failed redemptions per code, then the code is burned. Codes are single-use
 regardless of outcome once consumed.
 
+**4.3.1 Where step 3 happens.** In the **Startup Wizard**, as its second step, between the
+PIN and the semester label — not only in Settings. This is the amendment of 2026-08-11 and
+it is worth stating plainly, because the alternative was the shipped behaviour: the wizard
+asked someone to type the child's name, wrote it locally, and handed over a planner with no
+token, no plan, and no visible way to get one. Settings holds the code form too, but Settings
+is behind the parent PIN, which is exactly the wrong side of the door for the one action that
+makes a new device work at all.
+
+Two consequences follow, and both are load-bearing:
+
+- **`childName` from step 4 is the source of the local name.** Nothing types it. Step 4
+  already returns the answer from the party that holds it, and a typed name was only ever a
+  stand-in for not being able to ask. Re-pairing overwrites the local name only when the
+  device holds none, or when the token now scopes to a different `child_id` — a display name
+  set in Settings (Module 11 FR-1) is a deliberate local choice and survives a re-pair of the
+  same child.
+- **The token commits at step 5, before setup finishes.** So "setup completed" cannot be
+  tested by the presence of a name — the pairing step writes one. It is tested by the PIN,
+  which only the wizard's final step writes. A device abandoned mid-setup re-enters the
+  wizard and its pairing step recognises the token it already holds rather than demanding a
+  code that has been consumed and cannot be redeemed twice.
+
+### 4.4 What an unpaired device is
+
+Nothing. It has no plan (`/api/plan` needs the bearer), no upload path (§5.5 likewise), and
+under §4.3.1 no name. This is not a degraded mode worth designing for — it is the state
+before setup finishes, and the only thing the app should do in it is ask for a code.
+
+Distinguish it from **offline**, which §8.4 does design for: an offline *paired* device has a
+token, a cached plan and a draining outbox, and is fully usable. The distinction is why the
+wizard requires a network round-trip once and the planner never does.
+
+A device that has been *unlinked* — Settings → "Forget this device", which drops the local
+token without revoking it server-side — lands between the two: it keeps its name, PIN, cached
+plan and local history, so it does not re-enter the wizard, and the planner's empty state
+points at Settings for a fresh code. Re-entering setup there would be destructive over a
+recoverable state.
+
 ---
 
 ## 5. HTTP API
@@ -902,6 +950,21 @@ throughout.
     appended and only the bad one comes back in `rejected` — the request is not a `400`.
 21. Provoke a per-row rejection on a paired device: the count appears in the Child App's
     Settings, the reason is listed, it survives a reload, and dismissing it clears it.
+22. **First run, end to end, on a device that has never held this app.** Mint a code in
+    Settings → Devices, open `/kid`, set a PIN, type the code, finish setup: the child's own
+    name — never typed — appears in the planner header, and their committed plan is on screen
+    without anyone opening Settings. This is the check the shipped wizard could not pass
+    (§4.3.1).
+23. Type that code in lower case with a dash through the middle: it pairs identically.
+    Then try an expired one and an already-consumed one: each names its reason, the step
+    stays put, and a fresh code entered afterwards still works.
+24. Close the app immediately after the pairing step and reopen it: setup restarts at the
+    PIN, its pairing step reports the device already linked and names the child, and no
+    second code is asked for. Finishing from there produces exactly one device row in
+    Settings → Devices.
+25. Pair a device, rename the child in the Child App's Settings, then revoke and re-pair to
+    the *same* child: the chosen name survives. Re-pair to a *different* child: the name
+    follows the new token.
 
 ---
 

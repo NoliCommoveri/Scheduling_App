@@ -371,3 +371,31 @@ test('mintEntryId returns something unique enough to be a primary key', () => {
   for (let i = 0; i < 500; i++) seen.add(CompletionCore.mintEntryId());
   assert.equal(seen.size, 500);
 });
+
+// ===========================================================  pairing
+
+// pairing.js is not a `*-core.js` file — it owns fetch and IndexedDB — but its
+// code normalizer is pure, and it is the one thing standing between a kid
+// mistyping the separators they used to keep their place and a `409 Unknown
+// pairing code`. Evaluated the same way as the cores; nothing in the IIFE
+// touches the network at load time.
+vm.runInThisContext(readFileSync(new URL('child-app/js/pairing.js', repo), 'utf8'), { filename: 'pairing.js' });
+const { Pairing } = globalThis;
+
+test('normalizeCode strips the separators a person adds while typing', () => {
+  // The Worker trims and uppercases (§5.4) but does not strip inner
+  // separators, so a code read off one screen as "AB2C-3D4E" has to be
+  // repaired here or it matches no row.
+  assert.equal(Pairing.normalizeCode('ab2c-3d4e'), 'AB2C3D4E');
+  assert.equal(Pairing.normalizeCode(' AB2C 3D4E '), 'AB2C3D4E');
+  assert.equal(Pairing.normalizeCode('AB2C3D4E'), 'AB2C3D4E');
+});
+
+test('normalizeCode treats an absent or blank code as empty', () => {
+  // redeem() short-circuits on the empty string rather than spending a
+  // request, so this is the check that keeps it from firing on whitespace.
+  assert.equal(Pairing.normalizeCode(''), '');
+  assert.equal(Pairing.normalizeCode('   '), '');
+  assert.equal(Pairing.normalizeCode(null), '');
+  assert.equal(Pairing.normalizeCode(undefined), '');
+});

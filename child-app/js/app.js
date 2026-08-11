@@ -43,7 +43,14 @@
       g.Theming.applyTheme(ts && ts.theme);
       return g.DB.getSingleton("child");
     }).then(function (child) {
-      if (child && child.name) {
+      // Both fields, not just the name. Since the Wizard's pairing step (§4.3)
+      // writes `name` from the server the moment a code is redeemed, a setup
+      // abandoned between that step and the last one leaves a named record with
+      // no PIN — and a name-only gate would send it to the planner, where every
+      // parent-gated action checks against a PIN that does not exist and can
+      // never match. `pin` is written only by the final step, so requiring it
+      // is what makes "the wizard ran to completion" the actual test.
+      if (child && child.name && child.pin) {
         startPlanner();
       } else {
         g.Wizard.run(root, function () { startPlanner(); });
