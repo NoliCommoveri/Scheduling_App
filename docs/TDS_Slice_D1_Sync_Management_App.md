@@ -208,7 +208,7 @@ management-app/
   wrangler.toml          # Worker + assets + D1 binding
   .assetsignore          # keeps worker source out of the public asset bundle
   worker/index.js        # API + static asset fallthrough
-  worker/schema.sql      # §4 DDL
+  worker/schema.sql      # §4 DDL — DELETED 2026-08-11; superseded by /migrations (Revamp §3.7)
   index.html, js/, styles/
 ```
 

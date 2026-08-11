@@ -8,13 +8,27 @@
  */
 
 import { MIGRATIONS } from './migrations.js';
+// Pure helpers live next door in validation.js so tests/ can exercise them
+// without dragging in migrations.js, whose `.sql` imports only Wrangler's Text
+// loader resolves. Same split as the Child App's `*-core.js` files.
+import {
+  isValidDate,
+  validateCompletionValue,
+  validateChange,
+  keyToId,
+  splitStatements,
+  capRows,
+  MAX_QUERY_ROWS,
+  clampInt,
+  randomPairCode,
+  timingSafeEqual,
+} from './validation.js';
 
 const MAX_BATCH = 500;
 const DEFAULT_SNAPSHOT_LIMIT = 2000;
 const MAX_SNAPSHOT_LIMIT = 5000;
 const PAIR_CODE_TTL_MS = 15 * 60 * 1000;
 const PAIR_CODE_MAX_FAILS = 10;
-const PAIR_CODE_ALPHABET = '23456789ABCDEFGHJKMNPQRSTVWXYZ'; // Crockford32, minus 0/1 too (§4.3)
 
 // records§3.1: only these stores are mirrored from the Management App's
 // curriculum-authoring IndexedDB. Child-side stores never land in `records`
@@ -188,18 +202,6 @@ function bearerToken(request) {
   return match ? match[1] : null;
 }
 
-function timingSafeEqual(a, b) {
-  const enc = new TextEncoder();
-  const bufA = enc.encode(a);
-  const bufB = enc.encode(b);
-  let diff = bufA.length ^ bufB.length;
-  const len = Math.max(bufA.length, bufB.length);
-  for (let i = 0; i < len; i++) {
-    diff |= (bufA[i] || 0) ^ (bufB[i] || 0);
-  }
-  return diff === 0;
-}
-
 async function sha256Hex(text) {
   const data = new TextEncoder().encode(text);
   const digest = await crypto.subtle.digest('SHA-256', data);
@@ -270,26 +272,6 @@ async function getPendingMigrations(env) {
   await ensureMigrationsTable(env);
   const applied = await getAppliedNames(env);
   return MIGRATIONS.filter((m) => !applied.has(m.name));
-}
-
-// Strips `--` comments (whole-line and trailing), then splits on `;`.
-// Sufficient for this project's migrations (plain DDL, no semicolons or `--`
-// inside string literals) without pulling in a SQL parser for a Worker
-// script. Trailing comments matter here because several column comments
-// contain their own semicolon (e.g. "-- JSON record; NULL when deleted = 1"),
-// which a whole-line-only stripper would leave in the statement text.
-function splitStatements(sql) {
-  const withoutComments = sql
-    .split('\n')
-    .map((line) => {
-      const idx = line.indexOf('--');
-      return idx === -1 ? line : line.slice(0, idx);
-    })
-    .join('\n');
-  return withoutComments
-    .split(';')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
 }
 
 // Each migration's statements, plus its own tracking-row insert, run in one
@@ -479,6 +461,10 @@ async function handleSyncPush(request, env) {
   const deleteChild = env.DB.prepare(`DELETE FROM children WHERE id = ?1`);
 
   const statements = [];
+  // Counted separately from `statements`, which also carries the §3.2 children
+  // projection writes. Conflating them made a push of one child record report
+  // two changes applied.
+  let mirrored = 0;
   for (const change of changes) {
     const problem = validateChange(change);
     if (problem) return json({ error: problem }, 400);
@@ -487,6 +473,7 @@ async function handleSyncPush(request, env) {
     // anything else is buggy, not hostile — skip rather than fail the batch.
     if (!ALLOWED_SYNC_STORES.has(change.store)) continue;
 
+    mirrored++;
     const isDelete = change.op === 'delete';
     statements.push(
       upsert.bind(
@@ -520,26 +507,7 @@ async function handleSyncPush(request, env) {
 
   if (statements.length > 0) await env.DB.batch(statements);
 
-  return json({ applied: statements.length, serverTime: now });
-}
-
-// `records.key` is JSON.stringify of the IndexedDB key, so a child's key is a
-// quoted string. Used only as the fallback when a delete carries no value.
-function keyToId(key) {
-  try {
-    const parsed = JSON.parse(key);
-    return typeof parsed === 'string' && parsed ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function validateChange(change) {
-  if (!change || typeof change !== 'object') return 'Each change must be an object.';
-  if (typeof change.store !== 'string' || !change.store) return 'change.store must be a non-empty string.';
-  if (typeof change.key !== 'string') return 'change.key must be a string.';
-  if (change.op !== 'put' && change.op !== 'delete') return 'change.op must be "put" or "delete".';
-  return null;
+  return json({ applied: mirrored, serverTime: now });
 }
 
 async function handleSyncSnapshot(url, env) {
@@ -579,10 +547,6 @@ async function handleSyncStatus(env) {
 // Assignments (§5.2, §6) — parent
 // ============================================================================
 
-function isValidDate(s) {
-  return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
-}
-
 async function handleAssignmentsCreate(request, env) {
   let body;
   try {
@@ -596,7 +560,22 @@ async function handleAssignmentsCreate(request, env) {
   if (typeof childId !== 'string' || !childId) return json({ error: 'childId is required.' }, 400);
   if (!Array.isArray(assignments)) return json({ error: 'assignments must be an array.' }, 400);
   if (assignments.length > MAX_BATCH) return json({ error: `At most ${MAX_BATCH} assignments per commit.` }, 413);
-  if (assignments.length === 0) return json({ ids: [] });
+
+  // §6.1's replay safety, which until migration 0003 was a claim with nothing
+  // behind it. A Commit larger than MAX_BATCH arrives as several requests
+  // sharing one batchId, so the batch alone does not identify a request —
+  // (batchId, chunkIndex) does. An older client that sends no chunkIndex is
+  // treated as chunk 0, which is exactly right for the single-request Commit
+  // that is the only shape it can produce.
+  const chunkIndex = body.chunkIndex === undefined ? 0 : body.chunkIndex;
+  if (!Number.isInteger(chunkIndex) || chunkIndex < 0) {
+    return json({ error: 'chunkIndex must be a non-negative integer.' }, 400);
+  }
+
+  if (assignments.length === 0) return json({ ids: [], applied: 0 });
+
+  const already = await findCommitChunk(env, batchId, chunkIndex);
+  if (already) return json(duplicateChunkResponse(already));
 
   const now = Date.now();
   const ids = [];
@@ -645,8 +624,44 @@ async function handleAssignmentsCreate(request, env) {
     );
   }
 
-  await env.DB.batch(statements);
-  return json({ ids });
+  // The accounting row rides in the same batch as the assignments it accounts
+  // for. That is the whole guarantee: D1's batch() is an implicit transaction,
+  // so a replay collides on the (batch_id, chunk_index) primary key and rolls
+  // the assignment inserts back with it. The pre-check above is a courtesy that
+  // answers a replay without an error; this is what makes it correct.
+  statements.push(
+    env.DB.prepare(
+      `INSERT INTO commit_chunks (batch_id, chunk_index, child_id, row_count, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5)`
+    ).bind(batchId, chunkIndex, childId, ids.length, now)
+  );
+
+  try {
+    await env.DB.batch(statements);
+  } catch (err) {
+    // Distinguish "this chunk already landed" from a genuine failure by asking
+    // the table rather than pattern-matching SQLite's error text. A racing
+    // duplicate is the expected reason to be here and is not an error to the
+    // caller — the rows it wanted are already stored.
+    const raced = await findCommitChunk(env, batchId, chunkIndex);
+    if (raced) return json(duplicateChunkResponse(raced));
+    throw err;
+  }
+
+  return json({ ids, applied: ids.length, duplicate: false });
+}
+
+async function findCommitChunk(env, batchId, chunkIndex) {
+  return await env.DB.prepare(
+    `SELECT row_count, created_at FROM commit_chunks WHERE batch_id = ?1 AND chunk_index = ?2`
+  ).bind(batchId, chunkIndex).first();
+}
+
+// A replay is answered with what the first attempt applied, not with an error.
+// `ids` is empty because this request minted none — the caller wants the count,
+// and packet.js reads `applied` for exactly that reason.
+function duplicateChunkResponse(row) {
+  return { ids: [], applied: row.row_count, duplicate: true, appliedAt: row.created_at };
 }
 
 async function handleAssignmentPatch(request, env, id) {
@@ -693,16 +708,22 @@ async function handleAssignmentsRescind(request, env) {
   const now = Date.now();
   const statusClause = includeCompleted ? '1=1' : `status = 'pending'`;
 
+  // `?1` is the timestamp; the selector's own parameters start at `?2` and are
+  // numbered from the values array so the two cannot drift. (This used to bind
+  // `now` twice to hold `?2` open while the selector started at `?3` — legal,
+  // since SQLite sizes a bind list by the highest index it sees, but a trap for
+  // anyone adding a clause.)
+  const selectorBase = 2;
   let where, params;
   if (body && typeof body.batchId === 'string' && body.batchId) {
-    where = `batch_id = ?3`;
+    where = `batch_id = ?${selectorBase}`;
     params = [body.batchId];
   } else if (body && Array.isArray(body.ids) && body.ids.length > 0) {
     if (body.ids.length > MAX_BATCH) return json({ error: `At most ${MAX_BATCH} ids per rescind.` }, 413);
-    where = `id IN (${body.ids.map((_, i) => `?${i + 3}`).join(',')})`;
+    where = `id IN (${body.ids.map((_, i) => `?${i + selectorBase}`).join(',')})`;
     params = body.ids;
   } else if (body && typeof body.childId === 'string' && body.childId && isValidDate(body.from) && isValidDate(body.to)) {
-    where = `child_id = ?3 AND date BETWEEN ?4 AND ?5`;
+    where = `child_id = ?${selectorBase} AND date BETWEEN ?${selectorBase + 1} AND ?${selectorBase + 2}`;
     params = [body.childId, body.from, body.to];
   } else {
     return json({ error: 'Provide batchId, ids[], or childId with from/to.' }, 400);
@@ -710,7 +731,7 @@ async function handleAssignmentsRescind(request, env) {
 
   const sql = `UPDATE assignments SET rescinded_at = ?1, updated_at = ?1, updated_by = 'parent'
                WHERE rescinded_at IS NULL AND ${statusClause} AND ${where}`;
-  const result = await env.DB.prepare(sql).bind(now, now, ...params).run();
+  const result = await env.DB.prepare(sql).bind(now, ...params).run();
 
   return json({ rescinded: (result.meta && result.meta.changes) || 0 });
 }
@@ -731,23 +752,17 @@ async function handleAssignmentsQuery(url, env) {
   if (to && isValidDate(to)) { sql += ` AND date <= ?${i}`; params.push(to); i++; }
   if (status) { sql += ` AND status = ?${i}`; params.push(status); i++; }
   if (!includeRescinded) sql += ` AND rescinded_at IS NULL`;
-  sql += ` ORDER BY date, sort_order`;
+  // One row over the cap, so a truncated answer can say so rather than quietly
+  // handing a report a short list it would present as complete.
+  sql += ` ORDER BY date, sort_order LIMIT ${MAX_QUERY_ROWS + 1}`;
 
   const { results } = await env.DB.prepare(sql).bind(...params).all();
-  return json({ assignments: results || [] });
+  return json(capRows(results, 'assignments'));
 }
 
 // ============================================================================
 // Devices and rewards (§5.3) — parent
 // ============================================================================
-
-function randomPairCode() {
-  const bytes = new Uint8Array(8);
-  crypto.getRandomValues(bytes);
-  let code = '';
-  for (const b of bytes) code += PAIR_CODE_ALPHABET[b % PAIR_CODE_ALPHABET.length];
-  return code;
-}
 
 async function handlePairCodeMint(request, env) {
   let body;
@@ -933,10 +948,10 @@ async function handlePlan(url, env, device) {
     sql += ` AND updated_at > ?4`;
     params.push(since);
   }
-  sql += ` ORDER BY date, sort_order`;
+  sql += ` ORDER BY date, sort_order LIMIT ${MAX_QUERY_ROWS + 1}`;
 
   const { results } = await env.DB.prepare(sql).bind(...params).all();
-  return json({ assignments: results || [], from, to });
+  return json({ ...capRows(results, 'assignments'), from, to });
 }
 
 async function handleCompletions(request, env, device) {
@@ -974,6 +989,16 @@ async function handleCompletions(request, env, device) {
       continue;
     }
 
+    // Per row, not per request (§5.6): a device that queued one malformed
+    // completion must not lose the day's good ones alongside it.
+    const badValues = keys
+      .map((k) => { const problem = validateCompletionValue(k, fields[k]); return problem ? `${k}: ${problem}` : null; })
+      .filter(Boolean);
+    if (badValues.length > 0) {
+      rejected.push({ id: row.id, error: badValues.join(' ') });
+      continue;
+    }
+
     const setClauses = keys.map((k, i) => `${ASSIGNMENT_COMPLETION_FIELDS[k]} = ?${i + 1}`);
     const values = keys.map((k) => fields[k]);
 
@@ -1007,11 +1032,30 @@ async function handleRewardEntries(request, env, device) {
   const now = Date.now();
   const createdBy = `device:${device.deviceId}`;
   const statements = [];
+  const rejected = [];
 
+  // Per-row rejection, matching /api/completions and for the same §5.6 reason.
+  // This route used to answer a single malformed entry with a request-level
+  // 400, which outbox.js reads as permanent and acts on by discarding every row
+  // the request carried — so one bad entry destroyed a whole drain's worth of
+  // earnings, in an append-only ledger with no way to reconstruct them.
   for (const row of entries) {
-    if (!row || typeof row.id !== 'string' || !row.id) return json({ error: 'Each entry needs an id.' }, 400);
-    if (typeof row.category !== 'string' || !row.category) return json({ error: 'Each entry needs a category.' }, 400);
-    if (typeof row.amount !== 'number' || !Number.isFinite(row.amount)) return json({ error: 'Each entry needs a numeric amount.' }, 400);
+    if (!row || typeof row.id !== 'string' || !row.id) {
+      rejected.push({ id: row && row.id, error: 'Each entry needs an id.' });
+      continue;
+    }
+    if (typeof row.category !== 'string' || !row.category) {
+      rejected.push({ id: row.id, error: 'Each entry needs a category.' });
+      continue;
+    }
+    if (typeof row.amount !== 'number' || !Number.isFinite(row.amount)) {
+      rejected.push({ id: row.id, error: 'Each entry needs a numeric amount.' });
+      continue;
+    }
+    if (row.earnedAt !== undefined && row.earnedAt !== null && !(Number.isSafeInteger(row.earnedAt) && row.earnedAt >= 0)) {
+      rejected.push({ id: row.id, error: 'earnedAt must be a millisecond timestamp.' });
+      continue;
+    }
     const reason = ['earned', 'adjustment', 'spend'].includes(row.reason) ? row.reason : 'earned';
 
     // Idempotent on the client-minted id (§5.5): a replay is a harmless no-op.
@@ -1024,8 +1068,8 @@ async function handleRewardEntries(request, env, device) {
     );
   }
 
-  await env.DB.batch(statements);
-  return json({ applied: statements.length });
+  if (statements.length > 0) await env.DB.batch(statements);
+  return json({ applied: statements.length, rejected });
 }
 
 async function handleStreakUpsert(request, env, device) {
@@ -1035,8 +1079,11 @@ async function handleStreakUpsert(request, env, device) {
   } catch {
     return json({ error: 'Body must be JSON.' }, 400);
   }
-  const currentStreak = Number.isInteger(body.currentStreak) ? body.currentStreak : 0;
-  const longestStreak = Number.isInteger(body.longestStreak) ? body.longestStreak : 0;
+  // Clamped, not just type-checked: a negative streak is not a fact the child's
+  // device can hold, and §3.5's columns are read straight into reports.
+  const clampStreak = (n) => (Number.isSafeInteger(n) && n > 0 ? n : 0);
+  const currentStreak = clampStreak(body.currentStreak);
+  const longestStreak = Math.max(clampStreak(body.longestStreak), currentStreak);
   const lastQualifiedDate = isValidDate(body.lastQualifiedDate) ? body.lastQualifiedDate : null;
   const now = Date.now();
 
@@ -1054,15 +1101,9 @@ async function handleStreakUpsert(request, env, device) {
 }
 
 // ============================================================================
-// Helpers
+// Response helpers — the only things left here that touch neither D1 nor a
+// route. Everything else pure now lives in validation.js.
 // ============================================================================
-
-function clampInt(raw, fallback, min, max) {
-  if (raw === null || raw === undefined || raw === '') return fallback;
-  const n = Number.parseInt(raw, 10);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.min(Math.max(n, min), max);
-}
 
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), {

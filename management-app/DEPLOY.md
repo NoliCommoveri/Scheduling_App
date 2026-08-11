@@ -174,7 +174,7 @@ What gets *deployed* is still scoped by that config, not by the connection — b
 that scope is now the whole repository. `[assets] directory = "./"` uploads
 everything, because both apps have to be served from this one origin, so the
 **repo-root `.assetsignore` is the only thing keeping the rest private**:
-`docs/`, `fixtures/`, `migrations/`, `.git/`, `management-app/worker/`,
+`docs/`, `migrations/`, `tests/`, `.git/`, `management-app/worker/`,
 `wrangler.toml`, and every `*.md` are excluded there.
 
 That file is a security boundary now, not housekeeping. **Adding a directory of

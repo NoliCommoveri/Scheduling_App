@@ -10,6 +10,18 @@ design and the document moved:
 none); §5.6 and §13.1/§13.3 replace a request-level `400` and an unreachable `403` with the
 per-row rejection the Worker actually implements, and note the one client-side gap that
 leaves open. No behaviour was changed to match the old text.
+
+**Amended again 2026-08-11**, authorized in-session, after a second review found four
+defects. Unlike the first amendment, this one moved the *code* — in each case the document
+described the better design and the build had not reached it:
+§3.8 adds `commit_chunks` (migration `0003`) and §6.1 makes "the Commit is replay-safe" true
+rather than aspirational — nothing had implemented it, so a chunked Commit that failed
+partway left rows live with no handle on them and duplicated the lot on retry;
+§4.2 and §5.5 extend the Worker's ownership check from *which* columns a device may write to
+*what values* it may write to them; §5.5's reward append moves to per-row rejection for the
+same §5.6 reason completions already had; and §5.6's recorded client-side gap is closed —
+`outbox.js` now reads the `rejected` array and surfaces it.
+
 **Applies to:** Both apps, the Worker, and the interchange layer between them.
 **Supersedes:** `TDS_Slice_D1_Sync_Management_App.md` (the mirror becomes a
 curriculum-only backup), `Interchange_Contract.md` (replaced by §5's API),
@@ -99,7 +111,7 @@ Two storage idioms live in one database, deliberately:
   `TDS_Slice_D1_Sync`. Its role narrows to **parent curriculum authoring stores only**
   (§3.1). Schemaless, tolerant of new object stores, good for backup and restore, useless
   for querying. That is acceptable because only the Management App interprets it.
-- **Relational tables** (§3.2–§3.6) — everything a child produces or is assigned.
+- **Relational tables** (§3.2–§3.6, §3.8) — everything a child produces or is assigned.
   These get real columns because they are the facts Ray will want to query years from now:
   what was assigned, what got done, what was earned.
 
@@ -343,6 +355,10 @@ import m0001 from '../../migrations/0001_online_revamp_init.sql';
 export const MIGRATIONS = [ { name: '0001_online_revamp_init.sql', sql: m0001 } ];
 ```
 
+Applied so far: `0001_online_revamp_init.sql` (§3.2–§3.6),
+`0002_backfill_children_projection.sql` (§3.2.1),
+`0003_commit_chunks.sql` (§3.8).
+
 **Adding a migration file also means registering it here.** The duplication is deliberate:
 the file is the source of truth, the list is what makes it visible to the in-app runner.
 
@@ -383,6 +399,35 @@ needs a pre-setup bootstrap hole because its gate lives in a database table that
 create; this project's gate is a Worker secret that exists from the first deploy, so no
 hole is needed. Child device tokens are rejected outright.
 
+### 3.8 `commit_chunks` — what makes a Commit replay-safe
+
+```sql
+CREATE TABLE IF NOT EXISTS commit_chunks (
+  batch_id    TEXT    NOT NULL,
+  chunk_index INTEGER NOT NULL,
+  child_id    TEXT    NOT NULL,
+  row_count   INTEGER NOT NULL,
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (batch_id, chunk_index)
+);
+```
+
+Added by migration `0003_commit_chunks.sql`. §6.1 has always said a Commit is replay-safe
+because the client mints the `batchId`; that was never true, because nothing on the server
+looked at it. A Commit over `MAX_BATCH` rows arrives as several requests sharing one
+`batchId`, so the batch alone does not identify a request — `(batch_id, chunk_index)` does.
+
+**3.8.1 Where the guarantee lives.** The `INSERT` here rides in the *same* `env.DB.batch()`
+as the assignment rows it accounts for. D1's `batch()` is an implicit transaction, so a
+replayed chunk collides on the primary key and takes the duplicate assignment inserts down
+with it. The Worker's `SELECT` beforehand is a courtesy that answers a replay with
+`{ ids: [], applied, duplicate: true }` instead of an error; the primary key is what makes
+it correct under a race.
+
+**3.8.2 What this buys the parent.** A four-chunk semester Commit that dies on chunk three
+is now *resumed* by pressing Commit again — chunks one and two are recognised and skipped.
+Before, the retry minted a fresh `batchId` and assigned every row a second time. See §6.1.
+
 ---
 
 ## 4. Authorization
@@ -410,6 +455,18 @@ credential it presents.
 - A **child device** request may write child-owned columns of assignments whose `child_id`
   matches the token's child. Any `child_id` in the request body is ignored; the Worker
   derives it from the token. Attempts to write parent-owned columns are rejected `400`.
+
+**4.2.1 Values, not only columns.** The same rule governs what may go *into* an owned
+column. A device is scoped, not trusted, and the two ends of this system read these
+columns differently enough that a value outside its domain breaks both: the child's planner
+drops any row whose `status` is not `'pending'` (`assignment-core.js`'s `isPlannable`),
+while §6.3's rescind only touches rows that still are — so a single nonsense `status` would
+take a row off the kid's plan *and* lock the parent out of pulling it back, with no screen
+in either app able to undo it. The Worker therefore checks `status` against its enum,
+`deferred_to` against the date format, and `completed_at`/`grade`/`child_sort_order` for
+numeric sanity, rejecting per row per §5.6. This was originally read as a rule about
+*which* columns only, and child-supplied values went in unchecked while every
+parent-supplied value was validated.
 
 Because the two column sets are disjoint, **no two writers ever contend for a value.**
 There is no last-write-wins policy in this design because there is nothing for it to
@@ -442,7 +499,7 @@ blob mirror, parent credential, unchanged behaviour, narrowed store list per §3
 
 | Route | Purpose |
 |---|---|
-| `POST /api/assignments` | Commit a batch. Body `{ batchId, childId, assignments:[…] }`. Worker mints each `id`, sets `assigned_at`/`updated_at`, returns the minted IDs. |
+| `POST /api/assignments` | Commit one chunk of a batch. Body `{ batchId, chunkIndex, childId, assignments:[…] }`. Worker mints each `id`, sets `assigned_at`/`updated_at`, returns `{ ids, applied }`. Idempotent on `(batchId, chunkIndex)` per §3.8 — a replay inserts nothing and answers `{ ids: [], applied, duplicate: true }`. `chunkIndex` defaults to `0` when absent. |
 | `PATCH /api/assignments/:id` | Edit parent-owned columns of one assignment (§6.5). |
 | `POST /api/assignments/rescind` | Rescind by `batchId`, explicit `ids[]`, or `childId` + date range (§6.3). |
 | `GET /api/assignments` | Query by `childId`, `from`, `to`, `status`, `includeRescinded`. **This replaces Completion CSV import entirely.** |
@@ -479,7 +536,7 @@ blob mirror, parent credential, unchanged behaviour, narrowed store list per §3
 | `GET /api/plan/version` | `{ maxUpdatedAt, count }`. Cheap poll target (§8.3). |
 | `GET /api/plan?from=&to=&since=` | Assignments for the token's child. Includes rescinded rows so the client can remove them. Defaults to `today−7 … today+14`. |
 | `POST /api/completions` | Batch upsert of child-owned columns. Idempotent: the server-minted `id` is stable, so a replay is a no-op. |
-| `POST /api/rewards/entries` | Batch append. Idempotent on the client-minted `id` primary key. |
+| `POST /api/rewards/entries` | Batch append. Idempotent on the client-minted `id` primary key. Rejects per row like `/api/completions`, and for the same §5.6 reason — a request-level `400` here would have the client discard a whole drain's worth of earnings from an append-only ledger. |
 | `PUT /api/streak` | Upsert the child's streak row. |
 
 ### 5.6 Rejections
@@ -506,11 +563,18 @@ from the token and ignores any child identifier in a request body or query strin
 child's assignment matches no row and comes back in `rejected`. Structural impossibility
 rather than a check.
 
-> **Known gap, not yet closed.** `outbox.js` inspects only the HTTP status, not the
-> `rejected` array, so a per-row rejection is dropped from the queue without a log. The
-> child's device believes the completion landed and the server disagrees, with nothing to
-> reconcile them. Closing this is Child App work: read `rejected`, and surface or re-queue
-> it. Recorded here so the next session finds it rather than rediscovering it.
+> **Closed 2026-08-11.** This previously read as a known gap: `outbox.js` inspected only
+> the HTTP status, so a per-row rejection was dropped from the queue without a log and the
+> child's device believed a completion had landed that the server had refused.
+>
+> `outbox.js` now reads `rejected` on every 2xx and records each entry in a durable
+> `rejections` object store (Child App IndexedDB v6). It does **not** re-queue them: a
+> rejection is permanent by construction — a column the credential does not own, a value
+> outside its domain, an assignment belonging to another child — so retrying would spin
+> against a server that will keep saying no. Settings surfaces the count and the reasons,
+> and offers a dismissal once a parent has seen them. The store is separate from `syncMeta`
+> deliberately: `plan-sync.js` does a read-modify-write on that singleton around every
+> poll, and a second writer would eventually clobber the device token.
 
 ---
 
@@ -520,9 +584,31 @@ rather than a check.
 
 Propose/Review/Commit is unchanged through Review. **Commit** changes only its final act:
 instead of serializing a packet and triggering a download, it mints a `batchId`
-(client-side UUID, so the Commit is replay-safe) and `POST`s the rows to §5.2. The
-Generation Log continues to record what was generated, but its cross-air-gap purpose —
-remembering what had already been *sent* — is gone; it is now scheduling history.
+(client-side UUID) and `POST`s the rows to §5.2 in chunks of `MAX_BATCH`, each carrying its
+`chunkIndex`. The Generation Log continues to record what was generated, but its
+cross-air-gap purpose — remembering what had already been *sent* — is gone; it is now
+scheduling history.
+
+**6.1.1 Replay safety, and what it took.** This section used to assert that a client-minted
+`batchId` made the Commit replay-safe. It did not, because nothing on the server read it:
+every attempt minted fresh row ids and inserted unconditionally. A full-semester Commit is
+about 1,800 rows — four chunks — so the failure was on the ordinary path, not a corner. A
+POST that died on chunk three left 1,000 rows live on the child's plan, reported *"nothing
+was recorded locally; press Commit again to retry"*, carried no `batchId` for the parent to
+rescind with, and then assigned all 1,800 again on the retry.
+
+§3.8's `commit_chunks` makes the claim true. What follows from it on the client
+(`packet.js`):
+
+- The `batchId` lives on the **proposal**, not the attempt, so every retry reuses it and
+  resumes: chunks already stored are recognised and skipped.
+- A partial send is reported as one — how many rows are live, under which batch, and that
+  retrying will not duplicate them.
+- Review edits are **frozen** while a batch is partly live. Resumption is by chunk
+  position, so changing which rows sit at those positions would skip some and duplicate
+  others.
+- **Abandon** rescinds the partial batch rather than merely dropping the session, since
+  otherwise the orphaned rows outlive every local record of them.
 
 ### 6.2 Batches
 
@@ -595,6 +681,7 @@ Balance display reads the local cache; the server's `SUM` is authoritative on re
 | `activityRecords` | — folded into `status`/`completed_at`/`grade` |
 | `rewardLedgerSnapshot`, `rewardLedgerTail` | `rewardEntries` (keyPath `id`) |
 | — | `outbox` (autoIncrement) |
+| — | `rejections` (autoIncrement) — §5.6's refused writes, kept to be shown |
 | — | `syncMeta` singleton: device token, `childId`, `lastVersion` |
 | `child`, `semester`, `themeSettings`, `streak` retained | |
 
@@ -675,11 +762,12 @@ not excluded becomes publicly downloadable:
 
 ```
 .git/
+.github/
 docs/
-fixtures/
 migrations/
 management-app/worker/
 node_modules/
+tests/
 *.md
 package.json
 package-lock.json
@@ -784,6 +872,20 @@ throughout.
     without being asked for.
 15. `/admin/migrations` renders and applies with JavaScript disabled, and with the
     Management App's own startup deliberately broken.
+16. Post the same `(batchId, chunkIndex)` twice: the second answers `duplicate: true` with
+    the first attempt's `applied` count, and `SELECT COUNT(*)` over that batch is unchanged.
+17. Commit a proposal larger than one chunk with the network cut after the first chunk: the
+    error names the batch and the rows already live, Review actions are refused, and
+    pressing Commit again finishes the batch with no duplicated row.
+18. Abandon that same partly-sent proposal instead: every pending row of the batch gains
+    `rescinded_at`, and nothing is recorded in the Generation Log.
+19. A child device posting `status: 'banana'`, a non-date `deferredTo`, or a non-numeric
+    `grade` leaves the stored row unchanged and names the offending field in `rejected`,
+    while well-formed rows in the same batch apply.
+20. A batch of reward entries containing one entry with no `category`: the rest are
+    appended and only the bad one comes back in `rejected` — the request is not a `400`.
+21. Provoke a per-row rejection on a paired device: the count appears in the Child App's
+    Settings, the reason is listed, it survives a reload, and dismissing it clears it.
 
 ---
 
@@ -797,3 +899,17 @@ throughout.
 - Multi-parent accounts. The single-authoring-parent assumption stands.
 - Scheduled snapshot export as a real backup. Cloud storage is not a backup; `/api/sync/snapshot`
   already provides the mechanism, but nothing yet runs it on a schedule.
+- **A per-tier reward amount.** §7 has the earned amount come from the assignment row's
+  snapshotted `reward_amount`, and the column is real, but nothing populates it: a tier is
+  `{ tierId, label, order, rewardCategoryId }` with no number on it, so `packet.js` leaves
+  the column NULL and `completion-core.js` falls through to the flat `1` the Child App has
+  always used. Both ends handle that coherently and the plumbing is finished — what is
+  missing is the field on the tier, and a decision about whether it is per tier or per
+  activity. Until then §7 describes a path that carries a constant. The one way a row gets
+  a real amount today is a parent editing it by hand in the Assignments view.
+- **Collapsing the §8.2 shim and the local ledger.** `assignment-core.js` still reassembles
+  the pre-revamp `{ activities, chores, events, meta }` shape, `activities`/`chores`/
+  `events` survive as empty stores, and `rewardLedgerSnapshot`/`rewardLedgerTail` still run
+  the N=100 fold locally — repealed for D1 (§3.4), not yet for IndexedDB. §8.1 names
+  `rewardEntries` as their replacement. All of it is one coherent Child App change and
+  none of it is on a critical path.

@@ -84,7 +84,19 @@
     return stale.then(function (outOfWindow) {
       var allDeletes = deletes.concat(outOfWindow);
       return g.DB.applyPlan(puts, allDeletes).then(function () {
-        return { puts: puts.length, deletes: allDeletes.length };
+        // An assignment leaving the cache orphans this device's plannerMeta
+        // override for it. loadState() merges plannerMeta onto server rows by
+        // id, so an override with no row is unreachable and would sit there for
+        // the life of the install. Only run after a delete, since that is the
+        // only thing that can create one.
+        if (!allDeletes.length) return { puts: puts.length, deletes: 0 };
+        return g.DB.getAll("assignments").then(function (cached) {
+          var live = Object.create(null);
+          cached.forEach(function (row) { live[row.id] = true; });
+          return g.DB.pruneMeta(live);
+        }).then(function () {
+          return { puts: puts.length, deletes: allDeletes.length };
+        });
       });
     });
   }

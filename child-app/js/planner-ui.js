@@ -977,6 +977,34 @@
         if (state.upload && state.upload.pending > 0) {
           card.appendChild(node("div", "modal-help", uploadStatusText(state.upload)));
         }
+        // Shown on its own gate, not folded into the one above: a rejection
+        // leaves nothing in the queue, so anything conditioned on `pending`
+        // would announce a refused upload exactly never (§5.6).
+        if (state.upload && state.upload.rejected > 0) {
+          card.appendChild(node("div", "err-text", rejectedStatusText(state.upload.rejected)));
+          var seeBtn = node("button", "btn small ghost", "What didn't send?");
+          card.appendChild(seeBtn);
+          seeBtn.onclick = function () {
+            seeBtn.disabled = true;
+            g.Outbox.rejections().then(function (rows) {
+              var box = node("div", "modal-help");
+              rows.slice(0, 20).forEach(function (row) {
+                box.appendChild(node("div", "err-text",
+                  new Date(row.at).toLocaleString() + " — " + row.error));
+              });
+              card.insertBefore(box, seeBtn);
+              var clearBtn = node("button", "btn small ghost", "Got it, hide this");
+              card.insertBefore(clearBtn, seeBtn);
+              clearBtn.onclick = function () {
+                g.Outbox.clearRejections().then(function () {
+                  overlay.remove();
+                  reload().then(openSettingsPanel);
+                });
+              };
+              seeBtn.remove();
+            });
+          };
+        }
         var checkBtn = node("button", "btn small ghost", "Check for new work");
         card.appendChild(checkBtn);
         var forgetBtn = node("button", "btn small ghost", "Forget this device");
@@ -1185,6 +1213,15 @@
       return what + "couldn't be sent. Show a parent — nothing here is lost.";
     }
     return what + (upload.error === "offline" ? "will be sent when you're back online." : "is still being sent.");
+  }
+
+  // The one upload state that is genuinely not reassuring, so it does not
+  // pretend otherwise. The work is still recorded on this device — that is why
+  // it says "on the family list" rather than "gone" — but the server refused it
+  // and no amount of waiting will change that (§5.6).
+  function rejectedStatusText(n) {
+    return n + " thing" + (n === 1 ? "" : "s") + " couldn't be saved on the family list. " +
+      "They're still ticked off here. Show a parent so they can sort it out.";
   }
 
   var toastTimer = null;

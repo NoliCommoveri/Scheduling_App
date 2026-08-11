@@ -4,6 +4,36 @@
 
 ---
 
+> ## ⚠️ Superseded in part — read this first (2026-08-11)
+>
+> **`docs/TDS_Slice_Online_Revamp.md` is the controlling design.** Where this document and
+> that one disagree, that one wins, and this banner exists because they disagree in several
+> places that a reader would otherwise take at face value.
+>
+> The 2026-08-10 architectural reversal (CLAUDE.md 2.0) made Cloudflare D1 the system of
+> record and deleted the interchange layer entirely. Specifically, in the text below:
+>
+> | Says | Actually |
+> |---|---|
+> | "the interchange" / the Packet (Management → Child) | **Repealed.** One shared `assignments` table; the parent writes rows, the child completes them. Revamp §3.3. |
+> | The Completion CSV (Child → Management) | **Repealed as transport.** CSV survives only as a report download. Revamp §11. |
+> | "Received Packet", per-occurrence chore IDs, `CHR-{token}-{date}` | **Repealed.** IDs are server-minted opaque UUIDs. Revamp §3.3.1. |
+> | Reward Ledger "checkpointed snapshot + tail" | **Repealed server-side** — `reward_entries` is append-only and balance is a `SUM`. The local IndexedDB fold survives pending the §8.1 collapse. Revamp §3.4. |
+> | Packet Import (Child Module 02), Completion CSV Export (Child Module 08), Completion Import (Mgmt Module 09) | **Retired.** Their code is deleted. Revamp §11. |
+> | "Export to Drive" | **Abandoned.** It solved a problem that no longer exists. |
+> | Principle 3, "no required server" | **Repealed.** Principles 1 and 2 (zero cost) hold. |
+>
+> What survives unchanged: the Domain Model's language for curriculum, courses, lessons,
+> activities, tiers and pacing; the two-app split; Propose/Review/Commit; the pacing engine;
+> and every SRS module not named above.
+>
+> This document is kept for its sequencing history and its module inventory, not as a
+> statement of the current architecture. It has not been rewritten line by line because
+> doing so would erase the record of what the project used to be — but nothing below should
+> be built from without checking the revamp slice first.
+
+---
+
 ## 1. Recommended documentation order
 
 **A note on the Vision Document:** a standalone Vision Document has never existed apart from this list — its content lives inside the Architecture Evaluation (§2 there). This list drops it from the numbered order below rather than carrying a step that isn't going to be produced separately. The Architecture Evaluation's §2 is the vision statement of record. If a standalone Vision Document is wanted later, that's a fresh decision to make deliberately, not a default to keep deferring.
