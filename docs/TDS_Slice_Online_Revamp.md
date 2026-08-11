@@ -81,6 +81,20 @@ convert — only the IndexedDB v8 migration and an amendment to CLAUDE.md §IV.B
 schema, credential or rendering behaviour changed; the same plan renders from the same
 values under one set of names.
 
+**Amended an eighth time 2026-08-11**, authorized in-session, recording **phase 3 of the
+§8.2 shim collapse — the IndexedDB v8 store drop**, and closing out the item. `activities`,
+`chores` and `events` are deleted (they reached v8 empty; Phase 5 had already removed their
+last writer), `DB.loadState()` returns `{ rows }` alone, and CLAUDE.md §IV.B's pin on the
+four legacy keys is lifted. Two files depended on the dropped stores directly rather than
+through the shim — `export-core.js`/`export.js` (Module 8's CSV report) and `wipe.js`
+(Module 9) — and would have thrown against a store that no longer exists; both now work from
+the decorated `assignments` row and `activityRecords` respectively, and §14 records what
+moved. `plannerMeta` is not part of this: §8.1's table has always named folding it into the
+child-owned columns as the eventual shape, but doing so is a write-path change with several
+files having a stake in it, not a deletion with nothing left to read — it is split out as its
+own open item rather than carried under a "shim collapse" that is now finished. No API,
+schema, credential or rendering behaviour changed.
+
 **Applies to:** Both apps, the Worker, and the interchange layer between them.
 **Supersedes:** `TDS_Slice_D1_Sync_Management_App.md` (the mirror becomes a
 curriculum-only backup), `Interchange_Contract.md` (replaced by §5's API),
@@ -777,8 +791,8 @@ Balance display reads the local cache; the server's `SUM` is authoritative on re
 
 | Dropped | Added |
 |---|---|
-| `activities`, `chores`, `events` | `assignments` (keyPath `id`) |
-| `plannerMeta` | — folded into assignment columns |
+| `activities`, `chores`, `events` | `assignments` (keyPath `id`) — **done, v8.** Migrated data: none. Phase 5 had already deleted the packet import that was their last writer, and phase 2 removed their last reader, so the v8 upgrade simply deletes the three (already empty) stores. |
+| `plannerMeta` | — folded into assignment columns — **not done, and not part of the §14 shim collapse.** `plannerMeta` stages this device's own unflushed overrides ahead of the outbox uploading them; folding it away means writing `child_block_hint`/`child_sort_order`/`deferred_to` straight onto the cached `assignments` row instead, which is a write-path change, not a store this collapse's callers stopped needing. Remains open. |
 | `activityRecords` | — folded into `status`/`completed_at`/`grade` |
 | `rewardLedgerSnapshot`, `rewardLedgerTail` | `rewardEntries` (keyPath `id`) — **done, v7.** The key is the client-minted entry id the outbox uploads (§5.5), so the local row and the server row are one row. Balance is `CompletionCore.balanceOf`, never stored. Migrated, not dropped: the v7 upgrade rewrites the snapshot as a single opening entry and each tail row as a signed entry, inside the versionchange transaction, so an interrupted upgrade retries against untouched data. |
 | — | `outbox` (autoIncrement) |
@@ -788,15 +802,14 @@ Balance display reads the local cache; the server's `SUM` is authoritative on re
 
 ### 8.2 The `loadState()` adapter
 
-`DB.loadState()` returns `{ rows, activities, chores, events, meta }`. `rows` is what the
-whole Child App works from: the `assignments` rows for this device, live and pending only
-(§6.4), each decorated by `assignment-core.js`. The other four keys are the pre-revamp
-shape, retained because CLAUDE.md §IV.B pins them until the collapse finishes.
+`DB.loadState()` returns `{ rows }`. `rows` is what the whole Child App works from: the
+`assignments` rows for this device, live and pending only (§6.4), each decorated by
+`assignment-core.js`.
 
 This was an explicit compatibility shim with a stated lifespan: it existed so the planner UI
-did not have to be rewritten in the same change that replaced the data layer. Phases 1 and 2
-of §14 have since removed both halves of it; what remains under that name is described at
-the end of this section, and is the phase 3 store drop.
+did not have to be rewritten in the same change that replaced the data layer. All three
+phases of §14's collapse are now built. What each one removed is described below, for the
+record.
 
 **Phase 1 removed the second object.** `decorate()` used to emit a packet-shaped record
 *plus* a parallel `meta` map holding the child-owned values under different names, so every
@@ -832,9 +845,29 @@ that a column was reinterpreted on the way past.
 An override this device has written but not yet drained lives in `plannerMeta` in the
 pre-revamp vocabulary; `loadState()` overlays it onto the row **as the column it is on its
 way to becoming**, field by field, so a pending deferral reaches the planner without a
-second shape surviving alongside the first. The store itself goes in phase 3, and so do the
-four legacy keys: as of phase 2 nothing reads any of them — `planner-ui.js` and `streak.js`
-both take `rows`, and `meta` lost its last reader when `planner-core.js` stopped taking one.
+second shape surviving alongside the first.
+
+**Phase 3 dropped the store shape, not `plannerMeta` itself.** The four legacy `loadState()`
+keys — `activities`, `chores`, `events`, `meta` — and the IndexedDB stores the first three
+mirrored are gone as of v8: nothing had read any of them since phase 2 (`planner-ui.js` and
+`streak.js` both took `rows` already, and `meta` lost its last reader when `planner-core.js`
+stopped taking one), so this was a deletion with no callers to convert, plus the matching
+amendment to CLAUDE.md §IV.B. Two files reached into the dropped stores directly, bypassing
+`loadState()` entirely, and needed real changes rather than a deletion: `export-core.js` /
+`export.js` (Module 8's CSV report) read the received Activity/Chore for a completion's
+course, activity type, block hint and sequence number — that source is now the decorated
+`assignments` row, keyed the same way the old `activities`/`chores` maps were, and a
+completion whose assignment has aged out of the local cache window (§8.3) is skipped, same as
+an orphaned record was before. `wipe.js` (Module 9) opened its own transaction against
+`activities`/`chores`/`events` to pair-delete a completion's source item and clear past family
+events; both had been no-ops since Phase 5 — nothing wrote either store for a
+server-assigned completion — so Wipe now runs against `activityRecords` alone, which is the
+part of it that ever cleared anything.
+
+`plannerMeta` itself is not part of phase 3. §8.1's table names folding it into
+`child_block_hint`/`child_sort_order`/`deferred_to` as the eventual shape, but that means
+writing local overrides straight onto the cached `assignments` row instead of a keyed store —
+a write-path change, not a shim with idle callers. It stays open.
 
 ### 8.3 Freshness
 
@@ -982,7 +1015,7 @@ The current app keeps working throughout.
 | **2** | Pairing (§4.3) + Devices UI | Child App still on the old path. |
 | **3** | Commit writes assignments; Child App reads `/api/plan` | File import retained as fallback. |
 | **4** | Completions and rewards upload; Reporting view | CSV import retained as fallback. |
-| **5** | Delete §11, collapse the §8.2 shim, service worker fix | The §11 deletions and the service worker fix are **done**. The shim collapse is phased in its own right; phases 1 and 2 are built and phase 3 (the IndexedDB v8 store drop) is not — see §14. |
+| **5** | Delete §11, collapse the §8.2 shim, service worker fix | **Done.** The §11 deletions, the service worker fix, and all three phases of the shim collapse — see §14. |
 
 ---
 
@@ -1075,9 +1108,9 @@ The current app keeps working throughout.
   missing is the field on the tier, and a decision about whether it is per tier or per
   activity. Until then §7 describes a path that carries a constant. The one way a row gets
   a real amount today is a parent editing it by hand in the Assignments view.
-- **Collapsing the §8.2 shim — phases 1–2 done, phase 3 open.** Deferred on size, not on
-  readiness: §12's live-days gate is repealed (sixth amendment), so what is left here is
-  waiting on someone choosing to spend the time, and nothing else.
+- **Collapsing the §8.2 shim — done.** All three phases are built; this entry is retained for
+  the record rather than deleted, per §14's own convention for finished items (see the local
+  ledger note at the end of it).
 
   **Done (phase 1): the derivation moved onto the row.** `planner-core.js` and
   `streak-core.js` read the child-owned columns (`deferred_to`, `child_block_hint`,
@@ -1099,18 +1132,32 @@ The current app keeps working throughout.
   `subjectsView`'s groups are keyed `course_name`. What `decorate()` adds is now only what
   §3.3 gives no column — see §8.2's table.
 
-  **Open (phase 3): the stores.** `activities`/`chores`/`events` survive as empty stores and
-  `plannerMeta` remains a store rather than folding into the child-owned columns. Dropping
-  them is an IndexedDB v8 migration, and it is what finally lets `DB.loadState()` return
-  `rows` alone. CLAUDE.md §IV.B pins the four legacy keys until then, so `toState()` keeps
-  returning them — but as of phase 2 **nothing reads any of them**, so this is a deletion
-  with no callers to convert first, gated on the schema change and on amending §IV.B.
-  `export-core.js` is the one file still written against the pre-revamp field names; it
-  reads the legacy stores rather than an assignment row, and is dead by construction until
-  §11's "CSV as a report export" is rebuilt on `rows`. That rebuild belongs with this phase.
+  **Done (phase 3): the store drop.** IndexedDB reached v8: `activities`, `chores` and
+  `events` are deleted (empty on every device that reaches this upgrade — Phase 5 had already
+  removed their last writer), and `DB.loadState()` returns `{ rows }` alone. CLAUDE.md §IV.B
+  no longer pins the four legacy keys; `toState()` no longer builds them. This was a deletion
+  with no callers to convert — nothing had read `activities`/`chores`/`events`/`meta` since
+  phase 2 — except for two files that reached into the dropped stores directly, bypassing
+  `loadState()`: `export-core.js`/`export.js` (Module 8's CSV report) now source a
+  completion's course, activity type, block hint and sequence number from the decorated
+  `assignments` row instead of the received Activity/Chore, keyed the same way; and
+  `wipe.js` (Module 9) now runs against `activityRecords` alone, having dropped the
+  pair-delete and past-event clear that read `activities`/`chores`/`events` and had been
+  no-ops since Phase 5 for the same reason. Neither is a shim in the sense the rest of this
+  item is — they never answered to two vocabularies — but both would have thrown against a
+  store the v8 upgrade no longer creates, so they moved with it.
 
   > The **local ledger** half of this item, with which it was originally bundled, is
   > **done** — see the third amendment at the head of this document.
+
+  **Split out, still open: folding `plannerMeta` into the columns.** §8.1's table names this
+  as the eventual shape — `child_block_hint`/`child_sort_order`/`deferred_to` written straight
+  onto the cached `assignments` row instead of staged in a separate keyed store — but it is a
+  write-path redesign (`deferment.js`, `planner-ui.js`'s `setMeta`, `db.js`'s `setMeta`/
+  `pruneMeta`, `outbox-core.js`'s `META_TO_COLUMN` translation all have a stake in it), not a
+  deletion with idle callers the way the store drop was. `plannerMeta` is still where this
+  device's own overrides are staged ahead of the outbox uploading them, and it stays that way
+  until someone picks this up on its own terms.
 
 - **Whether a reward balance floors at zero.** The device folds a category's entries with a
   per-step zero floor, so an adjustment large enough to take a category negative leaves the

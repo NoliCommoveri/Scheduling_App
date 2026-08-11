@@ -16,7 +16,11 @@
 // an event's `startDate`/`endDate` come out of the row's `payload`, where the
 // Management App writes what §3.3 gives no column, and `content` is that
 // payload's kind-specific descriptor. `blockHint` / `sortOrder` in setMeta are
-// the `plannerMeta` store's vocabulary, and go with the store in phase 3.
+// the `plannerMeta` store's vocabulary. Phase 3 (§14) dropped the
+// `activities`/`chores`/`events` stores and the four legacy `loadState()` keys;
+// folding `plannerMeta` itself into `child_block_hint`/`child_sort_order` is
+// still open — §8.1's table names it as the target shape, but nothing has
+// picked up the write-path redesign that requires.
 
 (function (g) {
   "use strict";
@@ -1177,9 +1181,9 @@
     // Export-adjacent area (not the daily/Today view) is what makes an
     // unguarded button safe here.
     function doWipe() {
-      if (!window.confirm("Clear completed & exported work, plus past family events? Pending work, your Reward Ledger balance, and streak are never touched. This can't be undone.")) return;
+      if (!window.confirm("Clear completed & exported work? Pending work, your Reward Ledger balance, and streak are never touched. This can't be undone.")) return;
       g.Wipe.runWipe().then(function (res) {
-        toast("Cleared " + res.clearedRecords + " item" + (res.clearedRecords === 1 ? "" : "s") + " and " + res.clearedEvents + " past event" + (res.clearedEvents === 1 ? "" : "s") + ".", false);
+        toast("Cleared " + res.clearedRecords + " item" + (res.clearedRecords === 1 ? "" : "s") + ".", false);
         reload();
       }).catch(function (e) {
         toast("Wipe failed. Try again.", true);

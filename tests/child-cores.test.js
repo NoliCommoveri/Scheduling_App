@@ -164,20 +164,16 @@ test('§6.4: a rescinded row the child completed stays off the plan', () => {
   assert.equal(AssignmentCore.isPlannable(row({ rescinded_at: 123, status: 'complete' })), false);
 });
 
-test('toState returns the decorated rows, and the pre-revamp keys alongside', () => {
-  // §14 phases 1–2: `rows` is what every consumer works from. The other four
-  // keys now have none at all, and are scaffolding CLAUDE.md §IV.B pins until
-  // the phase 3 store drop.
+test('toState returns only the decorated rows', () => {
+  // §14 phase 3: the pre-revamp activities/chores/events/meta keys are gone —
+  // `rows` is the only thing any consumer has read since phase 2.
   const state = AssignmentCore.toState([
     row({ id: 'a1', kind: 'activity' }),
     row({ id: 'c1', kind: 'chore', title: 'Dishes' }),
     row({ id: 'e1', kind: 'event', title: 'Dentist', source_id: 'EV-1' }),
   ]);
-  assert.deepEqual(Object.keys(state).sort(), ['activities', 'chores', 'events', 'meta', 'rows']);
+  assert.deepEqual(Object.keys(state), ['rows']);
   assert.equal(state.rows.length, 3);
-  assert.equal(state.activities.length, 1);
-  assert.equal(state.chores.length, 1);
-  assert.equal(state.events.length, 1);
 });
 
 test('decorate keeps the row it was given, and does not mutate it', () => {
@@ -242,19 +238,7 @@ test('toState treats an absent chore `required` as true', () => {
   // Chores are always required; absent must not read as false, or the child
   // loses their Reschedule/Waive controls on an older row.
   const state = AssignmentCore.toState([row({ id: 'c1', kind: 'chore', payload: JSON.stringify({}) })]);
-  assert.equal(state.chores[0].required, true);
-});
-
-test('toState synthesises meta only from child-owned columns, and stays sparse', () => {
-  const bare = AssignmentCore.toState([row()]);
-  assert.deepEqual(bare.meta, Object.create(null), 'no override means no meta entry');
-
-  const overridden = AssignmentCore.toState([row({
-    deferred_to: '2026-08-14', child_block_hint: 'Afternoon', child_sort_order: 9,
-  })]);
-  assert.deepEqual(overridden.meta.a1, {
-    deferredDate: '2026-08-14', blockHint: 'Afternoon', sortOrder: 9, id: 'a1',
-  });
+  assert.equal(state.rows[0].required, true);
 });
 
 test('toState no longer mints a second name for any column', () => {
@@ -639,4 +623,58 @@ test('normalizeCode treats an absent or blank code as empty', () => {
   assert.equal(Pairing.normalizeCode('   '), '');
   assert.equal(Pairing.normalizeCode(null), '');
   assert.equal(Pairing.normalizeCode(undefined), '');
+});
+
+// ===========================================================  export/wipe
+
+// export-core.js and wipe-core.js are not in the initial load batch — nothing
+// else here depends on them — but §14 phase 3 changed both against the
+// dropped activities/chores/events stores, so they are exercised the same way
+// pairing.js is above.
+vm.runInThisContext(readFileSync(new URL('child-app/js/export-core.js', repo), 'utf8'), { filename: 'export-core.js' });
+vm.runInThisContext(readFileSync(new URL('child-app/js/wipe-core.js', repo), 'utf8'), { filename: 'wipe-core.js' });
+const { ExportCore, WipeCore } = globalThis;
+
+test('isEligible: resolved and not yet exported', () => {
+  assert.equal(ExportCore.isEligible({ status: 'complete', exported: false }), true);
+  assert.equal(ExportCore.isEligible({ status: 'waived', exported: false }), true);
+  assert.equal(ExportCore.isEligible({ status: 'complete', exported: true }), false);
+  assert.equal(ExportCore.isEligible({ status: 'pending', exported: false }), false);
+});
+
+test('buildRow sources course, activity type and sequence from an activity row', () => {
+  // §14 phase 3: the source used to be the received Activity, read out of the
+  // now-dropped `activities` store. It is the decorated `assignments` row now.
+  const assignmentRow = {
+    kind: 'activity', title: 'Read chapter 4', course_name: 'History',
+    activity_type: 'Reading', block_hint: 'Morning', sequence_no: 4,
+  };
+  const record = { activityId: 'a1', date: '2026-08-11', status: 'complete', grade: 90 };
+  const out = ExportCore.buildRow(record, assignmentRow, 'Sam', 'Fall 2026');
+  assert.deepEqual(out, {
+    activityId: 'a1', date: '2026-08-11', course: 'History', activity: 'Read chapter 4',
+    activityType: 'Reading', plannedBlock: 'Morning', status: 'complete', grade: 90,
+    childName: 'Sam', semesterLabel: 'Fall 2026', sequenceNumber: 4,
+  });
+});
+
+test('buildRow blanks course and sequence for a chore, and reads its type off `choreType`', () => {
+  // A chore has neither a course nor a sequence — §3 — and its type comes from
+  // the decorated row's promoted `choreType`, not the §3.3 `activity_type` column.
+  const assignmentRow = {
+    kind: 'chore', title: 'Dishes', choreType: 'Daily', block_hint: 'Evening',
+    course_name: null, activity_type: null, sequence_no: null,
+  };
+  const record = { activityId: 'c1', date: '2026-08-11', status: 'waived', grade: null };
+  const out = ExportCore.buildRow(record, assignmentRow, 'Sam', 'Fall 2026');
+  assert.equal(out.course, '');
+  assert.equal(out.sequenceNumber, '');
+  assert.equal(out.activityType, 'Daily');
+  assert.equal(out.grade, '', 'no grade is reported as blank, not null');
+});
+
+test('WipeCore.isClearable: exported records only', () => {
+  assert.equal(WipeCore.isClearable({ exported: true }), true);
+  assert.equal(WipeCore.isClearable({ exported: false }), false);
+  assert.equal(WipeCore.isClearable({}), false);
 });

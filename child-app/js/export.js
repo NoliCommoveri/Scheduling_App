@@ -1,38 +1,45 @@
 // export.js — Completion CSV Export (Module 8), wired to IndexedDB + file save.
 // TDS_Slice_M2 §7. Mirrors the other DB-wiring files: export-core.js owns the
 // pure row/CSV/note math; this file owns storage reads and the download trigger.
+//
+// §14 phase 3: the source used to be the received Activity/Chore, read out of
+// the `activities`/`chores` stores those are now dropped. It is the `assignments`
+// row now — decorated the same way planner-ui.js's rows are — keyed by id
+// exactly as the old source maps were.
 
 (function (g) {
   "use strict";
 
   var C = g.ExportCore;
 
-  function loadSourceMaps() {
-    return Promise.all([g.DB.getAll("activities"), g.DB.getAll("chores")]).then(function (r) {
-      var activities = Object.create(null);
-      r[0].forEach(function (a) { activities[a.id] = a; });
-      var chores = Object.create(null);
-      r[1].forEach(function (c) { chores[c.id] = c; });
-      return { activities: activities, chores: chores };
+  function loadAssignmentMap() {
+    return g.DB.getAll("assignments").then(function (rows) {
+      var byId = Object.create(null);
+      (rows || []).forEach(function (row) {
+        if (row && row.id) byId[row.id] = g.AssignmentCore.decorate(row);
+      });
+      return byId;
     });
   }
 
   // Rows and the exact record objects they came from, kept in lockstep — a
   // record only gets flipped to exported if it actually produced a row.
   function gatherEligible() {
-    return Promise.all([g.DB.getAll("activityRecords"), loadSourceMaps(), g.DB.getSingleton("child"), g.DB.getSingleton("semester")])
+    return Promise.all([g.DB.getAll("activityRecords"), loadAssignmentMap(), g.DB.getSingleton("child"), g.DB.getSingleton("semester")])
       .then(function (r) {
         var eligible = r[0].filter(C.isEligible);
-        var sources = r[1];
+        var assignments = r[1];
         var child = r[2] || {};
         var semester = r[3] || {};
         var rows = [];
         var includedRecords = [];
         eligible.forEach(function (rec) {
-          var isChore = !sources.activities[rec.activityId];
-          var sourceItem = isChore ? sources.chores[rec.activityId] : sources.activities[rec.activityId];
-          if (!sourceItem) return; // orphaned record — shouldn't happen by construction; skip defensively
-          rows.push(C.buildRow(rec, sourceItem, isChore, child.name, semester.label));
+          var assignmentRow = assignments[rec.activityId];
+          // Fallen out of the local `assignments` cache window (§8.3's
+          // today−7..today+14) before this device got around to exporting it —
+          // skip defensively rather than report a row with nothing to say.
+          if (!assignmentRow) return;
+          rows.push(C.buildRow(rec, assignmentRow, child.name, semester.label));
           includedRecords.push(rec);
         });
         return { rows: rows, includedRecords: includedRecords, childName: child.name };
@@ -120,19 +127,16 @@
   // FR-7: end-of-week reminder. lastSuccessfulExportDate is derived, never
   // stored — max(date) over any exported:true record, or "never" if none.
   //
-  // Eligibility is narrowed to records this export can actually carry. Since
-  // Online Revamp Phase 3B the planner also shows server assignments, and
-  // completing one writes an activityRecord with no counterpart in the
-  // activities/chores stores — gatherEligible skips it as orphaned. Counting it
-  // here anyway would raise a banner promising N items and then export nothing.
-  // Those completions upload over the API in Phase 4 (§12); CSV is not their
-  // route and this reminder is not about them.
+  // Eligibility is narrowed to records this export can actually carry.
+  // gatherEligible skips a record whose assignment has fallen out of the local
+  // cache window (see its comment); counting it here anyway would raise a
+  // banner promising N items and then export nothing.
   function reminderState() {
-    return Promise.all([g.DB.getAll("activityRecords"), loadSourceMaps()]).then(function (r) {
+    return Promise.all([g.DB.getAll("activityRecords"), loadAssignmentMap()]).then(function (r) {
       var all = r[0];
-      var sources = r[1];
+      var assignments = r[1];
       var exportable = all.filter(function (rec) {
-        return C.isEligible(rec) && (sources.activities[rec.activityId] || sources.chores[rec.activityId]);
+        return C.isEligible(rec) && !!assignments[rec.activityId];
       });
       var eligibleCount = exportable.length;
       if (eligibleCount === 0) return { show: false };

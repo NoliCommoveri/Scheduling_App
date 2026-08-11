@@ -162,7 +162,7 @@ git status --short
 |---|---|
 | Migration written | Registered in `worker/migrations.js`; applies cleanly on an empty DB |
 | Worker route added | Rejects the wrong credential type; rejects writes to columns it does not own |
-| Child App data change | `DB.loadState()` still returns `{ activities, chores, events, meta }` (see revamp §8.2) |
+| Child App data change | `DB.loadState()` returns `{ rows }` (see revamp §8.2 — the §14 shim collapse's phase 3 dropped the four legacy keys this row used to pin) |
 | Any schema change | Applied via the browser, never the console |
 
 ### C. Post-Build Reconciliation (before handoff)

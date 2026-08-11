@@ -1,7 +1,7 @@
 // assignment-core.js — decoration of an `assignments` row for the planner.
 // TDS_Slice_Online_Revamp.md §3.3 (the shared row), §6.4 (visibility), §8.2.
 //
-// **Online Revamp §14, shim collapse — phases 1 and 2 are done here.**
+// **Online Revamp §14, shim collapse — done here.**
 //
 // Phase 1 removed the second object. This file used to read a flat `assignments`
 // row and emit a packet-shaped record, plus a parallel `meta` map holding the
@@ -16,7 +16,12 @@
 // (planner-ui.js, completion.js) now read the columns §3.3 defines, and the
 // aliases are gone.
 //
-// What `decorate()` does now is exactly one thing: **the row, plus the fields
+// Phase 3 dropped `toState`'s `activities` / `chores` / `events` / `meta` keys
+// along with the IndexedDB stores the first three mirrored. Nothing had read
+// any of them since phase 2 — they were kept only because CLAUDE.md §IV.B
+// pinned `DB.loadState()`'s shape until the store drop landed.
+//
+// What `decorate()` does is exactly one thing: **the row, plus the fields
 // §3.3 gives no column.** Every one of those comes out of `payload`, which is
 // where the Management App puts what has nowhere else to go (packet.js's
 // assignmentFrom* projections):
@@ -27,11 +32,6 @@
 //     freeText / none) — named for what it is rather than shadowing the column
 //     it was parsed out of. The `payload` column itself is passed through
 //     untouched, so the copy is still the row.
-//
-// What is left for phase 3: `toState`'s `activities` / `chores` / `events` /
-// `meta` keys. Nothing reads any of them any more — they are kept only because
-// CLAUDE.md §IV.B pins `DB.loadState()`'s shape until the IndexedDB v8 store
-// drop, and they go in the same change.
 //
 // Pure — no fetch, no IndexedDB, no DOM — so the mapping can be exercised
 // directly against rows.
@@ -163,51 +163,20 @@
     });
   }
 
-  // §8.2's "meta synthesized from the child-owned columns". Nothing reads the
-  // result any more — see toState below — so this exists to keep the pinned
-  // shape honest rather than to be consulted. Returns null when the row carries
-  // no child-side override, so the map stays sparse.
-  function metaFrom(row) {
-    var m = null;
-    if (row.deferred_to) (m = m || {}).deferredDate = row.deferred_to;
-    if (row.child_block_hint) (m = m || {}).blockHint = row.child_block_hint;
-    if (typeof row.child_sort_order === "number") (m = m || {}).sortOrder = row.child_sort_order;
-    return m;
-  }
-
   // rows: assignment rows as `/api/plan` returns them (snake_case, §3.3).
-  // Returns { rows, activities, chores, events, meta } — `rows` is the decorated
-  // set the planner works from, and is the only key with a consumer. As of phase
-  // 2 the other four have none at all: planner-ui.js and streak.js both read
-  // `rows`, and nothing ever read `meta` again once planner-core stopped taking
-  // it. They are kept because CLAUDE.md §IV.B pins this shape, and they go in
-  // phase 3 with the stores they mirror.
+  // Returns { rows } — the decorated, plannable set the planner works from.
   function toState(rows) {
     var out = [];
-    var activities = [];
-    var chores = [];
-    var events = [];
-    var meta = Object.create(null);
 
     (rows || []).forEach(function (row) {
       if (!row || !row.id || !isPlannable(row)) return;
       // An unknown kind is a newer parent build; ignore it rather than crash.
       if (row.kind !== "activity" && row.kind !== "chore" && row.kind !== "event") return;
 
-      var item = decorate(row);
-      out.push(item);
-
-      if (row.kind === "activity") activities.push(item);
-      else if (row.kind === "chore") chores.push(item);
-      else events.push(item);
-
-      // Events have no completion lifecycle and no child-owned columns.
-      if (row.kind === "event") return;
-      var m = metaFrom(row);
-      if (m) { m.id = row.id; meta[row.id] = m; }
+      out.push(decorate(row));
     });
 
-    return { rows: out, activities: activities, chores: chores, events: events, meta: meta };
+    return { rows: out };
   }
 
   g.AssignmentCore = {
