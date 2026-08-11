@@ -23,6 +23,15 @@ binding = "DB"
 database_name = "scheduling-app"
 database_id = "bb58d835-f115-4ae5-a8ad-5653b102957e"
 
+# Bundles each /migrations/*.sql file into the Worker as importable text, so
+# worker/migrations.js can hand its contents to the in-app runner (Settings →
+# Database, and the no-JS /admin/migrations fallback) with no CLI step
+# (TDS_Slice_Online_Revamp.md §3.7.2).
+[[rules]]
+type = "Text"
+globs = ["**/*.sql"]
+fallthrough = true
+
 # SYNC_TOKEN is a secret, never a [vars] entry. Set it on the deployed Worker
 # under Settings → Variables and Secrets, type Secret (not Text). Secrets do
 # work from the dashboard — unlike bindings, they are stored separately from
