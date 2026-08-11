@@ -1,4 +1,4 @@
-/* Module: packet.js — Module 08, Packet Generation & Export (THE SEAM).
+/* Module: packet.js — Module 08, Generation & Assignment.
  * Per SRS_Management_Module_08_Packet_Generation_Export.md (reconciled by
  * TDS_Slice_M7_Management_App_Rev1.md §4 — cursor retired; Propose/Review/
  * Commit; Generation Log is the source of truth).
@@ -6,7 +6,20 @@
  * Sole writer of `generationLog` anywhere in the system. Also sets
  * `excludeFromGeneration` on `activities` at Commit. Reads pacingProfiles/
  * courses/lessons/activities/activityTypes/tiers/chores/familyEvents.
- * Three stages held in one in-memory session; ONLY Commit writes. */
+ * Three stages held in one in-memory session; ONLY Commit writes.
+ *
+ * ROLE CHANGED 2026-08-11 — Online Revamp Phase 3 (TDS_Slice_Online_Revamp.md
+ * §6.1, §12). This file was "THE SEAM": Commit's final act was serializing a
+ * packet and triggering a download, and that file was the only way work ever
+ * reached a child. Now Commit mints a batchId and POSTs assignment rows to
+ * D1 (§5.2), which is the system of record. Propose and Review are untouched
+ * — §6.1 is explicit that only Commit's final act changes.
+ *
+ * The packet file is still exported. That is not a leftover: the Child App
+ * does not read /api/plan until Phase 3's second half lands, so until then the
+ * file remains the live transport and the rows are the new one being laid down
+ * beside it. Phase 5 (§11) deletes the export.
+ */
 
 const Packet = (() => {
   const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -475,20 +488,150 @@ const Packet = (() => {
     return errors;
   }
 
+  // ---- Assignment projection (Revamp §3.3) — the Phase 3 write path ----
+
+  // The Worker enforces a closed allow-list of writable columns and rejects an
+  // entire batch with 400 if a row carries anything else (§4.2). So this
+  // projection is deliberately strict, and every field that has no column of
+  // its own goes inside `payload` — which §3.3 types as "JSON: pageRange,
+  // instructions, etc." Nothing but this function enforces that shape, so per
+  // §3.7.1's rule for JSON-in-TEXT it is written down here:
+  //
+  //   activity → { kind, …kind-specific, required, capturesGrade,
+  //                difficultyTier, lessonTitle?, instructions? }
+  //   chore    → { choreType, difficultyTier, required, notes? }
+  //   event    → { startDate, endDate, notes?, time? }
+  //
+  // `rewardAmount` is deliberately left unset. The Management App has no such
+  // number to snapshot: tiers carry { tierId, label, order, rewardCategoryId }
+  // and the earned amount is computed on the child's device. Guessing a value
+  // here would bake a Child App constant into parent-authored rows across the
+  // app boundary. §7 wants the column populated, but that belongs to Phase 4,
+  // where the earning path is actually built. A null column can be backfilled
+  // by a migration; a wrong value in thousands of rows cannot.
+
+  function assignmentFromActivity(item, sortOrder) {
+    const a = item.record;
+    const payload = Object.assign(projectPayload(a.activityType, a.payload || {}), {
+      required: !!a.required,
+      capturesGrade: !!a.capturesGrade,
+      difficultyTier: a.difficultyTier,
+    });
+    if (a.lessonTitle) payload.lessonTitle = a.lessonTitle;
+    if (a.instructions) payload.instructions = a.instructions;
+
+    const row = {
+      date: item.assignedDate,
+      kind: 'activity',
+      sourceId: a.id, // the curriculum activity this came from (§3.3)
+      title: a.title,
+      courseName: session.maps.courseName.get(item.instanceId),
+      activityType: session.maps.typeLabel.get(a.activityType) || a.activityType, // label, never the key
+      rewardCategory: session.maps.rewardCat.get(a.difficultyTier),
+      payload,
+      sortOrder,
+    };
+    if (a.expectedDurationMin != null) row.expectedDurationMin = a.expectedDurationMin;
+    if (a.sequenceNumber != null) row.sequenceNo = a.sequenceNumber;
+    if (item.blockHint) row.blockHint = item.blockHint;
+    return row;
+  }
+
+  function assignmentFromChore(item, sortOrder) {
+    const c = item.record;
+    // sourceId is the chore's curriculum id, NOT the per-occurrence
+    // CHR-{token}-{YYYYMMDD} key. §3.3.1 repealed derived occurrence ids: the
+    // occurrence *is* the server-minted row now. The occurrence key survives
+    // only inside generationLog, which is local scheduling history.
+    const payload = { choreType: c.choreType, difficultyTier: c.difficultyTier, required: true };
+    if (c.notes) payload.notes = c.notes;
+
+    const row = {
+      date: item.assignedDate,
+      kind: 'chore',
+      sourceId: c.id,
+      title: c.title,
+      rewardCategory: session.maps.rewardCat.get(c.difficultyTier),
+      payload,
+      sortOrder,
+    };
+    if (c.blockHint) row.blockHint = c.blockHint;
+    return row;
+  }
+
+  function assignmentFromEvent(item, date, sortOrder) {
+    const e = item.record;
+    // A multi-day event becomes one row per in-range day, matching how Propose
+    // already places it (§4 step 5) and how the child renders a day at a time.
+    // The true span stays in the payload so nothing is lost.
+    const payload = { startDate: e.startDate, endDate: e.endDate };
+    if (e.notes) payload.notes = e.notes;
+    if (e.time) payload.time = e.time;
+    return { date, kind: 'event', sourceId: e.id, title: e.title, payload, sortOrder };
+  }
+
+  function projectAssignments() {
+    const rows = [];
+    for (const date of [...session.days.keys()].sort()) {
+      const o = session.days.get(date);
+      // Fixed merge order — activities, then chores, then events (FR-6) — now
+      // carried as an explicit sort_order value rather than left to array
+      // position. The child renders on COALESCE(child_sort_order, sort_order)
+      // (§3.3.3), so the parent's intended order has to survive as data.
+      let sortOrder = 0;
+      for (const it of o.activities) rows.push(assignmentFromActivity(it, sortOrder++));
+      for (const it of o.chores) rows.push(assignmentFromChore(it, sortOrder++));
+      for (const it of o.events) rows.push(assignmentFromEvent(it, date, sortOrder++));
+    }
+    return rows;
+  }
+
+  function mintBatchId() {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+    return 'batch-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+  }
+
+  // The Worker's MAX_BATCH; anything larger is a 413 (§5.6). A full-semester
+  // Commit for one child runs to roughly 1,800 rows, so chunking is the normal
+  // path, not an edge case.
+  const POST_CHUNK = 500;
+
+  // Every chunk carries the SAME batchId. That is the whole reason the id is
+  // minted per Commit rather than per request: a run that dies on chunk three
+  // of four leaves a partial batch that one statement reverses (§6.2) —
+  // POST /api/assignments/rescind {batchId} — instead of a date-range hunt.
+  async function postAssignments(batchId, rows) {
+    let posted = 0;
+    for (let i = 0; i < rows.length; i += POST_CHUNK) {
+      const chunk = rows.slice(i, i + POST_CHUNK);
+      const result = await Sync.api('/api/assignments', {
+        method: 'POST',
+        body: { batchId, childId: session.childId, assignments: chunk },
+      });
+      posted += result && Array.isArray(result.ids) ? result.ids.length : chunk.length;
+    }
+    return posted;
+  }
+
   // ---- Commit (FR-8–FR-11) — the only writes ----
 
   async function commit() {
     if (!session) return { error: 'No active proposal.' };
     const packet = buildPacket();
 
+    // Minted before the log rows are built so both the D1 batch and the local
+    // decisions that produced it carry the same id. A 'dropped' row has no D1
+    // counterpart — nothing was assigned — but recording which Commit decided
+    // it is what makes the log auditable against the batch.
+    const batchId = mintBatchId();
     const generatedAt = packet.generatedAt;
     const sentRows = [];
     for (const [, o] of session.days) {
-      for (const it of o.activities) sentRows.push({ childId: session.childId, itemId: it.id, instanceId: it.instanceId, assignedDate: it.assignedDate, disposition: 'sent', generatedAt });
-      for (const it of o.chores) sentRows.push({ childId: session.childId, itemId: it.id, assignedDate: it.assignedDate, disposition: 'sent', generatedAt });
+      for (const it of o.activities) sentRows.push({ childId: session.childId, itemId: it.id, instanceId: it.instanceId, assignedDate: it.assignedDate, disposition: 'sent', generatedAt, batchId });
+      for (const it of o.chores) sentRows.push({ childId: session.childId, itemId: it.id, assignedDate: it.assignedDate, disposition: 'sent', generatedAt, batchId });
     }
     const droppedRows = [...session.droppedChores.values()].map((x) => ({
-      childId: session.childId, itemId: x.itemId, assignedDate: x.assignedDate, disposition: 'dropped', generatedAt,
+      childId: session.childId, itemId: x.itemId, assignedDate: x.assignedDate, disposition: 'dropped', generatedAt, batchId,
     }));
     const excludeIds = [...session.excluded];
 
@@ -503,26 +646,75 @@ const Packet = (() => {
     const errors = validatePacket(packet); // empty days[] is schema-valid
     if (errors.length) return { error: errors[0], errors, packet };
 
-    // One readwrite transaction. put() over the composite key makes reproduction
-    // idempotent and relocation an in-place update (FR-10). Deferred: no write.
-    await Storage.runTransaction(['generationLog', 'activities'], 'readwrite', (t) => {
-      const glog = t.objectStore('generationLog');
-      for (const r of sentRows) glog.put(r);
-      for (const r of droppedRows) glog.put(r);
-      const acts = t.objectStore('activities');
-      for (const id of excludeIds) {
-        const g = acts.get(id);
-        g.onsuccess = () => {
-          if (g.result) acts.put({ ...g.result, excludeFromGeneration: true });
+    // ---- D1 first, IndexedDB second (Revamp §6.1) ----
+    //
+    // The ordering is deliberate and is the one thing in this function worth
+    // reading twice. The network is the failure-prone step, so it goes first:
+    // a failed POST leaves no local trace at all, the proposal is still in
+    // memory, and Commit is simply retriable. The reverse order would write a
+    // generationLog full of 'sent' rows for work that never reached D1 — and
+    // because Propose reproduces prior 'sent' decisions rather than re-walking
+    // them (§4.2.2), those items would silently never be assigned to anyone.
+    //
+    // The residual risk is the mirror image: the POST lands and the local write
+    // fails, leaving live rows in D1 with no local record. That one is
+    // recoverable precisely because every row carries batchId — the error below
+    // surfaces it so the batch can be rescinded in a single statement (§6.2).
+    const rows = projectAssignments();
+    let assignedCount = 0;
+
+    if (rows.length) {
+      const { enabled } = await Sync.getConfig();
+      if (!enabled) {
+        return { error: 'Commit needs the parent sync token — set it in Settings → Sync, then Commit again. Nothing was written.' };
+      }
+      try {
+        assignedCount = await postAssignments(batchId, rows);
+      } catch (err) {
+        return {
+          error: `Assignments were not written to D1 — ${(err && err.message) || err}. ` +
+            'Nothing was recorded locally; press Commit again to retry.',
         };
       }
-    });
+    }
 
-    // Export AFTER the transaction commits — retriable, outside IDB (§4.4.4).
+    // One readwrite transaction. put() over the composite key makes reproduction
+    // idempotent and relocation an in-place update (FR-10). Deferred: no write.
+    try {
+      await Storage.runTransaction(['generationLog', 'activities'], 'readwrite', (t) => {
+        const glog = t.objectStore('generationLog');
+        for (const r of sentRows) glog.put(r);
+        for (const r of droppedRows) glog.put(r);
+        const acts = t.objectStore('activities');
+        for (const id of excludeIds) {
+          const g = acts.get(id);
+          g.onsuccess = () => {
+            if (g.result) acts.put({ ...g.result, excludeFromGeneration: true });
+          };
+        }
+      });
+    } catch (err) {
+      return {
+        // Names the batch because it is the only handle on those rows. There is
+        // no rescind UI yet — the Assignments view (§9) is not built — so this
+        // is currently a note-it-down-and-report-it path rather than a
+        // self-service one. Wiring it to POST /api/assignments/rescind is the
+        // first thing that view should do.
+        error: `${assignedCount} assignments reached D1, but the local Generation Log write failed — ` +
+          `${(err && err.message) || err}. Write down batch ${batchId}: those rows are live for the ` +
+          'child and must be rescinded before this range is committed again, or it will be assigned twice.',
+        batchId,
+      };
+    }
+
+    // Export AFTER both writes commit — retriable, outside IDB (§4.4.4).
     // Skip the file only when nothing is being sent (decisions still recorded).
     const exported = packet.days.length > 0;
     if (exported) exportPacket(packet);
-    return { ok: true, packet, exported, sentCount: sentRows.length, droppedCount: droppedRows.length, excludedCount: excludeIds.length };
+    return {
+      ok: true, packet, exported, batchId, assignedCount,
+      sentCount: sentRows.length, droppedCount: droppedRows.length, excludedCount: excludeIds.length,
+    };
   }
 
   function exportPacket(packet) {
@@ -544,7 +736,7 @@ const Packet = (() => {
   async function render(root) {
     root.innerHTML = '';
     const heading = document.createElement('h1');
-    heading.textContent = 'Packet Generation & Export';
+    heading.textContent = 'Generation & Assignment';
     root.appendChild(heading);
 
     if (lastResult) {
@@ -566,7 +758,7 @@ const Packet = (() => {
       .concat(children.map((c) => `<option value="${c.id}">${escapeHtml(c.name)}</option>`))
       .join('');
     form.innerHTML = `
-      <h2>Generate a packet</h2>
+      <h2>Propose assignments</h2>
       <label>Child<select name="childId">${opts}</select></label>
       <label>Semester label<input type="text" name="semesterLabel" placeholder="e.g. Fall 2026"></label>
       <label>Covers from<input type="date" name="coversFrom" required></label>
@@ -595,19 +787,28 @@ const Packet = (() => {
     bar.innerHTML = `<h2>Proposal — ${escapeHtml(session.childName)} · ${session.coversFrom} → ${session.coversTo}</h2>`;
 
     const commitBtn = document.createElement('button');
-    commitBtn.textContent = 'Commit & Export';
+    commitBtn.textContent = 'Commit & assign';
     commitBtn.addEventListener('click', async () => {
-      const result = await commit();
+      commitBtn.disabled = true;
+      commitBtn.textContent = 'Assigning…';
+      let result;
+      try {
+        result = await commit();
+      } finally {
+        commitBtn.disabled = false;
+        commitBtn.textContent = 'Commit & assign';
+      }
       if (result.error) {
         lastResult = { error: `Commit blocked — ${result.error}` };
         render(root);
         return;
       }
       lastResult = {
-        message: `Committed: ${result.sentCount} sent, ${result.droppedCount} dropped, ${result.excludedCount} excluded. ` +
+        message: `Committed: ${result.assignedCount} assigned to D1, ${result.droppedCount} dropped, ` +
+          `${result.excludedCount} excluded (batch ${result.batchId}). ` +
           (result.exported
-            ? 'Packet exported — hand it to the Child App to close the seam.'
-            : 'No packet exported (nothing to send); decisions were still recorded.'),
+            ? 'A packet file was also exported — still the Child App’s transport until it reads /api/plan.'
+            : 'Nothing to assign; decisions were still recorded.'),
       };
       session = null;
       render(root);
@@ -726,7 +927,7 @@ const Packet = (() => {
   return {
     render,
     // exposed for build-session acceptance checks (§5):
-    propose, commit, validatePacket, buildPacket,
+    propose, commit, validatePacket, buildPacket, projectAssignments,
     relocate, excludeActivity, deferActivity, dropChore, pullForward,
     _getSession: () => session,
     _reset: () => { session = null; lastResult = null; },
