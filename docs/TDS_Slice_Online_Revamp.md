@@ -44,6 +44,15 @@ step of first-run setup rather than a Settings errand; §4.4 is new and states w
 device is, and how it differs from an offline one and an unlinked one; §13 gains checks 22–25.
 No API, schema or credential behaviour changed — this is the client reaching the design.
 
+**Amended a fifth time 2026-08-11**, authorized in-session, recording **phase 1 of the §8.2
+shim collapse**. Ray waived §12's "only after phases 3–4 have carried live days" gate for
+this phase specifically; the gate stands for what is left. §8.2 and §14 are rewritten to
+say which half is built: the planning derivation now reads the child-owned columns off the
+assignment row and the parallel `meta` map is gone, so one assignment is one object rather
+than a record plus a lookup. The two halves still deferred are named separately in §14 —
+`planner-ui.js`'s field names, and the IndexedDB v8 store drop. No API, schema, credential
+or rendering behaviour changed; this is the same plan derived from one object instead of two.
+
 **Applies to:** Both apps, the Worker, and the interchange layer between them.
 **Supersedes:** `TDS_Slice_D1_Sync_Management_App.md` (the mirror becomes a
 curriculum-only backup), `Interchange_Contract.md` (replaced by §5's API),
@@ -751,15 +760,34 @@ Balance display reads the local cache; the server's `SUM` is authoritative on re
 
 ### 8.2 The `loadState()` adapter
 
-`DB.loadState()` currently returns `{ activities, chores, events, meta }`, and effectively
-all of `planner-ui.js` — the largest file in the Child App — is built on that shape. The
-new data layer **reassembles the same shape** from `assignments` rows partitioned by
-`kind`, with `meta` synthesized from the child-owned columns.
+`DB.loadState()` returns `{ rows, activities, chores, events, meta }`. `rows` is what the
+planner works from: the `assignments` rows for this device, live and pending only (§6.4),
+each decorated with the pre-revamp *names* `planner-ui.js` still renders by. The other four
+keys are the pre-revamp shape, retained because CLAUDE.md §IV.B pins them until the collapse
+finishes.
 
 This is an explicit compatibility shim with a stated lifespan: it exists so the planner UI
-does not have to be rewritten in the same change that replaces the data layer. It should be
-collapsed once the new model is carrying real days. Recording it here so a later session
-recognises it as scaffolding rather than design.
+does not have to be rewritten in the same change that replaces the data layer. Recording it
+here so a later session recognises it as scaffolding rather than design.
+
+**As of phase 1 of the collapse (§14), the shim no longer builds a second object.** It used
+to emit a packet-shaped record *plus* a parallel `meta` map holding the child-owned values
+under different names, so every planning decision consulted two objects and an id lookup to
+answer what one row already answered. `decorate()` now returns the row itself with the
+aliases added alongside its columns, and the derivation in `planner-core.js` reads
+`deferred_to`, `child_block_hint` and `child_sort_order` directly — §3.3.3's
+`COALESCE(child_sort_order, sort_order)`, evaluated on the client exactly as the server
+states it.
+
+An override this device has written but not yet drained lives in `plannerMeta` in the
+pre-revamp vocabulary; `loadState()` overlays it onto the row **as the column it is on its
+way to becoming**, field by field, so a pending deferral reaches the planner without a
+second shape surviving alongside the first. The store itself goes in phase 3.
+
+Two fields the derivation needs are not columns, because §3.3 gives them none — `required`,
+and a family event's `startDate`/`endDate` span. Both are promoted out of `payload` by
+`decorate()`, and they are the reason the row handed to `planner-core.js` is a decorated one
+rather than the raw cache row.
 
 ### 8.3 Freshness
 
@@ -986,17 +1014,33 @@ throughout.
   missing is the field on the tier, and a decision about whether it is per tier or per
   activity. Until then §7 describes a path that carries a constant. The one way a row gets
   a real amount today is a parent editing it by hand in the Assignments view.
-- **Collapsing the §8.2 shim.** `assignment-core.js` still reassembles the pre-revamp
-  `{ activities, chores, events, meta }` shape, and `activities`/`chores`/`events` survive
-  as empty stores, because the planner is still written against that shape. `plannerMeta`
-  likewise remains a store rather than folding into the child-owned columns. This is a
-  rewrite of `planner-ui.js` — the largest file in the Child App — not a tidy-up, it is not
-  on a critical path, and §12 gates it on phases 3–4 having carried live days, which as of
-  2026-08-11 they have not.
+- **Collapsing the §8.2 shim — phase 1 done, phases 2–3 open.** Ray waived §12's
+  live-days gate on 2026-08-11 and authorized the first phase; the rest is still deferred.
+
+  **Done (phase 1): the derivation moved onto the row.** `planner-core.js` and
+  `streak-core.js` read the child-owned columns (`deferred_to`, `child_block_hint`,
+  `child_sort_order`) off the assignment row and no longer take a `meta` map; the views
+  take the flat row array and select on `kind` instead of being handed a pre-sorted
+  `{ activities, chores, events }` triple. `assignment-core.js` stopped minting a second
+  object per assignment — `decorate()` returns the row with the pre-revamp *names* added
+  alongside its columns, so there is one object per assignment carrying its own overrides.
+  `receiptIndex` and the `blockHint` alias are gone with the lookups that needed them, and
+  `DB.loadState()` overlays an unflushed `plannerMeta` record as the columns it is on its
+  way to becoming rather than as a parallel map.
+
+  **Open (phase 2): the render names.** `planner-ui.js` is still written against the
+  pre-revamp field names (`courseName`, `sequenceNumber`, `choreType`, a parsed `payload`),
+  which is the only reason `decorate()` adds them. This is a rewrite of the largest file in
+  the Child App, not a tidy-up.
+
+  **Open (phase 3): the stores.** `activities`/`chores`/`events` survive as empty stores and
+  `plannerMeta` remains a store rather than folding into the child-owned columns. Dropping
+  them is an IndexedDB v8 migration, and it is what finally lets `DB.loadState()` return
+  `rows` alone — CLAUDE.md §IV.B pins the four legacy keys until then, so `toState()` keeps
+  returning them even though `streak.js` is the last consumer of any of them.
 
   > The **local ledger** half of this item, with which it was originally bundled, is
-  > **done** — see the third amendment at the head of this document. What is left here is
-  > the planner shim alone.
+  > **done** — see the third amendment at the head of this document.
 
 - **Whether a reward balance floors at zero.** The device folds a category's entries with a
   per-step zero floor, so an adjustment large enough to take a category negative leaves the

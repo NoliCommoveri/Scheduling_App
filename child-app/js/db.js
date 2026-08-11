@@ -251,36 +251,22 @@
 
   // Load everything the planner needs in one shot.
   //
-  // Online Revamp §8.2: this still returns { activities, chores, events, meta },
-  // because effectively all of planner-ui.js is built on that shape. The rows
-  // now come from one source — `assignments`, fetched from /api/plan and
-  // partitioned by kind — since Phase 5 deleted the packet import that used to
-  // fill activities/chores/events locally. Those three stores still exist and
-  // are read here only in the sense that nothing writes them any more; dropping
-  // them is a schema change (§8.1) and belongs with the rest of the shim
-  // collapse, not here.
+  // Online Revamp §8.2/§14: the planner now works from `rows` — decorated
+  // `assignments` rows, each carrying its own overrides. This device's unflushed
+  // overrides are overlaid first, as the child-owned columns they are on their
+  // way to becoming, so nothing downstream has to consult a second object to
+  // know when an item is due or where it sits. The `activities` / `chores` /
+  // `events` / `meta` keys come back alongside because CLAUDE.md §IV.B pins this
+  // shape until the collapse finishes; streak.js is the only remaining consumer
+  // of any of them.
   //
-  // plannerMeta is NOT vestigial and is still overlaid: it is where this
-  // device's own overrides (sortOrder, deferrals) are written, ahead of the
-  // outbox uploading a copy. The local entry wins field-by-field over the
-  // server's — a pending override is by construction newer than the columns it
-  // has not yet been flushed to.
+  // `assignments` is the one source: Phase 5 deleted the packet import that used
+  // to fill the legacy activities/chores/events stores locally, and nothing has
+  // written them since. Dropping those stores is a schema change (§8.1) and
+  // belongs with the rest of the collapse, not here.
   function loadState() {
     return Promise.all([getAll("plannerMeta"), getAll("assignments")]).then(function (r) {
-      var server = g.AssignmentCore.toState(r[1]);
-
-      var meta = Object.create(null);
-      Object.keys(server.meta).forEach(function (id) { meta[id] = server.meta[id]; });
-      r[0].forEach(function (local) {
-        meta[local.id] = meta[local.id] ? Object.assign({}, meta[local.id], local) : local;
-      });
-
-      return {
-        activities: server.activities,
-        chores: server.chores,
-        events: server.events,
-        meta: meta
-      };
+      return g.AssignmentCore.toState(g.AssignmentCore.applyLocalMeta(r[1], r[0]));
     });
   }
 

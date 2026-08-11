@@ -1,7 +1,13 @@
 // planner-ui.js — the Daily Planner's rendering and interactions (SRS Module 3).
-// Presentation and light organization only: it reads Received Packet content and
-// writes just two child-owned override fields (sortOrder, blockHint) via plannerMeta.
-// The plan itself is derived here each render and never persisted.
+// Presentation and light organization only: it reads the assignment rows
+// DB.loadState() hands back, and writes just two child-owned override fields
+// (sortOrder, blockHint) via plannerMeta. The plan itself is derived here each
+// render and never persisted.
+//
+// Online Revamp §14: this file is phase 2 of the shim collapse and has not been
+// done. It still renders by the pre-revamp field names — `courseName`,
+// `sequenceNumber`, `choreType`, a parsed `payload` — which is the only reason
+// assignment-core.js still adds them to the row.
 
 (function (g) {
   "use strict";
@@ -226,7 +232,7 @@
     // done today / still-to-do today / total — the completion status the hero shows.
     function todayCounts() {
       var d = state.data;
-      var t = P.assembleToday({ activities: d.activities, chores: d.chores, events: d.events }, d.meta, state.today, state.isResolved);
+      var t = P.assembleToday(d.rows, state.today, state.isResolved);
       var remaining = 0;
       t.blocks.forEach(function (b) { remaining += b.school.length + b.chores.length; });
       var done = (state.records || []).filter(function (r) {
@@ -333,8 +339,7 @@
       // whatever's currently imported.
       if (state.view === "rewards") { container.appendChild(renderRewards()); return container; }
 
-      var totalItems = d.activities.length + d.chores.length + d.events.length;
-      if (totalItems === 0) { container.appendChild(emptyState()); return container; }
+      if (d.rows.length === 0) { container.appendChild(emptyState()); return container; }
 
       if (state.view === "today") container.appendChild(renderToday());
       else if (state.view === "school") container.appendChild(renderFilter("school"));
@@ -408,8 +413,7 @@
     // ---------- Today ----------
     function renderToday() {
       var d = state.data;
-      var stateArrays = { activities: d.activities, chores: d.chores, events: d.events };
-      var today = P.assembleToday(stateArrays, d.meta, state.today, state.isResolved);
+      var today = P.assembleToday(d.rows, state.today, state.isResolved);
       var wrap = node("div");
 
       // Signature home: themed greeting + the day's completion graphic, above the plan.
@@ -467,8 +471,7 @@
     // ---------- filter views (School / Chores) ----------
     function renderFilter(category) {
       var d = state.data;
-      var stateArrays = { activities: d.activities, chores: d.chores, events: d.events };
-      var list = P.filterView(stateArrays, d.meta, state.today, state.isResolved, category);
+      var list = P.filterView(d.rows, state.today, state.isResolved, category);
       var wrap = node("div");
       if (list.length === 0) {
         wrap.appendChild(node("div", "section-empty",
@@ -476,7 +479,7 @@
         return wrap;
       }
       list.forEach(function (item, i) {
-        var blockName = P.effectiveBlock(item, d.meta);
+        var blockName = P.effectiveBlock(item);
         var card = itemCard(item, category === "chores" ? "chore" : "activity", blockName, list, i);
         card.style.setProperty("--lane-color", "var(--" + blockName + ")");
         wrap.appendChild(card);
@@ -487,7 +490,7 @@
     // ---------- Events view ----------
     function renderEvents() {
       var d = state.data;
-      var list = P.eventsView({ events: d.events }, state.today);
+      var list = P.eventsView(d.rows, state.today);
       var wrap = node("div");
       if (list.length === 0) { wrap.appendChild(node("div", "section-empty", "No family events for this date.")); return wrap; }
       list.forEach(function (ev) { wrap.appendChild(eventCard(ev)); });
@@ -497,14 +500,13 @@
     // ---------- Subjects view ----------
     function renderSubjects() {
       var d = state.data;
-      var stateArrays = { activities: d.activities, chores: d.chores, events: d.events };
-      var groups = P.subjectsView(stateArrays, d.meta, state.today, state.isResolved);
+      var groups = P.subjectsView(d.rows, state.today, state.isResolved);
       var wrap = node("div");
       if (groups.length === 0) { wrap.appendChild(node("div", "section-empty", "No school work to group by subject for this date.")); return wrap; }
       groups.forEach(function (grp) {
         wrap.appendChild(node("div", "subject-head", grp.courseName));
         grp.items.forEach(function (a, i) {
-          var blockName = P.effectiveBlock(a, d.meta);
+          var blockName = P.effectiveBlock(a);
           var card = itemCard(a, "activity", blockName, grp.items, i);
           card.style.setProperty("--lane-color", "var(--" + blockName + ")");
           wrap.appendChild(card);
@@ -1125,8 +1127,7 @@
     function reorder(group, i, dir) {
       var j = i + dir;
       if (j < 0 || j >= group.length) return;
-      var meta = state.data.meta;
-      var keyAt = function (idx) { return P.effectiveSortKey(group[idx], meta); };
+      var keyAt = function (idx) { return P.effectiveSortKey(group[idx]); };
       var moved = group[i];
       var newKey;
       if (dir < 0) {
