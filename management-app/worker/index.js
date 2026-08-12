@@ -589,14 +589,10 @@ async function handleAssignmentsCreate(request, env) {
     return json({ error: 'chunkIndex must be a non-negative integer.' }, 400);
   }
 
-  if (assignments.length === 0) return json({ ids: [], applied: 0 });
+  if (assignments.length === 0) return json({ ids: [], applied: 0, skipped: 0 });
 
   const already = await findCommitChunk(env, batchId, chunkIndex);
   if (already) return json(duplicateChunkResponse(already));
-
-  const now = Date.now();
-  const ids = [];
-  const statements = [];
 
   for (const row of assignments) {
     if (!row || typeof row !== 'object') return json({ error: 'Each assignment must be an object.' }, 400);
@@ -612,23 +608,55 @@ async function handleAssignmentsCreate(request, env) {
     if (typeof row.title !== 'string' || !row.title) {
       return json({ error: 'Each assignment needs a title.' }, 400);
     }
+  }
+
+  // §3.8's idempotency is scoped to one batch, which is the wrong scope for the
+  // duplicate parents actually hit. Two *different* Commits over the same range
+  // carry two different batchIds, so nothing collided and every row landed a
+  // second time — the same chore, twice, on the same day. Under the packet model
+  // that was free: re-generating produced the same file and the child replaced
+  // its plan wholesale on import. D1 is insert-only, so the same act now doubles
+  // the plan. §6.6 is the rule this enforces.
+  const liveKeys = await loadLiveAssignmentKeys(env, childId, assignments);
+
+  const now = Date.now();
+  const ids = [];
+  const statements = [];
+  let skipped = 0;
+
+  for (const row of assignments) {
+    const key = naturalKey(row.date, row.kind, row.sourceId);
+    if (key !== null && liveKeys.has(key)) { skipped++; continue; }
+    if (key !== null) liveKeys.add(key); // a repeat inside one chunk is the same duplicate
 
     const id = crypto.randomUUID();
     ids.push(id);
     statements.push(
       env.DB.prepare(
+        // The `WHERE NOT EXISTS` repeats the check the Set above already made,
+        // and is not redundant: the Set was read before this request built its
+        // statements, so a second parent device committing the same range
+        // concurrently would slip past it. This is the check that cannot.
+        // A row with no source_id has no natural key at all — `source_id = NULL`
+        // is never true, so NOT EXISTS always holds and it inserts, which is
+        // the right answer for a row nothing can identify as a repeat.
         `INSERT INTO assignments (
            id, child_id, date, kind, batch_id,
            source_id, title, course_name, activity_type, sequence_no,
            payload, expected_duration_min, reward_amount, reward_category,
            block_hint, sort_order,
            status, assigned_at, updated_at, updated_by
-         ) VALUES (
+         )
+         SELECT
            ?1, ?2, ?3, ?4, ?5,
            ?6, ?7, ?8, ?9, ?10,
            ?11, ?12, ?13, ?14,
            ?15, ?16,
            'pending', ?17, ?17, 'parent'
+         WHERE NOT EXISTS (
+           SELECT 1 FROM assignments
+            WHERE child_id = ?2 AND date = ?3 AND kind = ?4 AND source_id = ?6
+              AND rescinded_at IS NULL
          )`
       ).bind(
         id, childId, row.date, row.kind, batchId,
@@ -646,6 +674,10 @@ async function handleAssignmentsCreate(request, env) {
   // so a replay collides on the (batch_id, chunk_index) primary key and rolls
   // the assignment inserts back with it. The pre-check above is a courtesy that
   // answers a replay without an error; this is what makes it correct.
+  //
+  // `row_count` is what this chunk *inserted*, so it excludes rows dropped as
+  // already-live above. That is what a replay should report back: re-sending
+  // this chunk would insert exactly the same rows again and no more.
   statements.push(
     env.DB.prepare(
       `INSERT INTO commit_chunks (batch_id, chunk_index, child_id, row_count, created_at)
@@ -665,7 +697,51 @@ async function handleAssignmentsCreate(request, env) {
     throw err;
   }
 
-  return json({ ids, applied: ids.length, duplicate: false });
+  return json({ ids, applied: ids.length, skipped, duplicate: false });
+}
+
+// The identity of a day's work, as the domain means it: this child, this day,
+// this thing. `id` is a server-minted UUID (§3.3.1) and so can never answer
+// "have I already assigned this?" — the natural key is what can.
+//
+// `source_id` is the curriculum item behind the row: an Activity id, a Chore id
+// (the chore itself, not a per-occurrence key — §3.3.1 repealed those), or a
+// Family Event id. Null means the row carries no provenance and is not
+// deduplicable; callers treat that as "always insert".
+function naturalKey(date, kind, sourceId) {
+  if (sourceId == null) return null;
+  return `${date} ${kind} ${sourceId}`;
+}
+
+// The live natural keys this child already has across the chunk's date span.
+// Rescinded rows are deliberately absent: pulling a batch back and generating
+// the range again is a supported repair, and a tombstone must not block it.
+// A resolved row (complete or waived) is still live and does block — re-issuing
+// work a child has already finished is the same duplicate wearing a hat.
+async function loadLiveAssignmentKeys(env, childId, rows) {
+  let from = null;
+  let to = null;
+  for (const row of rows) {
+    if (row.sourceId == null) continue;
+    if (from === null || row.date < from) from = row.date;
+    if (to === null || row.date > to) to = row.date;
+  }
+
+  const keys = new Set();
+  if (from === null) return keys; // nothing in this chunk has a natural key
+
+  // Bounded by the chunk's own span and served by idx_assign_child_date, so
+  // this stays one indexed range scan however long the child's history is.
+  const { results } = await env.DB.prepare(
+    `SELECT date, kind, source_id FROM assignments
+      WHERE child_id = ?1 AND date >= ?2 AND date <= ?3
+        AND source_id IS NOT NULL AND rescinded_at IS NULL`
+  ).bind(childId, from, to).all();
+
+  for (const row of results || []) {
+    keys.add(naturalKey(row.date, row.kind, row.source_id));
+  }
+  return keys;
 }
 
 async function findCommitChunk(env, batchId, chunkIndex) {
