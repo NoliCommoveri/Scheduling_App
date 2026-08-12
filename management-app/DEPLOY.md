@@ -91,6 +91,17 @@ and applies itself from a button (Revamp §3.7). Do this once the Worker is depl
 Either surface needs the parent `SYNC_TOKEN`. Both are safe to press twice: applying
 with nothing pending writes nothing and says so.
 
+> **`0004_completion_note.sql` ships in two deploys, not one — apply it in between.**
+> (Child Feedback Loop TDS §5.5.) This migration adds `assignments.completion_note`
+> on its own; the Worker and Child App code that reads and writes it lands in a
+> *later* commit. If that later code is already deployed while the column is still
+> missing, a child's device posting a completion note makes every completion in that
+> batch throw a database error — which halts the device's **whole** outbox drain
+> (completions, rewards, streak, everything), not just the note. Deploy the migration
+> commit alone, press **Apply** here, confirm it shows applied, and only then deploy
+> the commit that follows it. Applying it early costs nothing — an inert column with
+> nothing reading or writing it yet is harmless.
+
 > **The console path is retired.** The `records` table on the live database was created
 > by hand there before the runner existed, which is why `0001_online_revamp_init.sql`
 > uses `CREATE TABLE IF NOT EXISTS` throughout — it is a no-op against that table and
