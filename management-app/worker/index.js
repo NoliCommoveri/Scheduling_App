@@ -147,6 +147,9 @@ async function routeApi(request, env, ctx, url) {
   if (pathname === '/api/admin/reset' && method === 'POST') {
     return withParent(request, env, () => handleAdminReset(request, env));
   }
+  if (pathname === '/api/admin/assignments/clear' && method === 'POST') {
+    return withParent(request, env, () => handleAdminClearAssignments(request, env));
+  }
 
   // ---- Curriculum mirror (§5.1) — unchanged behaviour, narrowed store list ----
   if (pathname === '/api/sync/push' && method === 'POST') {
@@ -490,6 +493,29 @@ async function handleAdminReset(request, env) {
   await env.DB.batch(RESET_TABLES.map((t) => env.DB.prepare(`DELETE FROM ${t}`).bind()));
 
   return json({ ok: true, tables: RESET_TABLES });
+}
+
+// A narrower sibling of Admin reset, for pacing/generator testing: empties
+// only the assignment lifecycle, not curriculum, children, devices, or
+// reward_entries/streaks. Same fixed-table-list safety as RESET_TABLES, and
+// the same ordering — child tables (assignment_messages, claim_groups,
+// commit_chunks) before the assignments they reference.
+const CLEAR_ASSIGNMENTS_TABLES = ['assignment_messages', 'claim_groups', 'commit_chunks', 'assignments'];
+
+async function handleAdminClearAssignments(request, env) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Body must be JSON.' }, 400);
+  }
+  if (!body || body.confirm !== 'CLEAR_ASSIGNMENTS') {
+    return json({ error: 'Send {"confirm":"CLEAR_ASSIGNMENTS"} to proceed.' }, 400);
+  }
+
+  await env.DB.batch(CLEAR_ASSIGNMENTS_TABLES.map((t) => env.DB.prepare(`DELETE FROM ${t}`).bind()));
+
+  return json({ ok: true, tables: CLEAR_ASSIGNMENTS_TABLES });
 }
 
 // ============================================================================

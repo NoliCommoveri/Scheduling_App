@@ -751,6 +751,45 @@ test('/api/admin/reset with confirm:"RESET" deletes every data table in one batc
   }
 });
 
+// ==========================  admin clear assignments
+
+test('a device token on /api/admin/assignments/clear is 401', async () => {
+  const { env } = makeEnv(deviceResolver());
+  const res = await call(env, '/api/admin/assignments/clear', {
+    method: 'POST', token: DEVICE_TOKEN, body: { confirm: 'CLEAR_ASSIGNMENTS' },
+  });
+  assert.equal(res.status, 401);
+});
+
+test('/api/admin/assignments/clear with the parent token but no typed confirmation is a 400, and writes nothing', async () => {
+  const { env, DB } = makeEnv();
+  const res = await call(env, '/api/admin/assignments/clear', { method: 'POST', token: PARENT_TOKEN, body: {} });
+  assert.equal(res.status, 400);
+  assert.equal(DB.batched.length, 0);
+});
+
+test('/api/admin/assignments/clear with confirm:"CLEAR_ASSIGNMENTS" deletes only the assignment lifecycle tables', async () => {
+  const { env, DB } = makeEnv();
+  const res = await call(env, '/api/admin/assignments/clear', {
+    method: 'POST', token: PARENT_TOKEN, body: { confirm: 'CLEAR_ASSIGNMENTS' },
+  });
+  assert.equal(res.status, 200);
+  const out = await res.json();
+  assert.equal(out.ok, true);
+
+  assert.equal(DB.batched.length, 1);
+  const statements = DB.batched[0].map((s) => s.sql);
+  assert.ok(statements.every((sql) => /^DELETE FROM \w+$/.test(sql)));
+  for (const table of ['assignments', 'claim_groups', 'commit_chunks', 'assignment_messages']) {
+    assert.ok(statements.some((sql) => sql === `DELETE FROM ${table}`), `missing DELETE for ${table}`);
+  }
+  // Curriculum, children, devices, and reward data are a different concern —
+  // this route must never touch them (that is what /api/admin/reset is for).
+  for (const table of ['children', 'devices', 'records', 'reward_entries', 'streaks', 'pair_codes']) {
+    assert.ok(!statements.some((sql) => sql === `DELETE FROM ${table}`), `unexpected DELETE for ${table}`);
+  }
+});
+
 // ==========================  assignment messages (§6.2, SRS Module 13)
 
 // Resolves the ownership lookup: CH-1 owns a1 and a2, nothing else.
