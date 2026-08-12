@@ -52,6 +52,10 @@ const ASSIGNMENT_CREATE_FIELDS = {
   payload: 'payload', expectedDurationMin: 'expected_duration_min',
   rewardAmount: 'reward_amount', rewardCategory: 'reward_category',
   blockHint: 'block_hint', sortOrder: 'sort_order',
+  // Shared Chores §3.2/§7 — part of occurrence identity, parent-minted at
+  // Commit. Never in ASSIGNMENT_PATCH_FIELDS: moving a row between
+  // instances is a different occurrence, not an edit.
+  instanceKey: 'instance_key',
 };
 const ASSIGNMENT_PATCH_FIELDS = {
   date: 'date', sourceId: 'source_id', title: 'title', courseName: 'course_name',
@@ -625,7 +629,7 @@ async function handleAssignmentsCreate(request, env) {
   let skipped = 0;
 
   for (const row of assignments) {
-    const key = naturalKey(row.date, row.kind, row.sourceId);
+    const key = naturalKey(row.date, row.kind, row.sourceId, row.instanceKey ?? '');
     if (key !== null && liveKeys.has(key)) { skipped++; continue; }
     if (key !== null) liveKeys.add(key); // a repeat inside one chunk is the same duplicate
 
@@ -644,18 +648,19 @@ async function handleAssignmentsCreate(request, env) {
            id, child_id, date, kind, batch_id,
            source_id, title, course_name, activity_type, sequence_no,
            payload, expected_duration_min, reward_amount, reward_category,
-           block_hint, sort_order,
+           block_hint, sort_order, instance_key,
            status, assigned_at, updated_at, updated_by
          )
          SELECT
            ?1, ?2, ?3, ?4, ?5,
            ?6, ?7, ?8, ?9, ?10,
            ?11, ?12, ?13, ?14,
-           ?15, ?16,
-           'pending', ?17, ?17, 'parent'
+           ?15, ?16, ?17,
+           'pending', ?18, ?18, 'parent'
          WHERE NOT EXISTS (
            SELECT 1 FROM assignments
             WHERE child_id = ?2 AND date = ?3 AND kind = ?4 AND source_id = ?6
+              AND instance_key = ?17
               AND rescinded_at IS NULL
          )`
       ).bind(
@@ -663,7 +668,7 @@ async function handleAssignmentsCreate(request, env) {
         row.sourceId ?? null, row.title, row.courseName ?? null, row.activityType ?? null, row.sequenceNo ?? null,
         row.payload ? JSON.stringify(row.payload) : null, row.expectedDurationMin ?? null,
         row.rewardAmount ?? null, row.rewardCategory ?? null,
-        row.blockHint ?? null, row.sortOrder ?? null,
+        row.blockHint ?? null, row.sortOrder ?? null, row.instanceKey ?? '',
         now
       )
     );
@@ -708,9 +713,9 @@ async function handleAssignmentsCreate(request, env) {
 // (the chore itself, not a per-occurrence key — §3.3.1 repealed those), or a
 // Family Event id. Null means the row carries no provenance and is not
 // deduplicable; callers treat that as "always insert".
-function naturalKey(date, kind, sourceId) {
+function naturalKey(date, kind, sourceId, instanceKey) {
   if (sourceId == null) return null;
-  return `${date} ${kind} ${sourceId}`;
+  return `${date} ${kind} ${sourceId} ${instanceKey}`;
 }
 
 // The live natural keys this child already has across the chunk's date span.
@@ -733,13 +738,13 @@ async function loadLiveAssignmentKeys(env, childId, rows) {
   // Bounded by the chunk's own span and served by idx_assign_child_date, so
   // this stays one indexed range scan however long the child's history is.
   const { results } = await env.DB.prepare(
-    `SELECT date, kind, source_id FROM assignments
+    `SELECT date, kind, source_id, instance_key FROM assignments
       WHERE child_id = ?1 AND date >= ?2 AND date <= ?3
         AND source_id IS NOT NULL AND rescinded_at IS NULL`
   ).bind(childId, from, to).all();
 
   for (const row of results || []) {
-    keys.add(naturalKey(row.date, row.kind, row.source_id));
+    keys.add(naturalKey(row.date, row.kind, row.source_id, row.instance_key));
   }
   return keys;
 }

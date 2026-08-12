@@ -51,6 +51,23 @@ const Chores = (() => {
     const tier = await Storage.get('tiers', fields.difficultyTier);
     if (!tier) return 'Difficulty Tier must resolve to an existing Tier.';
     if (fields.blockHint && !BLOCK_HINTS.includes(fields.blockHint)) return 'Invalid block hint.';
+    // Shared Chores §2.2 — occurrences per day. Absent means one unlabeled
+    // occurrence, today's behavior exactly (§2.4). No '-' in an id: the
+    // Generation Log's occurrence id (CHR-{token}-{date}[-{instanceId}])
+    // parses on '-', and a hyphen inside the id would break that (§3.2).
+    if (fields.instances != null) {
+      if (!Array.isArray(fields.instances) || fields.instances.length === 0) {
+        return 'Occurrences, when given, must be a non-empty list.';
+      }
+      const seenIds = new Set();
+      for (const inst of fields.instances) {
+        if (!inst || typeof inst.id !== 'string' || !inst.id) return 'Every occurrence needs an id.';
+        if (inst.id.includes('-')) return 'Occurrence ids may not contain "-".';
+        if (seenIds.has(inst.id)) return 'Occurrence ids must be unique within the chore.';
+        seenIds.add(inst.id);
+        if (inst.blockHint && !BLOCK_HINTS.includes(inst.blockHint)) return 'Invalid occurrence block hint.';
+      }
+    }
     return null;
   }
 
@@ -66,6 +83,7 @@ const Chores = (() => {
     };
     if (fields.notes && fields.notes.trim()) record.notes = fields.notes.trim();
     if (fields.blockHint) record.blockHint = fields.blockHint;
+    if (fields.instances && fields.instances.length) record.instances = fields.instances;
     return record;
   }
 
@@ -149,6 +167,71 @@ const Chores = (() => {
     return Array.from(form.querySelectorAll('input[name="daysOfWeek"]:checked')).map((el) => el.value);
   }
 
+  // Shared Chores §8 — Occurrences per day. An empty list is the default and
+  // renders nothing extra, so a one-a-day chore's form is unchanged. Each row
+  // is a label and an optional block hint; ids are minted once, on Add, and
+  // never reassigned to a different row (§2.4).
+  function buildInstancesFieldset(instances) {
+    const rows = (instances || []).map((inst) => ({ id: inst.id, label: inst.label || '', blockHint: inst.blockHint || '' }));
+
+    const fs = document.createElement('fieldset');
+    fs.className = 'chore-instances';
+    const legend = document.createElement('legend');
+    legend.textContent = 'Occurrences per day';
+    fs.appendChild(legend);
+
+    const list = document.createElement('div');
+    list.className = 'chore-instances-list';
+    fs.appendChild(list);
+
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.textContent = 'Add occurrence';
+    fs.appendChild(addBtn);
+
+    function renderRows() {
+      list.innerHTML = '';
+      rows.forEach((row, idx) => {
+        const rowEl = document.createElement('div');
+        rowEl.className = 'chore-instance-row';
+        rowEl.innerHTML = `
+          <input type="text" class="instance-label" placeholder="Label (e.g. Breakfast)" value="${escapeHtml(row.label)}">
+          <select class="instance-block-hint">${blockHintOptions(row.blockHint)}</select>
+          <button type="button" data-action="remove-instance">Remove</button>
+        `;
+        rowEl.querySelector('.instance-label').addEventListener('input', (e) => { row.label = e.target.value; });
+        rowEl.querySelector('.instance-block-hint').addEventListener('change', (e) => { row.blockHint = e.target.value; });
+        rowEl.querySelector('[data-action="remove-instance"]').addEventListener('click', () => {
+          const confirmed = window.confirm(
+            'Remove this occurrence? Already-committed occurrences on the plan are unaffected — ' +
+            'this only stops future generation.'
+          );
+          if (!confirmed) return;
+          rows.splice(idx, 1);
+          renderRows();
+        });
+        list.appendChild(rowEl);
+      });
+    }
+    renderRows();
+
+    addBtn.addEventListener('click', () => {
+      rows.push({ id: randomToken(), label: '', blockHint: '' });
+      renderRows();
+    });
+
+    fs.readInstances = () => {
+      if (rows.length === 0) return undefined;
+      return rows.map((r) => {
+        const out = { id: r.id };
+        if (r.label && r.label.trim()) out.label = r.label.trim();
+        if (r.blockHint) out.blockHint = r.blockHint;
+        return out;
+      });
+    };
+    return fs;
+  }
+
   // Authoring picker, so archived children are not offered (§3.2's `active`).
   // One that is already on the chore being edited stays in the list regardless:
   // dropping it would leave the select showing a different child and silently
@@ -222,6 +305,7 @@ const Chores = (() => {
       <span class="chore-child">${child ? escapeHtml(child.name) : '(unresolved child)'}</span>
       <span class="chore-type">${escapeHtml(chore.choreType)}</span>
       <span class="chore-days">${chore.daysOfWeek.join(', ')}</span>
+      ${chore.instances && chore.instances.length > 1 ? `<span class="chore-instance-count">${chore.instances.length}×/day</span>` : ''}
       <button data-action="edit">Edit</button>
       <button data-action="delete">Delete</button>
     `;
@@ -257,6 +341,8 @@ const Chores = (() => {
       <button type="submit">Save</button>
       <button type="button" data-action="cancel">Cancel</button>
     `;
+    const instancesFieldset = buildInstancesFieldset(chore.instances);
+    form.querySelector('fieldset').insertAdjacentElement('afterend', instancesFieldset);
     const errorEl = form.querySelector('.error');
     form.querySelector('[data-action="cancel"]').addEventListener('click', () => {
       editingId = null;
@@ -272,6 +358,7 @@ const Chores = (() => {
         difficultyTier: form.difficultyTier.value,
         notes: form.notes.value,
         blockHint: form.blockHint.value,
+        instances: instancesFieldset.readInstances(),
       });
       if (result.error) {
         errorEl.hidden = false;
@@ -299,6 +386,8 @@ const Chores = (() => {
       <p class="error" hidden></p>
       <button type="submit">Add Chore</button>
     `;
+    const instancesFieldset = buildInstancesFieldset([]);
+    form.querySelector('fieldset').insertAdjacentElement('afterend', instancesFieldset);
     const errorEl = form.querySelector('.error');
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -310,6 +399,7 @@ const Chores = (() => {
         difficultyTier: form.difficultyTier.value,
         notes: form.notes.value,
         blockHint: form.blockHint.value,
+        instances: instancesFieldset.readInstances(),
       });
       if (result.error) {
         errorEl.hidden = false;

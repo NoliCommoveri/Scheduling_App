@@ -9,6 +9,7 @@ import m0002 from '../../migrations/0002_backfill_children_projection.sql';
 import m0003 from '../../migrations/0003_commit_chunks.sql';
 import m0004 from '../../migrations/0004_completion_note.sql';
 import m0005 from '../../migrations/0005_assignment_messages.sql';
+import m0006 from '../../migrations/0006_chore_instances.sql';
 
 export const MIGRATIONS = [
   { name: '0001_online_revamp_init.sql', sql: m0001 },
@@ -16,4 +17,5 @@ export const MIGRATIONS = [
   { name: '0003_commit_chunks.sql', sql: m0003 },
   { name: '0004_completion_note.sql', sql: m0004 },
   { name: '0005_assignment_messages.sql', sql: m0005 },
+  { name: '0006_chore_instances.sql', sql: m0006 },
 ];
