@@ -67,6 +67,29 @@ const Devices = (() => {
       return;
     }
 
+    const active = devices.filter((d) => !d.revoked_at);
+    const revoked = devices.filter((d) => d.revoked_at);
+
+    if (active.length === 0) {
+      const p = document.createElement('p');
+      p.textContent = 'No active devices.';
+      root.appendChild(p);
+    } else {
+      root.appendChild(buildDeviceListEl(active, childById, root));
+    }
+
+    if (revoked.length > 0) {
+      const details = document.createElement('details');
+      details.className = 'device-list-revoked';
+      const summary = document.createElement('summary');
+      summary.textContent = `Revoked devices (${revoked.length})`;
+      details.appendChild(summary);
+      details.appendChild(buildDeviceListEl(revoked, childById, root));
+      root.appendChild(details);
+    }
+  }
+
+  function buildDeviceListEl(devices, childById, root) {
     const list = document.createElement('ul');
     list.className = 'device-list';
     for (const d of devices) {
@@ -95,7 +118,7 @@ const Devices = (() => {
       }
       list.appendChild(item);
     }
-    root.appendChild(list);
+    return list;
   }
 
   function renderPairForm(root, children) {
