@@ -135,6 +135,8 @@
       });
       bar.appendChild(tabs);
 
+      if (isPreviewingOtherDay()) bar.appendChild(previewBanner());
+
       if (state.reminderInfo.show && !state.reminderDismissed) {
         var reminder = node("div", "reminder-banner");
         reminder.appendChild(node("span", null, "It's been a week or more since your last export — " + state.reminderInfo.eligibleCount + " item" + (state.reminderInfo.eligibleCount === 1 ? "" : "s") + " ready to send."));
@@ -214,13 +216,38 @@
       card.appendChild(dateInput);
       var actions = node("div", "modal-actions");
       var reset = node("button", "btn ghost", "Back to today");
-      reset.onclick = function () { overlay.remove(); state.today = g.DateUtil.localISODate(new Date()); render(); };
+      reset.onclick = function () { overlay.remove(); backToToday(); };
       var go = node("button", "btn", "Show it");
       go.onclick = function () { if (dateInput.value) { state.today = dateInput.value; } overlay.remove(); render(); };
       actions.appendChild(reset); actions.appendChild(go);
       card.appendChild(actions);
       overlay.appendChild(card);
       document.body.appendChild(overlay);
+    }
+
+    // Whether `state.today` (the preview date) has drifted from the real
+    // device-local date — the signal the appbar banner below warns on.
+    function isPreviewingOtherDay() {
+      return state.today !== g.DateUtil.localISODate(new Date());
+    }
+    function backToToday() {
+      state.today = g.DateUtil.localISODate(new Date());
+      render();
+    }
+
+    // Every view reads `state.today` as "today" (see the state comment above),
+    // so nothing else marks a preview in progress — this banner is the only
+    // cue that what's on screen isn't the real day's plan.
+    function previewBanner() {
+      var banner = node("div", "preview-banner");
+      var label = new Date(state.today + "T00:00:00").toLocaleDateString(undefined, {
+        weekday: "short", month: "short", day: "numeric"
+      });
+      banner.appendChild(node("span", null, "Previewing " + label + " — not today's plan."));
+      var back = node("button", "btn ghost small", "Back to today");
+      back.onclick = backToToday;
+      banner.appendChild(back);
+      return banner;
     }
 
     function greetingText() {
