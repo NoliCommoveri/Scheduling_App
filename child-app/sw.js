@@ -34,11 +34,21 @@
 // seeds the Child record's name, and app.js's boot gate depends on the wizard
 // having written a PIN. A device serving any two of the three from a v7 cache
 // would either re-enter setup on every launch or leave it half-finished.
-const CACHE_NAME = "daily-plan-shell-v8";
+// v9: two reasons at once.
+//   1. `./index.html` leaves the shell — see the note above shellPath(). It is
+//      the cause of the ERR_FAILED an installed shortcut hits on launch, and a
+//      cache still holding the poisoned entry has to be discarded, not merely
+//      stopped from being read.
+//   2. The bump this file missed. Fourteen shell files changed across the §8.2
+//      shim collapse (phases 1-3), the §12 live-days repeal and the §14
+//      plannerMeta fold while CACHE_NAME sat at v8 — db.js among them, and it
+//      carries the IndexedDB v9 upgrade. Same hazard v7 called out: a device
+//      left on the old shell runs superseded code against whichever schema its
+//      browser happens to hold.
+const CACHE_NAME = "daily-plan-shell-v9";
 
 const APP_SHELL = [
   "./",
-  "./index.html",
   "./manifest.json",
   "./css/style.css",
   "./js/date-util.js",
@@ -104,6 +114,32 @@ self.addEventListener("activate", (event) => {
 // scope ever widens these paths must still follow the script.
 const SHELL_PATHS = new Set(APP_SHELL.map((path) => new URL(path, self.location.href).pathname));
 
+// The shell has one spelling, and it is the directory path.
+//
+// Cloudflare's asset server treats `/child-app/` and `/child-app/index.html` as
+// the same resource and 307s the second onto the first (`html_handling`
+// defaults to "auto-trailing-slash"). That redirect is harmless to a plain
+// browser and fatal to this worker, because `cache.add("./index.html")` follows
+// it and stores a response whose `redirected` flag is set — and the Fetch spec
+// makes a *navigation* answered with a redirected response a network error, not
+// a fallback. Chrome reports ERR_FAILED and the app never boots. Every device
+// installed before this fix launches at exactly that URL: `start_url` was
+// `./index.html` when the shortcut was created, and an installed shortcut keeps
+// the start_url it was captured with. It did not bite while the shell was on
+// GitHub Pages, which serves `/child-app/index.html` as a plain 200; moving
+// both apps onto the Worker (§10) is what introduced the redirect.
+//
+// Dropping `./index.html` from the shell and letting it fall through to the
+// network would trade a dead launch for one that cannot open offline. So it is
+// folded onto the directory path instead, on the way in and on the way out:
+// the cache holds one entry, keyed `/child-app/`, fetched and served without a
+// redirect in it. Nothing else in the shell has a second spelling.
+function shellPath(pathname) {
+  return pathname.endsWith("/index.html")
+    ? pathname.slice(0, -"index.html".length)
+    : pathname;
+}
+
 self.addEventListener("fetch", (event) => {
   const request = event.request;
   if (request.method !== "GET") return;
@@ -118,17 +154,24 @@ self.addEventListener("fetch", (event) => {
   // path so a completion queues in the outbox (§8.4), not be masked here.
   if (url.pathname.startsWith("/api/")) return;
 
-  if (!SHELL_PATHS.has(url.pathname)) return;
+  const path = shellPath(url.pathname);
+  if (!SHELL_PATHS.has(path)) return;
+
+  // Matched and re-fetched on the canonical URL rather than on `request`, which
+  // is what keeps a redirect out of the response. Building it from the pathname
+  // also drops any query string — a launch at `?source=pwa` wants the same
+  // shell file, and the shell is versioned by CACHE_NAME, never by a query.
+  const canonical = new URL(path, self.location.href).href;
 
   event.respondWith(
-    caches.match(request).then((cached) => {
+    caches.match(canonical).then((cached) => {
       if (cached) return cached;
       // A shell file missing from the cache (install-time fetch failed) is
       // fetched and backfilled, so one bad install does not stay broken.
-      return fetch(request).then((response) => {
+      return fetch(canonical).then((response) => {
         if (response.ok && response.type === "basic") {
           const clone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+          caches.open(CACHE_NAME).then((cache) => cache.put(canonical, clone));
         }
         return response;
       });

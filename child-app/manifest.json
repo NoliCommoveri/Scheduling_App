@@ -2,7 +2,7 @@
   "name": "Daily Plan",
   "short_name": "Daily Plan",
   "description": "Daily planner for homeschool activities and chores.",
-  "start_url": "./index.html",
+  "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "any",
