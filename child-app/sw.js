@@ -87,7 +87,11 @@
 // back. The bump matters more than usual for the Undo half: on the v12 shell,
 // undoing an item now leaves it in no view at all until the drain lands,
 // because that gap was unreachable only while the tab itself was empty.
-const CACHE_NAME = "daily-plan-shell-v13";
+// v14: renderToday() moves the family-events lane above the morning block
+// instead of after all blocks. No file added or removed; planner-ui.js changed
+// contents only. Same v6/v10/v11 hazard: this handler is cache-first for the
+// shell, so a device left on v13 would keep seeing events sink to the bottom.
+const CACHE_NAME = "daily-plan-shell-v14";
 
 const APP_SHELL = [
   "./",
