@@ -36,7 +36,7 @@ Lets the parent author and maintain standalone, per-child recurring Chores — h
 
 ## 4. Functional requirements
 
-**FR-1 — Create Chore.** The parent creates a Chore directly against a Child (no Course/Lesson/Curriculum involved) with: `childId`, `title`, `choreType` (**selected from the closed eleven-value enum**, §2.6 — presented as a picker, never a free-text field), `daysOfWeek[]` (a non-empty subset of Sun–Sat, §2.1), and `difficultyTier` (must resolve to an existing Tier, Module 2). Optional: `notes`, `blockHint` (one of the four canonical block labels — `morning`, `afternoon`, `evening`, `night`; anything else is ignored by the child device and displayed under `morning`, Interchange Contract §1d).
+**FR-1 — Create Chore.** The parent creates a Chore directly against one or more Children (no Course/Lesson/Curriculum involved) with: `childIds` (non-empty), `title`, `choreType` (**selected from the closed eleven-value enum**, §2.6 — presented as a picker, never a free-text field), `daysOfWeek[]` (a non-empty subset of Sun–Sat, §2.1), and `difficultyTier` (must resolve to an existing Tier, Module 2). Optional: `notes`, `blockHint` (one of the four canonical block labels — `morning`, `afternoon`, `evening`, `night`; anything else is ignored by the child device and displayed under `morning`, Interchange Contract §1d), `allocation` (`each` | `claim`, defaults to `each`, §4/FR-7), `childDays` (per-participant day override, `each` only), and `instances` (occurrences per day; a Chore recurs on its days **once per instance**, defaulting to one unlabeled occurrence — see `TDS_Slice_Shared_Chores.md` §2.2–§2.4).
 
 **FR-2 — Edit Chore.** Any field — including `choreType` (§2.6), `daysOfWeek[]`, and `difficultyTier` — can be changed at any time. Changing `difficultyTier` affects only future completions' reward category; it never alters the category of a completion already recorded (consistent with the Reward Ledger's own immutable-entry design, Domain Model §3.7). Changing `daysOfWeek[]` affects only future recurrence generation, never anything already delivered (§2.5).
 
@@ -48,13 +48,16 @@ Lets the parent author and maintain standalone, per-child recurring Chores — h
 
 **FR-6 — No template/instance concept applies.** Unlike Course (Module 3/4), a Chore is authored once, directly, against one Child — there is no stamping, no template library, no propagation question of any kind for Chores. This module has no "assign" action distinct from creation.
 
-**FR-7 — Single-child only.** A Chore belongs to exactly one Child (`childId`) and cannot be shared across multiple children. A household chore two kids both do is two separate Chore records — contrast with Family Event, which explicitly supports multiple `childId`s (Domain Model §2.7, a different module).
+**FR-7 — One or more participants, one allocation rule.** *Repealed and replaced, `TDS_Slice_Shared_Chores.md` §0.1/§2.2.* A Chore names one or more participating Children (`childIds`) and an `allocation` of `each` or `claim`. "Breakfast Dishes" is one Chore record regardless of how many children do it: `each` gives every participant their own row per occurrence, to complete and earn on independently (optionally on different days per participant, via `childDays`); `claim` gives every participant a linked row, of which the first completion takes the reward and resolves the rest (server-arbitrated; a `claim` Chore cannot also use `childDays`, §4.3 of the TDS slice). A single-participant Chore is simply `childIds` with one entry and `allocation: 'each'` — not a distinct case. This aligns with Family Event, which has always supported multiple `childId`s (Domain Model §2.7); a shared Chore no longer needs duplicate records the way a shared Family Event never did.
 
 ## 5. Validation rules
 
 | Rule | Detail |
 |---|---|
-| `childId` | Required; must reference an existing Child (Module 4). |
+| `childIds` | Required; non-empty; every entry must reference an existing Child (Module 4); no duplicates. |
+| `allocation` | Optional, defaults to `each`; one of `each` \| `claim`. |
+| `childDays` | Optional, `each` only (rejected when `allocation` is `claim`); every key must be in `childIds`; every value a non-empty subset of `daysOfWeek`; a key absent from the map inherits `daysOfWeek`. |
+| `instances` | Optional; when present, non-empty; every `id` unique within the Chore, non-empty, and containing no `-`; every `blockHint`, where given, one of the four canonical block labels. Absent means one unlabeled occurrence per day. |
 | `title` | Non-empty, whitespace-trimmed. |
 | `choreType` | Required; one of the eleven canonical values — `Pet Care`, `Car Care`, `Kitchen/Dining`, `Bathroom`, `Living/Main Area`, `Playroom`, `Bedroom`, `Parent's Room`, `Porch`, `Floors`, `Miscellaneous` (Domain Model §2.6 / Interchange Contract §1b / `packet_schema.json`). Closed set, not extensible, not free text. A value outside it would be rejected by the child device's Packet Import. |
 | `blockHint` | Optional; if set, one of `morning` \| `afternoon` \| `evening` \| `night`. Any other value is not rejected here but is not honored by the child device — it displays under `morning` (Interchange Contract §1d). |
@@ -72,7 +75,7 @@ No *additional* per-action PIN. The Management App's `launchPin` (Domain Model �
 **Inputs:** parent-entered form data (Chore create/edit/delete); reads the Child table (Module 4, for `childId` selection) and Module 2's Tier table (for `difficultyTier` validation) — does not write to either.
 
 **Outputs (written to Management App storage):**
-- New, updated, or deleted Chore records, each scoped to exactly one Child.
+- New, updated, or deleted Chore records, each scoped to one or more Children (§4/FR-7).
 - No change to any Course, Lesson, Activity, Curriculum, Difficulty Tier/Category, or Family Event data — this module touches the Chore table only.
 
 ## 8. Acceptance criteria
@@ -82,5 +85,5 @@ No *additional* per-action PIN. The Management App's `launchPin` (Domain Model �
 3. Editing a Chore's `choreType` to a **different canonical value** at any time succeeds with no downstream effect on existing Activity Records or Reward Ledger entries. Attempting to author a `choreType` outside the eleven-value enum is rejected at entry — the field is a picker, and there is no path to a free-text value.
 4. Deleting a Chore requires an explicit confirmation step and does not alter any Activity Record already produced against it.
 5. Creating a Chore with an empty `daysOfWeek[]` is rejected; creating one with a single day succeeds and behaves as a "weekly" chore.
-6. No UI path in this module allows assigning one Chore record to more than one Child (§4/FR-7).
+6. A Chore can be authored against two or more Children as a single record (§4/FR-7); removing a participant, or deleting the Child, stops future generation for them without touching the record's other participants or anything already delivered.
 7. No UI path in this module offers a bulk/CSV import option (§2.2).
