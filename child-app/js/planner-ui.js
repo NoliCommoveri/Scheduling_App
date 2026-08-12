@@ -91,6 +91,9 @@
         // Every cached row by id, resolved ones included — the Completed view's
         // join source. Not state.data.rows: see renderCompleted.
         state.rowsById = r[6];
+        // Shared Chores §6.2/§6.3 — this device's own child id, for telling a
+        // self-held claim from a sibling's claimed row.
+        state.selfChildId = r[4].childId || null;
         render();
       });
     }
@@ -600,12 +603,26 @@
         .map(function (rec) { return { rec: rec, item: rowsById[rec.activityId] }; })
         .filter(function (pair) { return !!pair.item; });
 
+      // Shared Chores §6.2 — a losing claim leaves no activityRecords row on
+      // this device and never will, so it has no `pairs` entry above. It is
+      // read straight from the cached assignment rows instead: `claimed_by`
+      // set, and not this device's own id. Bounded to today, matching the
+      // completed list it sits beside.
+      var claimedElsewhere = Object.keys(rowsById)
+        .map(function (id) { return rowsById[id]; })
+        .filter(function (row) {
+          return row.claim_group != null
+            && row.claimed_by != null && row.claimed_by !== state.selfChildId
+            && row.date === today;
+        });
+
       var wrap = node("div");
-      if (pairs.length === 0) {
+      if (pairs.length === 0 && claimedElsewhere.length === 0) {
         wrap.appendChild(node("div", "section-empty", "Nothing completed yet today."));
         return wrap;
       }
       pairs.forEach(function (pair) { wrap.appendChild(completedCard(pair.item, pair.rec)); });
+      claimedElsewhere.forEach(function (item) { wrap.appendChild(claimedCard(item)); });
       return wrap;
     }
 
@@ -654,6 +671,31 @@
       undoBtn.onclick = function () { handleUndo(item); };
       footer.appendChild(undoBtn);
       card.appendChild(footer);
+      return card;
+    }
+
+    // Shared Chores §6.2 — the loser's card. Same layout and lane color as
+    // completedCard, no grade, no note control, and no Undo: this device
+    // wrote nothing, so there is nothing to undo, and §0.7 forbids naming
+    // the sibling who won.
+    function claimedCard(item) {
+      var kind = item.kind === "chore" ? "chore" : "activity";
+      var blockName = P.effectiveBlock(item);
+      var card = node("div", "card");
+      card.style.setProperty("--lane-color", "var(--" + blockName + ")");
+
+      var top = node("div", "card-top");
+      var main = node("div", "card-main");
+
+      var tagrow = node("div", "tagrow");
+      var typeText = kind === "chore" ? item.choreType : item.activity_type;
+      if (typeText) tagrow.appendChild(node("span", "type-tag", typeText));
+      if (tagrow.childNodes.length) main.appendChild(tagrow);
+
+      main.appendChild(node("div", "title", item.title));
+      main.appendChild(node("div", "payload", "Already done"));
+      top.appendChild(main);
+      card.appendChild(top);
       return card;
     }
 
@@ -706,6 +748,14 @@
     }
 
     // ---------- item card ----------
+    // Shared Chores §6.6 — whether a claim tap would fail before it's even
+    // tried. `navigator.onLine` alone is unreliable (it can read `true` on a
+    // captive or dead connection), so it's paired with the last sync
+    // outcome PlanSync already tracks in `syncMeta.lastError`.
+    function isOffline() {
+      return !navigator.onLine || (state.sync && state.sync.error === "offline");
+    }
+
     function itemCard(item, kind, blockName, group) {
       var card = node("div", "card");
       card.style.setProperty("--lane-color", "var(--" + blockName + ")");
@@ -795,8 +845,18 @@
       pick.onchange = function () { setOverride(item.id, { child_block_hint: pick.value }); };
       footer.appendChild(pick);
 
-      var doneBtn = node("button", "btn small", "Mark done");
-      doneBtn.onclick = function () { handleComplete(item); };
+      // Shared Chores §5.7/§6.6 — a claim row's completion is online-required
+      // (the narrowing of CLAUDE.md §III.A this slice authorizes); offline,
+      // the button is disabled with a short label rather than left to fail
+      // after the tap. Every other row, claim or not, is unaffected.
+      var doneBtn;
+      if (item.claim_group != null && isOffline()) {
+        doneBtn = node("button", "btn small", "Shared chore — needs the internet.");
+        doneBtn.disabled = true;
+      } else {
+        doneBtn = node("button", "btn small", "Mark done");
+        doneBtn.onclick = function () { handleComplete(item); };
+      }
       footer.appendChild(doneBtn);
       if (item.required) {
         var rescheduleBtn = node("button", "btn ghost small", "Reschedule");
@@ -855,10 +915,20 @@
     function doComplete(item, grade, rawNote) {
       g.Completion.completeItem(item, grade, rawNote).then(function (res) {
         if (!res.ok) { toast(res.gradeError || res.noteError || "Couldn't mark that complete.", true); return; }
+        // Shared Chores §6.1 — a lost claim arrives as `ok: true` same as a
+        // win, so it needs its own branch: without one it would fall to the
+        // success case below and toast "Marked done." for a chore this
+        // device never actually completed.
+        if (res.claimedElsewhere) { toast("Already done — someone got there first.", false); reload(); return; }
         if (res.alreadyDone) toast("Already marked done.", false);
         else toast("Marked done" + (typeof grade === "number" ? " — grade " + grade + "%" : "") + ".", false);
         reload();
       }).catch(function (e) {
+        // Shared Chores §6.6 — the connection dropped between render and
+        // tap, past the disabled-button guard. A claim row rejects rather
+        // than writing a local guess (§5.7), and it fails with the same
+        // message the button would have shown had it caught this in time.
+        if (item.claim_group != null) { toast("Shared chore — needs the internet.", true); return; }
         toast("Something went wrong marking that done.", true);
         console.error(e);
       });

@@ -103,6 +103,31 @@ test('summarize counts child deferments', () => {
   assert.equal(t.deferred, 1);
 });
 
+// ===================================================  Shared Chores §9
+
+test('isClaimedElsewhere needs no child id passed in — the row answers itself', () => {
+  const won = row({ id: '1', child_id: 'CH-1', claim_group: 'G1', claimed_by: 'CH-1' });
+  const lost = row({ id: '2', child_id: 'CH-2', claim_group: 'G1', claimed_by: 'CH-1' });
+  const unclaimed = row({ id: '3', child_id: 'CH-1', claim_group: 'G1', claimed_by: null });
+  const notShared = row({ id: '4', child_id: 'CH-1' });
+  assert.equal(Reporting.isClaimedElsewhere(won), false);
+  assert.equal(Reporting.isClaimedElsewhere(lost), true);
+  assert.equal(Reporting.isClaimedElsewhere(unclaimed), false);
+  assert.equal(Reporting.isClaimedElsewhere(notShared), false);
+});
+
+test('summarize counts a lost claim as assigned but neither pending nor missed', () => {
+  const t = Reporting.summarize([
+    row({ id: '1', child_id: 'CH-1', status: 'complete' }),
+    row({ id: '2', child_id: 'CH-2', claim_group: 'G1', claimed_by: 'CH-1' }),
+  ]);
+  assert.equal(t.assigned, 2, 'still counted — it was assigned once');
+  assert.equal(t.claimedBySibling, 1);
+  assert.equal(t.pending, 0, 'not counted as outstanding work the loser owes');
+  assert.equal(t.scorable, 1, 'excluded from the denominator, same treatment as events');
+  assert.equal(t.completionRate, 1, 'the loser is not penalized for a chore they never had a chance to do');
+});
+
 // ===========================================================  byCourse
 
 test('byCourse groups activities by course and buckets the rest', () => {
@@ -132,6 +157,18 @@ test('byCourse gives the events bucket no completion rate', () => {
   assert.equal(groups[0].completionRate, null);
 });
 
+test('byCourse excludes a lost claim from its group\'s completion rate denominator', () => {
+  const groups = Reporting.byCourse([
+    row({ id: '1', kind: 'chore', course_name: null, child_id: 'CH-1', status: 'complete' }),
+    row({ id: '2', kind: 'chore', course_name: null, child_id: 'CH-2', claim_group: 'G1', claimed_by: 'CH-1' }),
+  ]);
+  const chores = groups.find((g) => g.name === '(chores)');
+  assert.equal(chores.assigned, 2);
+  assert.equal(chores.claimedBySibling, 1);
+  assert.equal(chores.pending, 0);
+  assert.equal(chores.completionRate, 1);
+});
+
 // ================================================================  CSV
 
 test('toCsv quotes cells containing commas, quotes or newlines', () => {
@@ -144,6 +181,11 @@ test('toCsv quotes cells containing commas, quotes or newlines', () => {
 test('toCsv reports a rescinded row as rescinded rather than pending', () => {
   const csv = Reporting.toCsv([row({ rescinded_at: 5 })]);
   assert.ok(csv.split('\n')[1].includes('rescinded'));
+});
+
+test('toCsv reports a lost claim as claimed-by-sibling rather than pending', () => {
+  const csv = Reporting.toCsv([row({ child_id: 'CH-2', claim_group: 'G1', claimed_by: 'CH-1' })]);
+  assert.ok(csv.split('\n')[1].includes('claimed-by-sibling'));
 });
 
 test('toCsv emits a header even with no rows', () => {

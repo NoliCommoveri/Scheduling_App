@@ -333,9 +333,18 @@
   // `plannerMeta` into the row's own child-owned columns, so `assignments` is
   // now the only store this reads: a local override is just a column value,
   // not a second object merged in at read time.
+  //
+  // Shared Chores §6.3: `toState` also needs this device's own child id, to
+  // tell a self-held claim from a sibling's. `syncMeta.childId` is already
+  // stored by pairing (pairing.js), so this is a second singleton read
+  // alongside the existing `getAll` rather than a schema change — and it
+  // leaves `loadState`'s return shape at `{ rows }`, which CLAUDE.md §IV.B
+  // pins, untouched.
   function loadState() {
-    return getAll("assignments").then(function (rows) {
-      return g.AssignmentCore.toState(rows);
+    return Promise.all([getAll("assignments"), getSingleton("syncMeta")]).then(function (results) {
+      var rows = results[0];
+      var syncMeta = results[1];
+      return g.AssignmentCore.toState(rows, syncMeta && syncMeta.childId);
     });
   }
 

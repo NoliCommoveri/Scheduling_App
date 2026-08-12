@@ -91,7 +91,7 @@
 // instead of after all blocks. No file added or removed; planner-ui.js changed
 // contents only. Same v6/v10/v11 hazard: this handler is cache-first for the
 // shell, so a device left on v13 would keep seeing events sink to the bottom.
-const CACHE_NAME = "daily-plan-shell-v14";
+const CACHE_NAME = "daily-plan-shell-v15";
 
 const APP_SHELL = [
   "./",
@@ -113,6 +113,7 @@ const APP_SHELL = [
   "./js/pairing.js",
   "./js/plan-sync.js",
   "./js/outbox.js",
+  "./js/claim.js",
   "./js/theming.js",
   "./js/completion.js",
   "./js/deferment.js",

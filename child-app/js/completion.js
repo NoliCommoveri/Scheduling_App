@@ -56,6 +56,10 @@
   // Child Feedback Loop §5.3: `rawNote` is validated unconditionally (unlike
   // grade, it is never gated on capturesGrade — every completion may carry
   // one).
+  //
+  // Shared Chores §6.1: a `claim_group` row branches to the arbitrated path
+  // once validation passes — the two forms of completion differ only in
+  // whether the write is known to be safe before it happens.
   function completeItem(item, rawGrade, rawNote) {
     return g.DB.get("activityRecords", item.id).then(function (existing) {
       if (existing) return { ok: true, alreadyDone: true };
@@ -70,6 +74,8 @@
       var noteResult = C.validateNote(rawNote);
       if (!noteResult.ok) return { ok: false, noteError: noteResult.message };
       var note = noteResult.note;
+
+      if (item.claim_group != null) return completeClaim(item, grade, note);
 
       var today = g.DateUtil.today();
       var at = Date.now();
@@ -93,11 +99,63 @@
     });
   }
 
+  // A `claim_group` row's own child id, standing in for the actual sibling
+  // when this device lost — §0.7 forbids denormalizing a sibling's identity
+  // onto anything this device reads, and the loss response (§5.4) carries no
+  // id anyway. Only ever compared for equality against `selfChildId`
+  // (assignment-core.js isPlannable), so any value that cannot equal a real
+  // child id is correct; it is overwritten with the true value on the next
+  // `/api/plan` poll regardless.
+  var CLAIMED_ELSEWHERE_SENTINEL = "claimed-elsewhere";
+
+  // Shared Chores §5.7/§6.1 — the write *is* the network call. Nothing lands
+  // in IndexedDB until the server has answered, so there is no local state to
+  // unwind on a loss and no local state to leave dangling on a network
+  // failure: this simply rejects, and the caller (planner-ui's doComplete)
+  // reports it the same way it reports any other failed tap.
+  function completeClaim(item, grade, note) {
+    return g.Claim.take(item, grade, note).then(function (res) {
+      if (!res.claimed) {
+        // §6.2 — no local record, no ledger row, no streak call: this device
+        // did nothing. The cached row is patched so the planner (§6.3) and
+        // Completed view (§6.2) read the outcome before the next poll rather
+        // than after it.
+        return g.DB.setAssignmentFields(item.id, { claimed_by: CLAIMED_ELSEWHERE_SENTINEL })
+          .then(function () { return { ok: true, claimedElsewhere: true }; });
+      }
+
+      var today = g.DateUtil.today();
+      var at = Date.now();
+      var record = C.buildActivityRecord(item.id, today, grade, note);
+      var earn = C.buildEarnEntry(C.mintEntryId(), item.reward_category, today, item.id, item.reward_amount, at);
+
+      return g.DB.put("activityRecords", record)
+        .then(function () { return g.DB.put("rewardEntries", earn); })
+        // The server already holds this completion — `res.assignment` is its
+        // own updated row (§5.4 step 4), so the cache is patched from it
+        // directly rather than reconstructed. No completion is enqueued: a
+        // queued duplicate would be a second write of the same fields under
+        // a different path. The reward entry *is* enqueued, same as any
+        // other completion (§6.1) — it is client-minted and idempotent on
+        // its id, and the claim route never touches the ledger.
+        .then(function () { return g.DB.setAssignmentFields(item.id, res.assignment || {}); })
+        .then(function () { return g.Outbox.enqueueReward(earn); })
+        .then(notifyStreak)
+        .then(function () { return { ok: true, alreadyDone: false }; });
+    });
+  }
+
   // Child Feedback Loop TDS §3.3 — reverses everything completeItem granted,
   // in the same action: the reward is clawed back and the streak advance
   // (§3.4) is walked back. With both reversals intact, Undo needs no parent
   // PIN (§0.1) — there is nothing left to bank, so there is nothing to game.
+  //
+  // Shared Chores §6.5 — a claim row releases the group first and only
+  // proceeds with the local reversal once the server confirms it. A
+  // claimedCard (the loser's view) carries no Undo control at all (§6.2), so
+  // this branch is only ever reached by the child who won.
   function undoItem(item) {
+    if (item.claim_group != null) return undoClaim(item);
     return g.DB.get("activityRecords", item.id).then(function (existing) {
       // Only a live 'complete' row can be undone. A 'waived' row is left
       // untouched — no Undo button is rendered for one either (§3.2), and
@@ -137,6 +195,40 @@
         .then(function () { return g.Outbox.enqueueReward(reversal); })
         .then(notifyStreakUndo)
         .then(function () { return { ok: true }; });
+    });
+  }
+
+  // Shared Chores §6.5 — the release completes on the server first (it is
+  // what gives the chore back to the sibling); the local reversal only runs
+  // once that is confirmed. A failed release — the group was already
+  // released, or the arbitration no longer agrees this device holds it —
+  // leaves the completion standing rather than un-completing a claim the
+  // server still holds, which would show the chore as available to a child
+  // who cannot actually claim it.
+  function undoClaim(item) {
+    return g.DB.get("activityRecords", item.id).then(function (existing) {
+      if (!existing || existing.status !== "complete") return { ok: false };
+
+      return g.Claim.release(item).then(function (res) {
+        if (!res.released) return { ok: false };
+
+        var today = g.DateUtil.today();
+        var at = Date.now();
+        var amount = typeof item.reward_amount === "number" && isFinite(item.reward_amount) ? item.reward_amount : 1;
+        var reversal = C.buildEntry(C.mintEntryId(), item.reward_category, -amount, "adjustment", today, at, item.id);
+
+        return g.DB.del("activityRecords", item.id)
+          .then(function () { return g.DB.put("rewardEntries", reversal); })
+          // The release route already returned the caller's own row to
+          // pending server-side (§5.5); the cache is patched straight from
+          // its response rather than reconstructed, same as the win branch
+          // of completeClaim. No completion is enqueued — nothing is left
+          // to tell the server, it already knows.
+          .then(function () { return g.DB.setAssignmentFields(item.id, res.assignment || {}); })
+          .then(function () { return g.Outbox.enqueueReward(reversal); })
+          .then(notifyStreakUndo)
+          .then(function () { return { ok: true }; });
+      });
     });
   }
 
