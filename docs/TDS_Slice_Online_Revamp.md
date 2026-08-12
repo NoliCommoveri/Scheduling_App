@@ -95,6 +95,27 @@ files having a stake in it, not a deletion with nothing left to read — it is s
 own open item rather than carried under a "shim collapse" that is now finished. No API,
 schema, credential or rendering behaviour changed.
 
+**Amended a ninth time 2026-08-11**, authorized in-session, closing the item split out of
+the eighth amendment: **folding `plannerMeta` into the assignment row's own columns.** This
+was always the write-path change the shim collapse deferred, not a deletion — `deferment.js`,
+`planner-ui.js`, `db.js` and `outbox-core.js` all had a stake in it. IndexedDB reaches v9:
+an override this device wrote but had not yet drained is carried onto the `assignments` row
+it overrides before `plannerMeta` is dropped (`foldPlannerMetaIntoAssignments`), and an
+override with no matching row — the assignment had already fallen out of the cache — is
+dropped with it. Going forward, a reschedule or a block/order change writes
+`deferred_to`/`child_block_hint`/`child_sort_order` straight onto the cached row
+(`DB.setAssignmentFields`), and `DB.loadState()` reads `assignments` alone — the merge
+`applyLocalMeta` used to do at every read is gone with the second store it was merging in.
+The race that merge existed to survive is handled the other way now: `DB.applyPlan`, which
+ingests each `/api/plan` poll, reapplies any planner-column write still sitting in the
+outbox on top of an incoming row before it is stored, so a poll landing before the outbox
+drains cannot silently revert a deferral or a reorder the child just made.
+`OutboxCore.completionFieldsFromOverride`/`columnsFromCompletionFields` hold that
+translation, in both directions, in the one place it can't drift. §8.1 and §8.2 are updated
+to say this is done; §14's entry is retained rather than deleted, per its own convention. No
+API, schema or credential behaviour changed — the assignment row already carried these
+columns (§3.3); only where the client stages a write ahead of the network changed.
+
 **Applies to:** Both apps, the Worker, and the interchange layer between them.
 **Supersedes:** `TDS_Slice_D1_Sync_Management_App.md` (the mirror becomes a
 curriculum-only backup), `Interchange_Contract.md` (replaced by §5's API),
@@ -786,13 +807,13 @@ Balance display reads the local cache; the server's `SUM` is authoritative on re
 ### 8.1 IndexedDB
 
 *(Headed "v3" when written; the store list below is what matters, and the version reached
-**v7** on 2026-08-11 with the ledger collapse. Versions landed one phase at a time: v3
+**v9** on 2026-08-11 with the `plannerMeta` fold. Versions landed one phase at a time: v3
 `syncMeta`, v4 `assignments`, v5 `outbox`, v6 `rejections`, v7 `rewardEntries`.)*
 
 | Dropped | Added |
 |---|---|
 | `activities`, `chores`, `events` | `assignments` (keyPath `id`) — **done, v8.** Migrated data: none. Phase 5 had already deleted the packet import that was their last writer, and phase 2 removed their last reader, so the v8 upgrade simply deletes the three (already empty) stores. |
-| `plannerMeta` | — folded into assignment columns — **not done, and not part of the §14 shim collapse.** `plannerMeta` stages this device's own unflushed overrides ahead of the outbox uploading them; folding it away means writing `child_block_hint`/`child_sort_order`/`deferred_to` straight onto the cached `assignments` row instead, which is a write-path change, not a store this collapse's callers stopped needing. Remains open. |
+| `plannerMeta` | — folded into assignment columns — **done, v9.** An override this device wrote but had not yet drained is carried onto the `assignments` row it overrides (`child_block_hint`/`child_sort_order`/`deferred_to`) before the store is dropped; an override with no matching row is dropped with it. Local writes now go straight onto the cached row (`DB.setAssignmentFields`) instead of a separate keyed store, and an incoming `/api/plan` row is patched with anything still queued in the outbox before it overwrites the cache (`DB.applyPlan`), so a poll racing the drain cannot revert a pending deferral or reorder. |
 | `activityRecords` | — folded into `status`/`completed_at`/`grade` |
 | `rewardLedgerSnapshot`, `rewardLedgerTail` | `rewardEntries` (keyPath `id`) — **done, v7.** The key is the client-minted entry id the outbox uploads (§5.5), so the local row and the server row are one row. Balance is `CompletionCore.balanceOf`, never stored. Migrated, not dropped: the v7 upgrade rewrites the snapshot as a single opening entry and each tail row as a signed entry, inside the versionchange transaction, so an interrupted upgrade retries against untouched data. |
 | — | `outbox` (autoIncrement) |
@@ -842,10 +863,11 @@ column**, every one of them lifted out of `payload`:
 untouched — so the decorated object is still the row, with additions, and nothing has to know
 that a column was reinterpreted on the way past.
 
-An override this device has written but not yet drained lives in `plannerMeta` in the
-pre-revamp vocabulary; `loadState()` overlays it onto the row **as the column it is on its
-way to becoming**, field by field, so a pending deferral reaches the planner without a
-second shape surviving alongside the first.
+*(As of the ninth amendment this is no longer how an unflushed override reaches the planner
+— see below. It stood while `plannerMeta` was still live: an override this device had
+written but not yet drained lived there in the pre-revamp vocabulary, and `loadState()`
+overlaid it onto the row as the column it was on its way to becoming, field by field, so a
+pending deferral reached the planner without a second shape surviving alongside the first.)*
 
 **Phase 3 dropped the store shape, not `plannerMeta` itself.** The four legacy `loadState()`
 keys — `activities`, `chores`, `events`, `meta` — and the IndexedDB stores the first three
@@ -864,10 +886,29 @@ events; both had been no-ops since Phase 5 — nothing wrote either store for a
 server-assigned completion — so Wipe now runs against `activityRecords` alone, which is the
 part of it that ever cleared anything.
 
-`plannerMeta` itself is not part of phase 3. §8.1's table names folding it into
-`child_block_hint`/`child_sort_order`/`deferred_to` as the eventual shape, but that means
-writing local overrides straight onto the cached `assignments` row instead of a keyed store —
-a write-path change, not a shim with idle callers. It stays open.
+`plannerMeta` itself was not part of phase 3 — §8.1's table named folding it into
+`child_block_hint`/`child_sort_order`/`deferred_to` as the eventual shape, but that meant
+writing local overrides straight onto the cached `assignments` row instead of a keyed store,
+a write-path change rather than a shim with idle callers. **Done, ninth amendment, IndexedDB
+v9.** `deferment.js` and `planner-ui.js` now call `DB.setAssignmentFields(id, patch)` with a
+patch already in column vocabulary, which reads the cached row, merges the patch in, and
+writes it back — no separate store, no second vocabulary. `DB.loadState()` drops the
+`plannerMeta`/`applyLocalMeta` merge entirely and reads `assignments` alone, since a local
+override is now just a value already on the row it describes.
+
+That removes the reason `applyLocalMeta` existed — reapplying an unflushed override at every
+read — but the race it was quietly covering is real: `plan-sync.js`'s poll can land between a
+local write and the outbox draining it, and a naive `store.put()` of the server's copy would
+overwrite the column the child just set with whatever the server last knew. `DB.applyPlan`
+closes that the other way: before storing an incoming row it looks up anything still queued
+for that assignment id in the `outbox` store, keeps only the planner columns
+(`OutboxCore.columnsFromCompletionFields` — `status`/`completedAt`/`grade` are excluded,
+since completion state lives in `activityRecords` and was never staged here), and reapplies
+them on top. The outbox is already the durable record of what has not reached the server;
+this reads it as that, rather than duplicating it in a second store.
+`OutboxCore.completionFieldsFromOverride` (column → wire) and `columnsFromCompletionFields`
+(wire → column) are exact inverses of one shared map, so the outgoing request and the
+ingest-time reapplication cannot name a field differently from each other.
 
 ### 8.3 Freshness
 
@@ -1120,8 +1161,9 @@ The current app keeps working throughout.
   object per assignment — `decorate()` returns the row with the pre-revamp *names* added
   alongside its columns, so there is one object per assignment carrying its own overrides.
   `receiptIndex` and the `blockHint` alias are gone with the lookups that needed them, and
-  `DB.loadState()` overlays an unflushed `plannerMeta` record as the columns it is on its
-  way to becoming rather than as a parallel map.
+  `DB.loadState()` overlaid an unflushed `plannerMeta` record as the columns it was on its
+  way to becoming rather than as a parallel map. *(That overlay is itself gone as of the
+  ninth amendment — the columns it wrote onto are all the row has now.)*
 
   **Done (phase 2): the render names.** `planner-ui.js` renders from the §3.3 columns —
   `course_name`, `sequence_no`, `activity_type` — and `completion.js` builds its earn entry
@@ -1150,14 +1192,32 @@ The current app keeps working throughout.
   > The **local ledger** half of this item, with which it was originally bundled, is
   > **done** — see the third amendment at the head of this document.
 
-  **Split out, still open: folding `plannerMeta` into the columns.** §8.1's table names this
-  as the eventual shape — `child_block_hint`/`child_sort_order`/`deferred_to` written straight
-  onto the cached `assignments` row instead of staged in a separate keyed store — but it is a
-  write-path redesign (`deferment.js`, `planner-ui.js`'s `setMeta`, `db.js`'s `setMeta`/
-  `pruneMeta`, `outbox-core.js`'s `META_TO_COLUMN` translation all have a stake in it), not a
-  deletion with idle callers the way the store drop was. `plannerMeta` is still where this
-  device's own overrides are staged ahead of the outbox uploading them, and it stays that way
-  until someone picks this up on its own terms.
+  **Split out, folding `plannerMeta` into the columns — done, ninth amendment.** §8.1's
+  table had named this as the eventual shape — `child_block_hint`/`child_sort_order`/
+  `deferred_to` written straight onto the cached `assignments` row instead of staged in a
+  separate keyed store — and unlike the store drop above, it was a write-path redesign with
+  several files holding a stake in it, which is why it was split out rather than folded into
+  a "shim collapse" that was otherwise finished.
+
+  IndexedDB reaches v9: `foldPlannerMetaIntoAssignments` carries any override this device had
+  written but not yet drained onto the `assignments` row it overrides, then drops the store
+  (an override with no matching row — the assignment had already aged out of the cache — is
+  dropped with it, same as `pruneMeta` used to do at runtime). `deferment-core.js`'s
+  `buildReschedulePatch` and `planner-ui.js`'s block-picker/reorder handlers now build a patch
+  keyed by column name (`deferred_to`, `child_block_hint`, `child_sort_order`) instead of the
+  pre-revamp `deferredDate`/`blockHint`/`sortOrder` shape; `db.js`'s `setMeta`/`pruneMeta` pair
+  is replaced by one function, `setAssignmentFields`, a read-merge-write directly against the
+  cached row. `DB.loadState()` no longer merges a second store — `AssignmentCore.applyLocalMeta`
+  and its `META_TO_COLUMN` table are deleted along with the read-time merge they existed for.
+
+  What replaces that merge is a write-time one: `DB.applyPlan`, which ingests every
+  `/api/plan` poll, now reapplies any planner-column write still sitting in the `outbox` store
+  on top of an incoming row before storing it, so a poll that lands before the outbox drains
+  cannot silently overwrite a deferral or reorder the child just made with the server's
+  not-yet-caught-up copy. `outbox-core.js`'s `META_TO_COLUMN` is replaced by `PLANNER_COLUMNS`
+  plus its two directions, `completionFieldsFromOverride` (column → the wire's camelCase) and
+  `columnsFromCompletionFields` (the reverse, used by `applyPlan`) — one map, so the outgoing
+  translation and the ingest-time reapplication cannot name a field differently.
 
 - **Whether a reward balance floors at zero.** The device folds a category's entries with a
   per-step zero floor, so an adjustment large enough to take a category negative leaves the

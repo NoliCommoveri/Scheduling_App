@@ -30,27 +30,46 @@
     "status", "completedAt", "grade", "deferredTo", "childBlockHint", "childSortOrder"
   ];
 
-  // plannerMeta is the pre-revamp local shape for the child's own overrides
-  // (deferment-core's { deferredDate }, planner-ui's { blockHint, sortOrder }).
-  // §3.3.3 gives each of the latter two its own column precisely so the
-  // parent's intent and the child's adjustment never contend. This is the
-  // rename between the two vocabularies, kept in one place so deferment.js and
-  // planner-ui.js cannot drift apart on it. §14 phase 3 dropped the stores
-  // this rename has nothing to do with (`activities`/`chores`/`events`);
-  // plannerMeta itself is still live, and this translation with it.
-  var META_TO_COLUMN = {
-    deferredDate: "deferredTo",
-    blockHint: "childBlockHint",
-    sortOrder: "childSortOrder"
+  // §3.3's child-owned planner columns, and the camelCase name each is sent
+  // under (§5.5 / the Worker's own ASSIGNMENT_COMPLETION_FIELDS map). §14
+  // folded `plannerMeta` into these columns directly — deferment.js and
+  // planner-ui.js now write `deferred_to`/`child_block_hint`/`child_sort_order`
+  // straight onto the cached `assignments` row (db.js's setAssignmentFields)
+  // instead of staging them under a separate vocabulary in a separate store.
+  // This map is the one place either direction of the rename is allowed to
+  // happen, so the two sides of the fold cannot drift apart:
+  // completionFieldsFromOverride turns a column patch into a request body,
+  // and columnsFromCompletionFields runs it in reverse so db.js's applyPlan
+  // can reapply a queued write the server has not echoed back yet.
+  var PLANNER_COLUMNS = {
+    deferred_to: "deferredTo",
+    child_block_hint: "childBlockHint",
+    child_sort_order: "childSortOrder"
   };
+  var PLANNER_FIELDS = Object.keys(PLANNER_COLUMNS).reduce(function (acc, column) {
+    acc[PLANNER_COLUMNS[column]] = column;
+    return acc;
+  }, {});
 
-  function completionFieldsFromMeta(patch) {
+  function completionFieldsFromOverride(patch) {
     var fields = {};
     Object.keys(patch || {}).forEach(function (key) {
-      var column = META_TO_COLUMN[key];
-      if (column) fields[column] = patch[key];
+      var field = PLANNER_COLUMNS[key];
+      if (field) fields[field] = patch[key];
     });
     return fields;
+  }
+
+  // The reverse translation, keeping only the fields that are planner columns
+  // and are actually present. Used to carry a still-queued local write onto an
+  // incoming `/api/plan` row before it overwrites the cache (db.js's applyPlan).
+  function columnsFromCompletionFields(fields) {
+    var patch = {};
+    Object.keys(fields || {}).forEach(function (key) {
+      var column = PLANNER_FIELDS[key];
+      if (column && fields[key] !== undefined) patch[column] = fields[key];
+    });
+    return patch;
   }
 
   // Drops anything outside CHILD_FIELDS and anything undefined. `null` is kept
@@ -185,7 +204,8 @@
   g.OutboxCore = {
     MAX_BATCH: MAX_BATCH,
     CHILD_FIELDS: CHILD_FIELDS,
-    completionFieldsFromMeta: completionFieldsFromMeta,
+    completionFieldsFromOverride: completionFieldsFromOverride,
+    columnsFromCompletionFields: columnsFromCompletionFields,
     sanitizeFields: sanitizeFields,
     buildCompletionOp: buildCompletionOp,
     buildRewardOp: buildRewardOp,

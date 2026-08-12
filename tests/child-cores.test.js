@@ -60,12 +60,32 @@ test('sanitizeFields drops undefined but keeps null', () => {
   assert.deepEqual(out, { deferredTo: null, status: 'complete' });
 });
 
-test('completionFieldsFromMeta renames plannerMeta to the column vocabulary', () => {
+test('completionFieldsFromOverride renames a planner-column patch to the wire vocabulary', () => {
+  // §14: plannerMeta is folded away, so the patch a caller writes onto the
+  // cached row is already in column vocabulary — this only has to rename it
+  // for the request body, not translate a third, pre-revamp shape.
   assert.deepEqual(
-    OutboxCore.completionFieldsFromMeta({ deferredDate: '2026-08-14', blockHint: 'Afternoon', sortOrder: 5 }),
+    OutboxCore.completionFieldsFromOverride({ deferred_to: '2026-08-14', child_block_hint: 'Afternoon', child_sort_order: 5 }),
     { deferredTo: '2026-08-14', childBlockHint: 'Afternoon', childSortOrder: 5 }
   );
-  assert.deepEqual(OutboxCore.completionFieldsFromMeta({ unknownKey: 1 }), {});
+  assert.deepEqual(OutboxCore.completionFieldsFromOverride({ unknownKey: 1 }), {});
+});
+
+test('columnsFromCompletionFields is completionFieldsFromOverride in reverse', () => {
+  // db.js's applyPlan uses this to reapply a still-queued local write onto an
+  // incoming /api/plan row, so it must exactly undo the outgoing rename.
+  const fields = { deferredTo: '2026-08-14', childBlockHint: 'night', childSortOrder: 5, status: 'complete' };
+  assert.deepEqual(
+    OutboxCore.columnsFromCompletionFields(fields),
+    { deferred_to: '2026-08-14', child_block_hint: 'night', child_sort_order: 5 }
+  );
+  // status/completedAt/grade are not planner columns on the cached row —
+  // completion state lives in activityRecords — so they must not come back.
+  assert.ok(!('status' in OutboxCore.columnsFromCompletionFields(fields)));
+});
+
+test('columnsFromCompletionFields drops an explicit undefined', () => {
+  assert.deepEqual(OutboxCore.columnsFromCompletionFields({ deferredTo: undefined }), {});
 });
 
 test('buildCompletionOp refuses an op with nothing writable in it', () => {
@@ -264,44 +284,6 @@ test('toState no longer mints a second name for any column', () => {
   assert.equal(item.reward_category, 'RC-1');
   assert.equal(item.reward_amount, 5);
   assert.equal(item.expected_duration_min, 20);
-});
-
-test('applyLocalMeta writes a pending override as the column it becomes', () => {
-  // The overlay DB.loadState() runs. A deferral that has not drained yet has to
-  // reach the planner, or the child sees the item back on the day they moved it
-  // off until the network returns.
-  const [merged] = AssignmentCore.applyLocalMeta(
-    [row({ deferred_to: null, child_sort_order: null, child_block_hint: null })],
-    [{ id: 'a1', deferredDate: '2026-08-14', sortOrder: 7, blockHint: 'night' }]
-  );
-  assert.equal(merged.deferred_to, '2026-08-14');
-  assert.equal(merged.child_sort_order, 7);
-  assert.equal(merged.child_block_hint, 'night');
-  assert.equal(PlannerCore.effectiveDueDate(merged), '2026-08-14');
-  assert.equal(PlannerCore.effectiveSortKey(merged), 7);
-  assert.equal(PlannerCore.effectiveBlock(merged), 'night');
-});
-
-test('applyLocalMeta overlays field by field, and leaves other rows alone', () => {
-  // A local record only ever carries the fields that were written; the server's
-  // value for every other column has to survive.
-  const source = row({ deferred_to: '2026-08-12', child_sort_order: 3 });
-  const other = row({ id: 'a2' });
-  const [merged, untouched] = AssignmentCore.applyLocalMeta(
-    [source, other], [{ id: 'a1', sortOrder: 7 }]
-  );
-  assert.equal(merged.deferred_to, '2026-08-12', 'unmentioned column keeps the server value');
-  assert.equal(merged.child_sort_order, 7);
-  assert.equal(source.child_sort_order, 3, 'the cached row is not mutated');
-  assert.equal(untouched, other, 'a row with no override is passed straight through');
-});
-
-test('applyLocalMeta ignores an orphaned override', () => {
-  // plan-sync prunes rows that were rescinded or fell out of the window; an
-  // override left pointing at one must not resurrect anything.
-  const rows = AssignmentCore.applyLocalMeta([row()], [{ id: 'gone', sortOrder: 7 }]);
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].child_sort_order, null);
 });
 
 test('parsePayload survives null, objects and malformed JSON', () => {
