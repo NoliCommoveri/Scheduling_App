@@ -12,14 +12,12 @@
 
   var C = g.ExportCore;
 
+  // The unfiltered, decorated index — the same join source the Completed view
+  // uses, and for the same reason: an eligible record is by definition resolved,
+  // so the plannable set (`DB.loadState()`) is exactly the wrong side of §6.4 to
+  // look it up in.
   function loadAssignmentMap() {
-    return g.DB.getAll("assignments").then(function (rows) {
-      var byId = Object.create(null);
-      (rows || []).forEach(function (row) {
-        if (row && row.id) byId[row.id] = g.AssignmentCore.decorate(row);
-      });
-      return byId;
-    });
+    return g.DB.loadAssignmentIndex();
   }
 
   // Rows and the exact record objects they came from, kept in lockstep — a

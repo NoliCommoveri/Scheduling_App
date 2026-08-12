@@ -79,7 +79,15 @@
 // retryable class the old shell already understands, so a device that has not
 // picked up this cache yet keeps its queue instead of dropping it. The bump is
 // what gets the improvement onto the device, not what prevents a regression.
-const CACHE_NAME = "daily-plan-shell-v12";
+// v13: the Completed view's join is repaired. No file added or removed;
+// assignment-core.js, db.js, planner-ui.js, completion.js and export.js changed
+// contents. A device left on v12 keeps a Completed tab that empties out roughly
+// a minute after each completion — it joins against the plannable row set,
+// which by §6.4 never contains a completed row once the server has echoed it
+// back. The bump matters more than usual for the Undo half: on the v12 shell,
+// undoing an item now leaves it in no view at all until the drain lands,
+// because that gap was unreachable only while the tab itself was empty.
+const CACHE_NAME = "daily-plan-shell-v13";
 
 const APP_SHELL = [
   "./",
