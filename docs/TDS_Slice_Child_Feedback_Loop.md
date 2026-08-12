@@ -1,11 +1,11 @@
 # Technical Design Specification — Slice
 
-## Scope: Child Feedback Loop — Undo, Course-Ordered Filtering, Completion Notes, Assignment Messages (Child App, + minimal Management App read-side)
+## Scope: Child Feedback Loop — Undo, Course-Ordered Filtering, Completion Notes, Assignment Messages, Date Header (Child App, + minimal Management App read-side)
 
 **Status:** Drafted 2026-08-12, in-session with Ray. The four decisions in §0 were made in-session
 (AskUserQuestion) and are locked; the rest of this document is the design that follows from them,
 drafted for review before build starts. Per `CLAUDE.md` §II, this document is what makes each
-feature below buildable — nothing in it should be implemented until it is confirmed against §10's
+feature below buildable — nothing in it should be implemented until it is confirmed against §11's
 open items.
 
 **Applies to:** Child App primarily. Management App gains a small read-only surface for Notes
@@ -26,16 +26,16 @@ shape it already established.
    and the streak advance is walked back (§3.4). There is nothing left to bank, so there is nothing
    to game. This is a property of the design rather than an assumption about the child — if either
    reversal were dropped, Undo would become a way to keep a reward or a streak day for work that
-   was not done, and the PIN question would have to be reopened (§10).
+   was not done, and the PIN question would have to be reopened (§11).
 2. **"Subject" is dropped as a grouping level.** The Management App's course records do carry a
    free-text `subject` field (`management-app/js/courses.js:106`, `children.js:717`), but it is
    never carried onto an `assignments` row today — the Commit builder (`management-app/js/packet.js`)
    only snapshots `courseName`, and the `assignments` schema has no `subject` column. Wiring
    `subject` through Commit into a new column, and re-deriving the Child App's grouping around it,
-   is real but separate scope (§10). This slice sorts/groups by `course_name` only.
+   is real but separate scope (§11). This slice sorts/groups by `course_name` only.
 3. **Assignment Messages are one-way for v1.** Child → parent only. The parent reads in a new
    Management App inbox; there is no reply channel and the Child App does not poll for one.
-   Two-way threading is future scope (§10).
+   Two-way threading is future scope (§11).
 4. **The Completed view shows the real device-local day only.** No historical browsing, no undo of
    a past day's completion. This keeps Undo's blast radius to "the thing I just did," and avoids a
    policy question about how far back a reward can be reversed. "Real device-local day" is meant
@@ -46,12 +46,17 @@ shape it already established.
 
 ## 1. Why a slice, not the full TDS
 
-All four features are additive to the shared-table model `TDS_Slice_Online_Revamp.md` already
-locked in: two need no schema change at all, one adds a single nullable column, and one adds a
+All five features are additive to the shared-table model `TDS_Slice_Online_Revamp.md` already
+locked in: three need no schema change at all, one adds a single nullable column, and one adds a
 single new append-only table following the exact pattern `reward_entries` already established
 (client-minted id, idempotent insert, parent reads / child appends). Nothing here changes an
 existing column's ownership, an existing route's contract, or the outbox's drain mechanics —
 it extends all three in place.
+
+The fifth (§7) is smaller than the rest and is here rather than on its own because it is the
+visible face of a constraint the other four depend on: that "today" is the device's local calendar
+day and not a UTC one. §7.1 states that rule and shows where it is already held; §7.2 puts the date
+on screen, which is the only way a family can tell when it stops being held.
 
 This slice fixes, per feature: the schema delta (if any), the new/changed routes and their
 validation, the outbox integration, the UI flow, and what's explicitly deferred.
@@ -248,7 +253,7 @@ streak resets — which is the honest outcome, and one the current forward walk 
 entirely.
 
 **SRS dependency.** FR-2 governs the advance path and stays as written. The reversal is a second,
-narrower rule that writes on a breaking day, so SRS Module 7 needs a new FR covering it (§9). This
+narrower rule that writes on a breaking day, so SRS Module 7 needs a new FR covering it (§10). This
 is a genuine addition to Module 7's contract, not an offline-vs-online mismatch of the kind
 `CLAUDE.md` §V.A waves through.
 
@@ -294,13 +299,13 @@ Separately: `sequence_no` is parent-authored curriculum order (Lesson 1, 2, 3…
 child freely reorder *within* a course arguably fights that ordering rather than complementing it.
 **Recommendation, not yet decided:** hide the up/down controls for any item that has a
 `sequence_no`, and keep them only for course-less or `sequence_no`-less items, where nothing
-authoritative is being overridden. This needs a yes/no before build (§10).
+authoritative is being overridden. This needs a yes/no before build (§11).
 
 ### 4.4 Views affected
 
 `School` tab and the School half of `Today`. `Subjects` tab is now redundant with the new grouping
 minus the block level — **recommendation:** retire it rather than maintain two overlapping views,
-but this is a product call, not a technical one (§10).
+but this is a product call, not a technical one (§11).
 
 ---
 
@@ -384,7 +389,7 @@ actually follows.
 
 The general question this exposes — that any unexpected D1 error inside `handleCompletions`'
 per-row loop escalates to a request-level 500, defeating the per-row rejection design the Online
-Revamp's §5.6 put there deliberately — is not specific to this column and is not fixed here (§10).
+Revamp's §5.6 put there deliberately — is not specific to this column and is not fixed here (§11).
 
 ---
 
@@ -451,7 +456,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_assignment ON assignment_messages (assig
 ### 6.4 What v1 deliberately does not do
 
 No reply visible to the child, no read receipt shown child-side, no polling for new messages. All
-three are the natural v2 once one-way is proven (§10).
+three are the natural v2 once one-way is proven (§11).
 
 ### 6.5 Management App
 
@@ -465,7 +470,98 @@ inbox UI is included.
 
 ---
 
-## 7. Column/table ownership — additions to the existing table
+## 7. Feature E — Date header, and the date basis behind it
+
+### 7.1 The basis: device-local, never UTC
+
+Every calendar day in this system is the **device-local** day, derived from local clock components
+— never from a UTC instant, and never from the server.
+
+This is not a preference. The family is in Central Time, so a UTC-derived calendar day rolls over
+at 18:00 CST (19:00 CDT). Anything that took `new Date().toISOString().slice(0, 10)` as "today"
+would, from six in the evening onward, stamp completions with tomorrow's date, file them against
+tomorrow's plan, drop them out of a Completed view bounded to today, and count them toward
+tomorrow's streak. Every school-night evening is inside that window. It is the single most likely
+way for this slice's date handling to be wrong, and it is wrong silently.
+
+The rule holds in the code as it stands:
+
+| Site | Derivation |
+|---|---|
+| `child-app/js/date-util.js:9-14` (`localISODate`) | `getFullYear` / `getMonth` / `getDate` — local |
+| `date-util.js:22-27` (`addDays`) | reconstructs from local y/m/d parts rather than parsing as UTC |
+| `management-app/js/reporting.js:32-35` | local components |
+| `management-app/js/packet.js:58` | local components |
+| `management-app/js/assignments.js:48-51` | local components |
+
+`DateUtil` is the Child App's single source of truth for this and every module reads it rather than
+re-deriving (`date-util.js:1-4`). The rule is recorded here because it is invisible when correct
+and costly when not: a `toISOString().slice(0, 10)` looks like a tidy one-liner and is the natural
+thing to reach for.
+
+**The Worker is UTC and must never be the source of a calendar day.** Cloudflare Workers run with
+`TZ=UTC`, so any day the server derives is a UTC day. One such derivation exists —
+`defaultPlanRange()` (`worker/index.js:927-934`) — and it is acceptable only because of what it is
+used for: a −7/+14-day fallback window, where a one-day skew at the edges changes nothing, and one
+the Child App never reaches, since `plan-sync.js` always sends an explicit `from`/`to` computed
+from the device's own `DateUtil.today()` (`plan-sync.js:33-36`, `140`). It must not be narrowed,
+and nothing that decides what "today" *is* may be added beside it. Server-side timestamps
+(`Date.now()`, `packet.js:517`'s `generatedAt`) are instants, not calendar days, and are correctly
+UTC.
+
+**What is actually at risk is the device's timezone, not the code.** "Device-local" equals Central
+only while the device is set to Central. Nothing validates that today. A tablet set up in the wrong
+zone, or left on automatic timezone after travel, shifts every date the child reads and every date
+they write — consistently, and therefore invisibly, because each surface agrees with the others.
+§7.2 is the cheapest mitigation available: a wrong date cannot be noticed until something displays
+it. Anything stronger is §11.
+
+For this slice specifically, §3.2's Completed filter, §3.4's `dayStatus(today)`, and §0.4's bound
+all read the same device-local day through the same helper, so they cannot disagree with one
+another. They can only be wrong together, and only for the reason above.
+
+### 7.2 The header
+
+The Child App displays the current date near the top of the screen, in the daily chrome above the
+view tabs — the same region `previewBanner` occupies (`planner-ui.js:241`).
+
+- **Value:** the real device-local date, `g.DateUtil.localISODate(new Date())`, formatted for a
+  child to read at a glance rather than as an ISO string — weekday, month, day (*"Wednesday,
+  August 12"*), via the `toLocaleDateString` options `previewBanner` already uses.
+- **Not `state.today`.** The header answers "what day is it," not "what day am I looking at." The
+  preview banner answers the second question and only appears when the two differ, so during a
+  preview the child sees the real date in the header and the previewed date in the banner. That is
+  the intended reading: the header is a clock, the banner is a viewport. Giving the header the view
+  date instead would leave no always-true date anywhere on screen, which is the one thing §7.1
+  needs it for.
+- **Re-derived every `render()`.** No cached value and no stored state — the header must not be
+  able to drift from the clock it is reporting.
+
+Three reasons it earns the space, beyond being conventional:
+
+1. It is the only surface on which a mis-set device timezone becomes visible (§7.1). A parent
+   glancing at the child's tablet sees the wrong day immediately; without it, the first symptom is
+   a completion filed against the wrong date weeks later.
+2. §0.4 and §3.2 bound the Completed view and Undo to "today." A child cannot reason about a bound
+   they cannot see, and "why did yesterday's work disappear" is exactly the question the header
+   pre-empts.
+3. It gives the preview banner a baseline to contrast against. Today the banner names a date with
+   nothing on screen to compare it to.
+
+**Midnight rollover, and why the header surfaces it.** `state.today` is set once at init
+(`planner-ui.js:63`) and only ever changes through the preview affordance or `backToToday()`. A
+device left open overnight therefore keeps showing yesterday's plan until something reloads it.
+A header re-derived each render will disagree with that stale plan — correctly, and visibly. This
+slice does not fix the rollover itself (that is a refresh-scheduling question, §11); it makes the
+existing behaviour observable instead of silent, which is a strict improvement over the current
+state where nothing on screen contradicts a day-old plan.
+
+**Scope.** Pure chrome: `planner-ui.js` only. No schema, no migration, no Worker change, no new
+state, no store. It is the smallest item in the slice and has no dependency on the other four.
+
+---
+
+## 8. Column/table ownership — additions to the existing table
 
 | Column/table | Owner | Notes |
 |---|---|---|
@@ -477,7 +573,7 @@ No existing column changes ownership. No existing route's contract changes.
 
 ---
 
-## 8. Outbox additions
+## 9. Outbox additions
 
 | Op kind | New/existing | Dedup key | Merge behaviour |
 |---|---|---|---|
@@ -491,28 +587,31 @@ op kind — which is the reason Feature A needs no Worker change at all.
 
 ---
 
-## 9. Build phasing
+## 10. Build phasing
 
 Per `CLAUDE.md` §V.A's 2-3 hour halt threshold, this is not one session:
 
-1. **Feature B (course-ordered filtering)** — no schema, no Worker change, `planner-core.js` +
-   `planner-ui.js` only. Smallest, do first. §4.3's reorder-scope question blocks final polish
-   but not a first pass.
-2. **Feature A (Completed view + Undo)** — no schema, no Worker change beyond what's already
+1. **Feature E (date header)** — `planner-ui.js` only, no dependency on anything else here.
+   Genuinely first: it is an hour's work, and it puts the date on screen *before* Features A and B
+   start reasoning about which day is which, so a mis-set device timezone shows up during the build
+   rather than after it.
+2. **Feature B (course-ordered filtering)** — no schema, no Worker change, `planner-core.js` +
+   `planner-ui.js` only. §4.3's reorder-scope question blocks final polish but not a first pass.
+3. **Feature A (Completed view + Undo)** — no schema, no Worker change beyond what's already
    deployed; touches `completion.js`, `completion-core.js`, `streak.js` and `planner-ui.js`, plus a
    new FR in SRS Module 7 for §3.4's reversal rule, authored before the code. Budget for the streak
    reversal as the substantial half of this phase: Undo is not a delete plus a negative ledger row,
    and the half that makes §0.1's no-PIN decision sound is the half in `streak.js`.
-3. **Feature C (Notes)** — one migration, one Worker map/validation entry, Child App write path +
+4. **Feature C (Notes)** — one migration, one Worker map/validation entry, Child App write path +
    dialog consolidation, one Management App read-only display addition. Two releases, in §5.5's
    order, with the parent applying the migration between them.
-4. **Feature D (Messages)** — one migration, three new routes, new outbox op, new IndexedDB store
+5. **Feature D (Messages)** — one migration, three new routes, new outbox op, new IndexedDB store
    (version bump), new Child App UI, **and** a new Management App inbox surface. Its own phase(s);
    recommend authoring Module 13's SRS entry before starting the build, not after.
 
 ---
 
-## 10. Open items (explicitly deferred, not decided here)
+## 11. Open items (explicitly deferred, not decided here)
 
 1. **Subject as a real grouping level.** Would mean threading `subject` through the Commit
    builder into a new `assignments.subject` column, then re-deriving §4's grouping around it
@@ -536,6 +635,19 @@ Per `CLAUDE.md` §V.A's 2-3 hour halt threshold, this is not one session:
    make §5.5's two-release sequence a belt-and-braces measure rather than a requirement, and would
    cover every column added after this one. Separate scope: it changes a shared route's error
    semantics for all callers, not just this feature's.
-8. **Roadmap update** — per `CLAUDE.md` §IV.C, `docs/Roadmap_Schedule_App.md` should get an entry
+8. **Verifying the device's timezone** (§7.1) — §7.2 makes a wrong device timezone *visible*,
+   which is as far as this slice goes. Detecting one would mean comparing the reported offset
+   against an expected value: cheap versions (`Intl.DateTimeFormat().resolvedOptions().timeZone`
+   checked against a configured family timezone at pairing, or the Worker comparing a device's
+   claimed local date against its own UTC date and flagging an implausible gap) both need a
+   decision about what the app does on a mismatch — warn the child, warn the parent, or refuse to
+   record completions — and the last of those is a bad answer for a device that is merely
+   travelling. Product call, not a technical one.
+9. **Midnight rollover while the app is open** (§7.2) — `state.today` is fixed at init, so a device
+   left open overnight shows a stale plan until reloaded. The header makes the staleness visible
+   but does not resolve it. A fix means deciding when the planner re-derives its day: a timer to
+   the next local midnight, a check on `visibilitychange`, or on the next plan poll. Independent of
+   this slice's features, and it touches the planner's refresh model rather than any of them.
+10. **Roadmap update** — per `CLAUDE.md` §IV.C, `docs/Roadmap_Schedule_App.md` should get an entry
    once this slice is authorized, a new FR in SRS Module 7 before §3.4 is built, and a Module 13
    SRS stub for Messages before §6.5 is built.
