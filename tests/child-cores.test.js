@@ -407,6 +407,55 @@ test('filterView selects one kind, ordered by block then position', () => {
   assert.deepEqual(ids(PlannerCore.filterView(rows, TODAY, nothingResolved, 'chores')), ['c1']);
 });
 
+// Child Feedback Loop §4.2 — filterView("school") groups by block, then
+// course, then lesson order.
+test('filterView (school) groups by block, then course, then lesson order', () => {
+  const rows = plan(
+    row({ id: 'a1', course_name: 'History', sequence_no: 2, sort_order: 9 }),
+    row({ id: 'a2', course_name: 'History', sequence_no: 1, sort_order: 0 }),
+    row({ id: 'a3', course_name: 'Maths', sort_order: 1 }),
+    row({ id: 'a4', course_name: null, sort_order: 0 })
+  );
+  // First-seen course order (History, then Maths); the course-less item
+  // falls into its own unlabeled group, forced last regardless of §4.2.
+  assert.deepEqual(
+    ids(PlannerCore.filterView(rows, TODAY, nothingResolved, 'school')),
+    ['a2', 'a1', 'a3', 'a4']
+  );
+});
+
+test('filterView (school) falls back to position when a course group has a partial sequence_no', () => {
+  const rows = plan(
+    row({ id: 'a1', course_name: 'History', sequence_no: 2, sort_order: 0 }),
+    row({ id: 'a2', course_name: 'History', sequence_no: null, sort_order: 1 })
+  );
+  assert.deepEqual(
+    ids(PlannerCore.filterView(rows, TODAY, nothingResolved, 'school')),
+    ['a1', 'a2'],
+    'not every item in the group has a sequence_no, so the whole group sorts by position instead'
+  );
+});
+
+test('filterView (chores) stays block-then-position only — course_name has no effect', () => {
+  const rows = plan(
+    row({ id: 'c1', kind: 'chore', course_name: 'Zzz', sort_order: 1 }),
+    row({ id: 'c2', kind: 'chore', course_name: 'Aaa', sort_order: 0 })
+  );
+  assert.deepEqual(ids(PlannerCore.filterView(rows, TODAY, nothingResolved, 'chores')), ['c2', 'c1']);
+});
+
+test('assembleToday groups School by course within each block; Chores stay position-only', () => {
+  const today = PlannerCore.assembleToday(plan(
+    row({ id: 'a1', course_name: 'Maths', sort_order: 5 }),
+    row({ id: 'a2', course_name: 'History', sort_order: 0 }),
+    row({ id: 'c1', kind: 'chore', course_name: 'Zzz', sort_order: 1 }),
+    row({ id: 'c2', kind: 'chore', course_name: 'Aaa', sort_order: 0 })
+  ), TODAY, nothingResolved);
+
+  assert.deepEqual(ids(today.blocks[0].school), ['a1', 'a2'], 'course group order is first-seen, not position');
+  assert.deepEqual(ids(today.blocks[0].chores), ['c2', 'c1'], 'chores keep plain position order');
+});
+
 test('subjectsView groups activities by course_name, in first-seen order', () => {
   const groups = PlannerCore.subjectsView(plan(
     row({ id: 'a1', course_name: 'History', sort_order: 2 }),
