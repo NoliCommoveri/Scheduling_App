@@ -127,6 +127,18 @@ const Settings = (() => {
         <button type="submit">Restore from cloud</button>
       </form>
 
+      <h3>Clear assignments</h3>
+      <p class="warning">This <strong>permanently empties</strong> the generated plan — every
+         assignment, chore claim, and this device's Propose/Commit history, including which
+         activities were already sent — in the cloud database and this browser. Children,
+         curriculum, devices, and reward balances are <strong>not</strong> touched. Useful
+         while testing the generator or pacing engine, so the same range can be proposed
+         again from a clean slate. There is no undo.</p>
+      <form class="sync-clear-assignments-form">
+        <label>Type <code>CLEAR</code> to confirm<input type="text" name="confirm" autocomplete="off"></label>
+        <button type="submit">Clear assignments</button>
+      </form>
+
       <h3>Reset everything</h3>
       <p class="warning">This <strong>permanently empties</strong> the cloud database and this
          browser's local data — every child, curriculum item, assignment, and reward entry.
@@ -143,6 +155,7 @@ const Settings = (() => {
     const successEl = root.querySelector('.sync-success');
     const tokenForm = root.querySelector('.sync-token-form');
     const restoreForm = root.querySelector('.sync-restore-form');
+    const clearAssignmentsForm = root.querySelector('.sync-clear-assignments-form');
     const resetForm = root.querySelector('.sync-reset-form');
 
     Sync.subscribe((state) => {
@@ -202,6 +215,25 @@ const Settings = (() => {
         setTimeout(() => window.location.reload(), 1200);
       } catch (err) {
         showError(errorEl, `Restore failed, nothing was changed: ${err.message}`);
+      }
+    });
+
+    clearAssignmentsForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errorEl.hidden = true;
+      successEl.hidden = true;
+      if (clearAssignmentsForm.confirm.value !== 'CLEAR') {
+        showError(errorEl, 'Type CLEAR exactly to confirm.');
+        return;
+      }
+      try {
+        await Sync.clearAssignments();
+        clearAssignmentsForm.reset();
+        successEl.hidden = false;
+        successEl.textContent = 'Assignments cleared. Reloading…';
+        setTimeout(() => window.location.reload(), 1200);
+      } catch (err) {
+        showError(errorEl, `Clear failed: ${err.message}`);
       }
     });
 

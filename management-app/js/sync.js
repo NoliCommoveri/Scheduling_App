@@ -309,6 +309,56 @@ const Sync = (() => {
     scheduleDrain(0);
   }
 
+  // ---- clear assignments (Settings → Database "Clear assignments") ----
+
+  // A narrower sibling of factoryReset, for pacing/generator testing: empties
+  // only the assignment lifecycle in D1 (assignments, claim_groups,
+  // commit_chunks, assignment_messages), this device's local generation
+  // history (`generationLog`), and the `excludeFromGeneration` flag Commit
+  // sets on walked activities — so Propose has no memory of past decisions
+  // and the pacing engine's walk order is exactly as if nothing had ever been
+  // generated. Curriculum content, children, devices, and reward_entries/
+  // streaks are untouched — this is not a factory reset.
+  async function clearAssignments() {
+    await api('/api/admin/assignments/clear', { method: 'POST', body: { confirm: 'CLEAR_ASSIGNMENTS' } });
+
+    // generationLog is deleted key-by-key (not store.clear()) so each delete
+    // is captured to the outbox (§1.5/§1.6) and mirrors into D1's `records`
+    // table too — otherwise a later "Restore from cloud" would resurrect the
+    // stale generation history this just cleared.
+    await Storage.runTransaction(['generationLog'], 'readwrite', (t) => {
+      const store = t.objectStore('generationLog');
+      const req = store.openCursor();
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) return;
+        store.delete(cursor.primaryKey);
+        cursor.continue();
+      };
+    });
+
+    // Without this, an activity the pacing engine already walked and sent
+    // stays excluded from generation forever, even though its assignment row
+    // is now gone — the same pacing test could never be re-run twice.
+    await Storage.runTransaction(['activities'], 'readwrite', (t) => {
+      const store = t.objectStore('activities');
+      const req = store.openCursor();
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) return;
+        if (cursor.value.excludeFromGeneration) {
+          const { excludeFromGeneration, ...rest } = cursor.value;
+          store.put(rest);
+        }
+        cursor.continue();
+      };
+    });
+
+    state.pending = await countOutbox();
+    emit();
+    scheduleDrain(0);
+  }
+
   // ---- observable state ----
 
   function emit() {
@@ -347,6 +397,6 @@ const Sync = (() => {
 
   return {
     init, drain, subscribe, getState, getConfig, setToken,
-    restoreFromCloud, factoryReset, status, countOutbox, api,
+    restoreFromCloud, factoryReset, clearAssignments, status, countOutbox, api,
   };
 })();

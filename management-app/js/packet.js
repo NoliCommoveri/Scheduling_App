@@ -244,8 +244,16 @@ const Packet = (() => {
         const parts = row.itemId.split('-');
         const chore = allChores.find((c) => c.id === 'CHR-' + parts[1]);
         if (!chore) continue;
+        const instanceKey = parts[3] || '';
+        // Carry the parsed instance onto the reproduced item (Shared Chores
+        // §3.2) — otherwise a reproduced occurrence loses its label and
+        // blockHint and falls back to the chore's own (usually absent),
+        // which is what put every occurrence of a multi-instance chore back
+        // on the child's plan as an unlabeled "morning" item.
+        const inst = Chores.instancesOf(chore).find((i) => i.id === instanceKey);
         ensureDay(row.assignedDate).chores.push({
-          kind: 'chore', id: row.itemId, choreId: chore.id, instanceKey: parts[3] || '',
+          kind: 'chore', id: row.itemId, choreId: chore.id, instanceKey,
+          instanceLabel: inst && inst.label, instanceBlockHint: inst && inst.blockHint,
           assignedDate: row.assignedDate, disposition: 'sent', record: chore,
         });
       }
