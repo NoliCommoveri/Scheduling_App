@@ -28,17 +28,20 @@ async function sha256Hex(text) {
 
 // `respond(sql, args)` returns whatever that statement should produce:
 //   { first }  for .first()      { results } for .all()      { meta } for .run()
+//   { throws } to make the statement reject, the way D1 does against a schema
+//              that has not caught up yet — what §11.7's containment is for.
 // Anything not answered falls back to a benign empty result.
 function makeEnv(respond = () => ({})) {
   const statements = [];
   const record = (sql, args) => {
     statements.push({ sql: sql.replace(/\s+/g, ' ').trim(), args });
     const answer = respond(sql, args) || {};
+    const fail = async () => { throw answer.throws; };
     return {
       sql, args,
-      first: async () => (answer.first === undefined ? null : answer.first),
-      all: async () => ({ results: answer.results || [] }),
-      run: async () => ({ meta: answer.meta || { changes: 1 } }),
+      first: answer.throws ? fail : async () => (answer.first === undefined ? null : answer.first),
+      all: answer.throws ? fail : async () => ({ results: answer.results || [] }),
+      run: answer.throws ? fail : async () => ({ meta: answer.meta || { changes: 1 } }),
     };
   };
 
@@ -49,7 +52,12 @@ function makeEnv(respond = () => ({})) {
       all: async () => record(sql, []).all(),
       run: async () => record(sql, []).run(),
     }),
-    batch: async (list) => { DB.batched.push(list); return list.map(() => ({ meta: { changes: 1 } })); },
+    batch: async (list) => {
+      DB.batched.push(list);
+      if (DB.batchError) throw DB.batchError;
+      return list.map(() => ({ meta: { changes: 1 } }));
+    },
+    batchError: null,
     exec: async () => ({}),
     batched: [],
   };
@@ -59,10 +67,11 @@ function makeEnv(respond = () => ({})) {
 
 const ctx = { waitUntil() {} };
 
-function call(env, path, { method = 'GET', token, body } = {}) {
+function call(env, path, { method = 'GET', token, body, outboxProtocol } = {}) {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body) headers['Content-Type'] = 'application/json';
+  if (outboxProtocol) headers['X-Outbox-Protocol'] = String(outboxProtocol);
   const request = new Request(`https://example.test${path}`, {
     method, headers, body: body ? JSON.stringify(body) : undefined,
   });
@@ -299,6 +308,113 @@ test('§13.20: one bad reward entry does not take the batch with it', async () =
   assert.equal(out.applied, 1);
   assert.deepEqual(out.rejected.map((r) => r.id), ['r2', 'r3']);
   assert.equal(DB.batched[0].length, 1);
+});
+
+// ====================================  §11.7: deferral, not rejection
+
+test('§11.7: a D1 throw defers that row and leaves the rest of the batch applied', async () => {
+  // The failure §5.5 describes: the Worker writes a column the migration has
+  // not added yet. Only the rows carrying that column throw.
+  const { env } = makeEnv(deviceResolver((sql) => (
+    sql.includes('completion_note =') ? { throws: new Error('D1_ERROR: no such column: completion_note') } : {}
+  )));
+  const res = await call(env, '/api/completions', {
+    method: 'POST', token: DEVICE_TOKEN, outboxProtocol: 2,
+    body: {
+      completions: [
+        { id: 'plain', status: 'complete' },
+        { id: 'with-note', status: 'complete', completionNote: 'skipped #11' },
+      ],
+    },
+  });
+  const out = await res.json();
+  assert.equal(res.status, 200, 'a 500 here would halt the device\'s whole drain');
+  assert.equal(out.applied, 1, 'the row that could be written still was');
+  assert.deepEqual(out.rejected, [], 'a missing column is not the row\'s fault');
+  assert.deepEqual(out.deferred.map((r) => r.id), ['with-note']);
+  assert.match(out.deferred[0].error, /no such column: completion_note/,
+    'the parent needs to see which migration is missing');
+});
+
+test('§11.7: a deferral is reported separately from a rejection in one batch', async () => {
+  const { env } = makeEnv(deviceResolver((sql, args) => {
+    if (sql.includes('UPDATE assignments') && args.includes('doomed')) {
+      return { throws: new Error('D1_ERROR: database is locked') };
+    }
+    return {};
+  }));
+  const res = await call(env, '/api/completions', {
+    method: 'POST', token: DEVICE_TOKEN, outboxProtocol: 2,
+    body: {
+      completions: [
+        { id: 'fine', status: 'complete' },
+        { id: 'doomed', status: 'complete' },
+        { id: 'malformed', status: 'banana' },
+      ],
+    },
+  });
+  const out = await res.json();
+  assert.equal(out.applied, 1);
+  assert.deepEqual(out.rejected.map((r) => r.id), ['malformed'], 'a bad value is still permanent');
+  assert.deepEqual(out.deferred.map((r) => r.id), ['doomed'], 'a database fault is not');
+});
+
+test('§11.7: a failed reward batch defers every queued entry instead of 500ing', async () => {
+  const { env, DB } = makeEnv(deviceResolver());
+  DB.batchError = new Error('D1_ERROR: no such table: reward_entries');
+  const res = await call(env, '/api/rewards/entries', {
+    method: 'POST', token: DEVICE_TOKEN, outboxProtocol: 2,
+    body: {
+      entries: [
+        { id: 'r1', category: 'RC-1', amount: 1 },
+        { id: 'r2', category: 'RC-1', amount: -1, reason: 'adjustment' },
+        { id: 'bad', amount: 1 },
+      ],
+    },
+  });
+  const out = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(out.applied, 0, 'nothing landed, so nothing may be reported as applied');
+  assert.deepEqual(out.rejected.map((r) => r.id), ['bad'], 'the malformed entry is still permanent');
+  assert.deepEqual(out.deferred.map((r) => r.id), ['r1', 'r2'],
+    'an append-only ledger must never have rows discarded by a transient fault');
+});
+
+test('a clean batch reports an empty deferred array, not an absent one', async () => {
+  const { env } = makeEnv(deviceResolver());
+  const res = await call(env, '/api/completions', {
+    method: 'POST', token: DEVICE_TOKEN, outboxProtocol: 2,
+    body: { completions: [{ id: 'a1', status: 'complete' }] },
+  });
+  const out = await res.json();
+  assert.deepEqual(out.deferred, []);
+});
+
+test('§11.7: a client that does not announce protocol 2 gets a retryable 5xx', async () => {
+  // The compatibility half. A shell predating this change reads only
+  // `rejected`, so handing it a 200 carrying `deferred` would make it delete
+  // the very rows the server just declined to write. It gets the old answer.
+  const { env } = makeEnv(deviceResolver((sql) => (
+    sql.includes('completion_note =') ? { throws: new Error('D1_ERROR: no such column: completion_note') } : {}
+  )));
+  const res = await call(env, '/api/completions', {
+    method: 'POST', token: DEVICE_TOKEN,   // no X-Outbox-Protocol
+    body: { completions: [{ id: 'with-note', status: 'complete', completionNote: 'hi' }] },
+  });
+  assert.equal(res.status, 503, 'retryable, so an old client keeps its queue rows');
+  const out = await res.json();
+  assert.equal(out.deferred, 1);
+  assert.match(out.detail, /no such column/);
+});
+
+test('§11.7: the rewards route gates the new shape the same way', async () => {
+  const { env, DB } = makeEnv(deviceResolver());
+  DB.batchError = new Error('D1_ERROR: no such table: reward_entries');
+  const res = await call(env, '/api/rewards/entries', {
+    method: 'POST', token: DEVICE_TOKEN,   // no X-Outbox-Protocol
+    body: { entries: [{ id: 'r1', category: 'RC-1', amount: 1 }] },
+  });
+  assert.equal(res.status, 503);
 });
 
 test('a reward append is idempotent on the client-minted id', async () => {

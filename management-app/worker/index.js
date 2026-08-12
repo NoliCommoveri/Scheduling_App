@@ -973,6 +973,7 @@ async function handleCompletions(request, env, device) {
   const now = Date.now();
   const updatedBy = `device:${device.deviceId}`;
   const rejected = [];
+  const deferred = [];
   let applied = 0;
 
   for (const row of completions) {
@@ -1009,16 +1010,42 @@ async function handleCompletions(request, env, device) {
     // child_id is part of the WHERE, never trusted from the body (§4.2) —
     // an assignment belonging to another child is left untouched, not 403'd
     // mid-batch, so one bad row cannot wedge a device's whole outbox drain.
-    const result = await env.DB.prepare(
-      `UPDATE assignments SET ${setClauses.join(', ')}, updated_at = ?${keys.length + 1}, updated_by = ?${keys.length + 2}
-       WHERE id = ?${keys.length + 3} AND child_id = ?${keys.length + 4}`
-    ).bind(...values, now, updatedBy, row.id, device.childId).run();
+    let result;
+    try {
+      result = await env.DB.prepare(
+        `UPDATE assignments SET ${setClauses.join(', ')}, updated_at = ?${keys.length + 1}, updated_by = ?${keys.length + 2}
+         WHERE id = ?${keys.length + 3} AND child_id = ?${keys.length + 4}`
+      ).bind(...values, now, updatedBy, row.id, device.childId).run();
+    } catch (err) {
+      // Child Feedback Loop §11.7, closed. This throw used to escape the loop
+      // and the handler, landing on the top-level catch as a 500 — which
+      // outbox.js reads as retryable and answers by halting the device's
+      // *entire* drain (completions, rewards, streak) until the fault clears.
+      // A missing column made that the documented cost of applying a migration
+      // late (§5.5).
+      //
+      // It is contained here instead, but deliberately NOT as a `rejected`
+      // row. Every property of the row was already checked above — unknown
+      // column, bad value, missing id all rejected before this point — so a
+      // throw from the statement itself is never about the row. It is the
+      // schema or the database, and it will stop being true. `rejected` means
+      // "never going to work", and outbox.js discards those rows for good
+      // (outbox.js:181); reporting a missing column that way would delete a
+      // child's completions rather than stall them, which is strictly worse
+      // than the 500 this replaces.
+      //
+      // `deferred` is the third answer: this row did not land, keep it queued,
+      // try again. The rest of the batch still applies.
+      deferred.push({ id: row.id, error: dbFaultMessage(err) });
+      continue;
+    }
 
     if (result.meta && result.meta.changes > 0) applied++;
     else rejected.push({ id: row.id, error: 'Not found for this child.' });
   }
 
-  return json({ applied, rejected });
+  if (deferred.length > 0 && !understandsDeferred(request)) return deferralUnsupportedResponse(deferred);
+  return json({ applied, rejected, deferred });
 }
 
 async function handleRewardEntries(request, env, device) {
@@ -1036,6 +1063,7 @@ async function handleRewardEntries(request, env, device) {
   const now = Date.now();
   const createdBy = `device:${device.deviceId}`;
   const statements = [];
+  const queuedIds = [];
   const rejected = [];
 
   // Per-row rejection, matching /api/completions and for the same §5.6 reason.
@@ -1063,6 +1091,7 @@ async function handleRewardEntries(request, env, device) {
     const reason = ['earned', 'adjustment', 'spend'].includes(row.reason) ? row.reason : 'earned';
 
     // Idempotent on the client-minted id (§5.5): a replay is a harmless no-op.
+    queuedIds.push(row.id);
     statements.push(
       env.DB.prepare(
         `INSERT INTO reward_entries (id, child_id, assignment_id, category, amount, reason, earned_at, created_by)
@@ -1072,8 +1101,24 @@ async function handleRewardEntries(request, env, device) {
     );
   }
 
-  if (statements.length > 0) await env.DB.batch(statements);
-  return json({ applied: statements.length, rejected });
+  // §11.7, closed — same reasoning as /api/completions, one batch rather than a
+  // per-row loop. Every row here was validated above, so a throw from the batch
+  // is the database, not the entries; the whole batch is deferred for retry
+  // rather than rejected, because rejecting it would discard an append-only
+  // ledger's rows with no way to reconstruct them.
+  const deferred = [];
+  let applied = 0;
+  if (statements.length > 0) {
+    try {
+      await env.DB.batch(statements);
+      applied = statements.length;
+    } catch (err) {
+      const error = dbFaultMessage(err);
+      for (const id of queuedIds) deferred.push({ id, error });
+    }
+  }
+  if (deferred.length > 0 && !understandsDeferred(request)) return deferralUnsupportedResponse(deferred);
+  return json({ applied, rejected, deferred });
 }
 
 async function handleStreakUpsert(request, env, device) {
@@ -1108,6 +1153,49 @@ async function handleStreakUpsert(request, env, device) {
 // Response helpers — the only things left here that touch neither D1 nor a
 // route. Everything else pure now lives in validation.js.
 // ============================================================================
+
+// Child Feedback Loop §11.7 — does this client know what `deferred` means?
+//
+// It is a new third answer on a route that already had two, and the difference
+// between them is what the client does with the queue rows behind it: a
+// `rejected` row is deleted, a `deferred` row is kept. A shell that predates
+// this change reads only `rejected`, so it deletes everything a 2xx covered —
+// including rows the server just said it did not write. That is silent data
+// loss, and it would land in exactly the situation this feature exists for.
+//
+// So the new shape is opt-in. A client announces it by sending the header;
+// anything that does not is answered the way it was before — a 5xx, which it
+// reads as retryable and responds to by keeping the whole batch. Both ends
+// upgrade independently, and neither ordering loses a row.
+const OUTBOX_PROTOCOL_HEADER = 'X-Outbox-Protocol';
+
+function understandsDeferred(request) {
+  return Number(request.headers.get(OUTBOX_PROTOCOL_HEADER) || 0) >= 2;
+}
+
+// The pre-§11.7 answer, for a client that cannot read the new one. 503 rather
+// than the 500 this replaced: same retryable class to every existing client,
+// but honest about the fault being transient.
+function deferralUnsupportedResponse(deferred) {
+  return json({
+    error: 'Some rows could not be written and were not applied. Retry.',
+    deferred: deferred.length,
+    detail: deferred[0] ? deferred[0].error : undefined,
+  }, 503);
+}
+
+// The text put on a `deferred` row (Child Feedback Loop §11.7). D1's own
+// message is the useful half — "no such column: completion_note" tells a
+// parent exactly which migration is missing, which is the failure this
+// containment was built for — so it is passed through rather than flattened
+// into "database error". Bounded because it crosses the wire to a device that
+// logs it; a deferral is not written to the rejection store, which records what
+// was *refused*, and a row that will be retried was not.
+function dbFaultMessage(err) {
+  const detail = err && err.message ? String(err.message) : String(err);
+  const trimmed = detail.length > 300 ? `${detail.slice(0, 300)}…` : detail;
+  return `Database error, not applied — will retry: ${trimmed}`;
+}
 
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), {

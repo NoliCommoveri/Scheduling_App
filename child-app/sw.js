@@ -65,7 +65,21 @@
 // against a Worker that now accepts one, which is harmless — but would also
 // keep completing items with no Undo path and no course grouping, on a shell
 // that looks current because index.html itself is part of the cached set.
-const CACHE_NAME = "daily-plan-shell-v11";
+// v12: the two Child Feedback Loop §11 open items that were closed before
+// Feature D started. No file added or removed; planner-core.js, planner-ui.js,
+// outbox-core.js and outbox.js changed contents:
+//   - §4.3 decided: the reorder arrows are suppressed for a parent-authored
+//     `sequence_no` and otherwise scoped to block+course. A device left on v11
+//     keeps arrows that write a sort key its own §4.2 grouping then ignores.
+//   - §11.7 closed: a D1 fault is now a per-row `deferred`, not a 500 —
+//     outbox.js reads it, keeps those rows, and announces itself with
+//     `X-Outbox-Protocol: 2`.
+// The v11-shell-against-a-v12-Worker case is handled on the server rather than
+// here: without that header the Worker answers a fault with a 503, the same
+// retryable class the old shell already understands, so a device that has not
+// picked up this cache yet keeps its queue instead of dropping it. The bump is
+// what gets the improvement onto the device, not what prevents a regression.
+const CACHE_NAME = "daily-plan-shell-v12";
 
 const APP_SHELL = [
   "./",

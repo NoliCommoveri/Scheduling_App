@@ -180,22 +180,30 @@
     // Completions first. A reward entry references an assignment_id, and
     // sending the completion that justifies it first keeps the two tables
     // telling the same story at every point a drain can be interrupted.
+    // `seqsById` alongside `seqs`: the flat list is what a clean 2xx deletes,
+    // the map is what §11.7's `deferred` needs — the server can now answer
+    // "this row did not land, keep it queued", and the drain can only honour
+    // that if it can find the queue rows a single id came from.
     chunk(completionOrder, MAX_BATCH).forEach(function (ids) {
       var seqs = [];
+      var seqsById = Object.create(null);
       var body = ids.map(function (id) {
         seqs = seqs.concat(completions[id].seqs);
+        seqsById[id] = completions[id].seqs.slice();
         return Object.assign({ id: id }, completions[id].fields);
       });
-      requests.push({ path: "/api/completions", method: "POST", body: { completions: body }, seqs: seqs });
+      requests.push({ path: "/api/completions", method: "POST", body: { completions: body }, seqs: seqs, seqsById: seqsById });
     });
 
     chunk(rewardOrder, MAX_BATCH).forEach(function (keys) {
       var seqs = [];
+      var seqsById = Object.create(null);
       var body = keys.map(function (key) {
         seqs = seqs.concat(rewards[key].seqs);
+        seqsById[key] = rewards[key].seqs.slice();
         return rewards[key].entry;
       });
-      requests.push({ path: "/api/rewards/entries", method: "POST", body: { entries: body }, seqs: seqs });
+      requests.push({ path: "/api/rewards/entries", method: "POST", body: { entries: body }, seqs: seqs, seqsById: seqsById });
     });
 
     if (streak) {

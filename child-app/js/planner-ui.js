@@ -489,14 +489,14 @@
         var group = [];
         if (block.school.length) {
           wrap.appendChild(node("div", "cat-label", "School"));
-          block.school.forEach(function (a, i) {
-            wrap.appendChild(itemCard(a, "activity", block.name, block.school, i));
+          block.school.forEach(function (a) {
+            wrap.appendChild(itemCard(a, "activity", block.name, block.school));
           });
         }
         if (block.chores.length) {
           wrap.appendChild(node("div", "cat-label", "Chores"));
-          block.chores.forEach(function (c, i) {
-            wrap.appendChild(itemCard(c, "chore", block.name, block.chores, i));
+          block.chores.forEach(function (c) {
+            wrap.appendChild(itemCard(c, "chore", block.name, block.chores));
           });
         }
       });
@@ -537,9 +537,9 @@
           category === "chores" ? "No chores for this date." : "No school work for this date."));
         return wrap;
       }
-      list.forEach(function (item, i) {
+      list.forEach(function (item) {
         var blockName = P.effectiveBlock(item);
-        var card = itemCard(item, category === "chores" ? "chore" : "activity", blockName, list, i);
+        var card = itemCard(item, category === "chores" ? "chore" : "activity", blockName, list);
         card.style.setProperty("--lane-color", "var(--" + blockName + ")");
         wrap.appendChild(card);
       });
@@ -564,9 +564,9 @@
       if (groups.length === 0) { wrap.appendChild(node("div", "section-empty", "No school work to group by subject for this date.")); return wrap; }
       groups.forEach(function (grp) {
         wrap.appendChild(node("div", "subject-head", grp.course_name));
-        grp.items.forEach(function (a, i) {
+        grp.items.forEach(function (a) {
           var blockName = P.effectiveBlock(a);
-          var card = itemCard(a, "activity", blockName, grp.items, i);
+          var card = itemCard(a, "activity", blockName, grp.items);
           card.style.setProperty("--lane-color", "var(--" + blockName + ")");
           wrap.appendChild(card);
         });
@@ -696,7 +696,7 @@
     }
 
     // ---------- item card ----------
-    function itemCard(item, kind, blockName, group, indexInGroup) {
+    function itemCard(item, kind, blockName, group) {
       var card = node("div", "card");
       card.style.setProperty("--lane-color", "var(--" + blockName + ")");
 
@@ -745,18 +745,31 @@
 
       top.appendChild(main);
 
-      // reorder controls (FR-4) — within this block+category group only.
-      var controls = node("div", "controls");
-      var up = node("button", "icon-btn", "\u2191");
-      up.setAttribute("aria-label", "Move up");
-      up.disabled = indexInGroup === 0;
-      up.onclick = function () { reorder(group, indexInGroup, -1); };
-      var down = node("button", "icon-btn", "\u2193");
-      down.setAttribute("aria-label", "Move down");
-      down.disabled = indexInGroup === group.length - 1;
-      down.onclick = function () { reorder(group, indexInGroup, +1); };
-      controls.appendChild(up); controls.appendChild(down);
-      top.appendChild(controls);
+      // reorder controls (FR-4), scoped per Child Feedback Loop §4.3.
+      //
+      // Two changes from "within this block+category group": the arrows are
+      // gone entirely for a row carrying a parent-authored `sequence_no`
+      // (P.canReorder), and for everything else they move the row among its
+      // block+course peers rather than the whole rendered list
+      // (P.reorderPeers). Both exist because §4.2 groups by course before it
+      // sorts, so an arrow reaching outside that group could not move the row
+      // where it pointed — it wrote a key, queued an upload, and moved nothing.
+      // The render position is no longer what a reorder is relative to; the
+      // peer index is, so the caller stops passing one.
+      if (P.canReorder(item)) {
+        var scope = P.reorderPeers(group, item);
+        var controls = node("div", "controls");
+        var up = node("button", "icon-btn", "\u2191");
+        up.setAttribute("aria-label", "Move up");
+        up.disabled = scope.index <= 0;
+        up.onclick = function () { reorder(scope.peers, scope.index, -1); };
+        var down = node("button", "icon-btn", "\u2193");
+        down.setAttribute("aria-label", "Move down");
+        down.disabled = scope.index < 0 || scope.index === scope.peers.length - 1;
+        down.onclick = function () { reorder(scope.peers, scope.index, +1); };
+        controls.appendChild(up); controls.appendChild(down);
+        top.appendChild(controls);
+      }
       card.appendChild(top);
 
       // footer: block mover (FR-5) + entry-point stubs (FR-6/FR-7).
@@ -1418,6 +1431,14 @@
     }
     if (upload.error === "rejected") {
       return what + "couldn't be sent. Show a parent — nothing here is lost.";
+    }
+    // §11.7: the server kept these rows back rather than refusing them —
+    // usually a migration the parent has not applied yet. It retries on its
+    // own, so this is a "waiting", not an "ask for help", but it names the
+    // parent because a deferral that persists is theirs to clear.
+    if (upload.error === "deferred") {
+      return what + "hasn't been saved yet — the server isn't ready for it. " +
+        "It'll keep trying; tell a parent if it stays this way.";
     }
     return what + (upload.error === "offline" ? "will be sent when you're back online." : "is still being sent.");
   }

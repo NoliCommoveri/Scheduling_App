@@ -91,16 +91,26 @@ and applies itself from a button (Revamp §3.7). Do this once the Worker is depl
 Either surface needs the parent `SYNC_TOKEN`. Both are safe to press twice: applying
 with nothing pending writes nothing and says so.
 
-> **`0004_completion_note.sql` ships in two deploys, not one — apply it in between.**
-> (Child Feedback Loop TDS §5.5.) This migration adds `assignments.completion_note`
-> on its own; the Worker and Child App code that reads and writes it lands in a
-> *later* commit. If that later code is already deployed while the column is still
-> missing, a child's device posting a completion note makes every completion in that
-> batch throw a database error — which halts the device's **whole** outbox drain
-> (completions, rewards, streak, everything), not just the note. Deploy the migration
-> commit alone, press **Apply** here, confirm it shows applied, and only then deploy
-> the commit that follows it. Applying it early costs nothing — an inert column with
-> nothing reading or writing it yet is harmless.
+> **Apply a migration before deploying the code that uses it.**
+> (Child Feedback Loop TDS §5.5.) A migration adds its column or table on its own;
+> the Worker and Child App code that reads and writes it should land in a *later*
+> deploy. Press **Apply** here between the two, and confirm it shows applied.
+> Applying early costs nothing — an inert column with nothing reading or writing it
+> yet is harmless.
+>
+> If the order does slip, the damage is now bounded (TDS §11.7, closed 2026-08-12).
+> A device posting a value the schema cannot take gets that **row** held back and
+> retried, while the rest of its queue — completions, rewards, streak — keeps
+> draining normally. Before that containment it was a request-level 500, which
+> froze the device's entire outbox until the migration landed; a parent who
+> deployed on Friday and applied on Monday lost the weekend's sync on every
+> device. That failure mode is gone, but the ordering is still the cheap way to
+> avoid the stall entirely.
+>
+> One caveat while a device is on an older Child App shell: it has not picked up
+> the header that opts into the per-row behaviour, so it still gets the old
+> whole-batch retry. Nothing is lost either way — the rows stay queued — but the
+> drain stalls for that device until it updates or the migration is applied.
 
 > **The console path is retired.** The `records` table on the live database was created
 > by hand there before the runner existed, which is why `0001_online_revamp_init.sql`

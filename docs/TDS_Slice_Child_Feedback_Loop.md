@@ -289,7 +289,13 @@ in three passes, all pure additions to `planner-core.js` (no store/schema change
    the group has one; fall back to `effectiveSortKey` (today's `child_sort_order` ??
    `sort_order`) for a group where `sequence_no` is absent.
 
-### 4.3 Manual reorder interaction — flagged, not decided
+### 4.3 Manual reorder interaction — DECIDED 2026-08-12 (was: flagged, not decided)
+
+> **Decision.** Both recommendations below are adopted. The arrows are suppressed for any row
+> carrying a `sequence_no`, and for every other row the reorder scope is narrowed from the whole
+> rendered list to block+course peers. See §11.4 for the reasoning that settled it — in short,
+> after §4.2 the un-narrowed arrow was not merely arguable, it was inert. The text below is the
+> original framing, kept because it is what the decision was made against.
 
 The up/down arrows (`planner-ui.js:1174-1190`) currently reorder within the whole block+category
 group. Once a course sub-grouping exists, that scope needs to narrow to block+course, or a child
@@ -622,19 +628,52 @@ Per `CLAUDE.md` §V.A's 2-3 hour halt threshold, this is not one session:
 3. **Undo's PIN-gate.** Ungated per §0.1, which holds only while both reversals in §3.3 and §3.4
    stay intact. Revisit if either is ever weakened, or if a parent reports Undo being used to dodge
    accountability rather than to correct mistakes.
-4. **Manual reorder vs. `sequence_no`** (§4.3) — whether the up/down arrows should be suppressed
-   for any item carrying a parent-authored lesson order.
+4. ~~**Manual reorder vs. `sequence_no`** (§4.3) — whether the up/down arrows should be suppressed
+   for any item carrying a parent-authored lesson order.~~ **CLOSED 2026-08-12: yes, suppressed.**
+   §4.3's recommendation is adopted in full, and the scope question alongside it. The arrows are
+   not rendered for a row whose `sequence_no` is a number (`PlannerCore.canReorder`), and for every
+   other row they move it among its block+course peers rather than the whole rendered list
+   (`PlannerCore.reorderPeers`).
+
+   The deciding argument turned out to be narrower than the "fights the curriculum" one §4.3
+   opened with. Once §4.2 landed, a fully-sequenced course group sorts by `bySequenceNo`, which
+   ignores `child_sort_order` outright — so the arrow on such a row wrote a value, queued an outbox
+   op, re-rendered, and moved nothing. It was a dead control, not merely an arguable one. Narrowing
+   the peer set fixes the second half: an interpolated key computed against a neighbour in another
+   course could never move the row there, because §4.2 groups before it sorts. Peer-scoping also
+   closes a reach the filter views always had, where the group spanned every block at once.
 5. **`Subjects` tab retirement** (§4.4) — folding it into the new course-grouped `School` view vs.
    keeping both.
 6. **Historical Completed/Undo browsing** — deferred by §0.4; would need a policy for how far back
    a reward reversal is allowed to reach, and a decision on whether the streak snapshot in §3.4
    grows into a real history to support it.
-7. **Per-row containment of D1 errors in `handleCompletions`** (§5.5) — an unexpected throw inside
-   the per-row loop escalates to a request-level 500 and stalls the whole drain — the exact
-   failure the Online Revamp's §5.6 per-row rejection design exists to avoid. Containing it would
-   make §5.5's two-release sequence a belt-and-braces measure rather than a requirement, and would
-   cover every column added after this one. Separate scope: it changes a shared route's error
-   semantics for all callers, not just this feature's.
+7. ~~**Per-row containment of D1 errors in `handleCompletions`** (§5.5) — an unexpected throw inside
+   the per-row loop escalates to a request-level 500 and stalls the whole drain.~~
+   **CLOSED 2026-08-12.** Contained, on `/api/completions` and `/api/rewards/entries` both, ahead
+   of Feature D adding a third route on the same pattern.
+
+   **The containment is a third answer, not a wider `rejected`.** That distinction is the whole
+   design. `rejected` means "this will never work" and `outbox.js` acts on it by *deleting* the
+   queue rows (`outbox.js:181`) — so reporting a missing column that way would discard a child's
+   completions rather than stall them, which is strictly worse than the 500 it replaced. The new
+   `deferred` array means "not now": the row is kept, the drain continues past it, and the next
+   drain tries again.
+
+   Classification needs no guessing. By the time control reaches the statement, every property of
+   the row has already been checked — unknown column, bad value, missing id are all rejected above
+   it — so a throw from the statement itself is never about the row. It is the schema or the
+   database, and it will stop being true.
+
+   **Compatibility is gated, not assumed.** A shell predating this change reads only `rejected`
+   and would delete the rows a `deferred` names. So the new shape is opt-in: a client sends
+   `X-Outbox-Protocol: 2`, and anything that does not is answered with a 503 — the same retryable
+   class the old shell already handles by keeping its whole batch. Either end may upgrade first.
+
+   **Consequence for §5.5:** the two-release sequence is now belt-and-braces rather than
+   load-bearing, exactly as this item predicted. A device on the new shell that meets a missing
+   column stalls *that column's rows* and keeps draining everything else, instead of freezing every
+   child's outbox. The recommended ordering stands — an inert column still costs nothing — but
+   getting it wrong is no longer a weekend-long sync outage.
 8. **Verifying the device's timezone** (§7.1) — §7.2 makes a wrong device timezone *visible*,
    which is as far as this slice goes. Detecting one would mean comparing the reported offset
    against an expected value: cheap versions (`Intl.DateTimeFormat().resolvedOptions().timeZone`
