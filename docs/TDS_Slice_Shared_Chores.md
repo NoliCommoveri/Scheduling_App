@@ -12,6 +12,11 @@ nothing here should be implemented until §11's open items are confirmed and §0
 table, three new columns, two new routes), and the Child App (claim interaction, planner
 visibility). The two apps share the schema and the API and no JS file, per `CLAUDE.md` §I.A.
 
+**Amended 2026-08-12** by §13, which adds multiple occurrences of one chore per day. That
+amendment changes the unit of occurrence identity, so it touches §2.2's record shape and §4.2's
+`claim_groups` key; both are updated in place and point back to §13. §13 also carries its own
+phasing and acceptance checks rather than renumbering §9–§12.
+
 **Builds on:** `TDS_Slice_Online_Revamp.md` — the shared `assignments` table (§3.3), column-level
 ownership (§4.2), server-minted opaque ids (§3.3.1), the append-only reward ledger (§3.4), and
 the outbox/drain model (§8.4). This slice adds one table, three nullable columns, and two routes
@@ -113,7 +118,10 @@ migration**.
   allocation: 'each'|'claim', // NEW — defaults to 'each'
   childDays?: {             // NEW, optional, `each` only (§3.3)
     [childId]: ['Mon', …]   // this participant's days; absent → daysOfWeek
-  }
+  },
+  instances?: [             // NEW (§13) — occurrences per day. Absent → one.
+    { id, label?, blockHint? }
+  ]
 }
 ```
 
@@ -241,13 +249,19 @@ CREATE INDEX IF NOT EXISTS idx_assign_claim_group
 -- group without coordinating: both INSERT OR IGNORE the same (source_id, date),
 -- and SQLite arbitrates. Either order, any number of re-runs, one group.
 CREATE TABLE IF NOT EXISTS claim_groups (
-  source_id  TEXT NOT NULL,   -- the chore's curriculum id
-  date       TEXT NOT NULL,   -- YYYY-MM-DD, the occurrence
-  id         TEXT NOT NULL,   -- server-minted UUID — the value in assignments.claim_group
-  created_at INTEGER NOT NULL,
-  PRIMARY KEY (source_id, date)
+  source_id    TEXT NOT NULL,  -- the chore's curriculum id
+  date         TEXT NOT NULL,  -- YYYY-MM-DD, the occurrence
+  instance_key TEXT NOT NULL,  -- §13; '' for a chore with one occurrence a day
+  id           TEXT NOT NULL,  -- server-minted UUID — the value in assignments.claim_group
+  created_at   INTEGER NOT NULL,
+  PRIMARY KEY (source_id, date, instance_key)
 );
 ```
+
+`instance_key` is in the primary key from the outset even though §13 may ship separately,
+because SQLite cannot alter a primary key: adding it later would mean a create-copy-drop-rename
+migration on a table that would by then hold live groups. §13.6 makes the ordering explicit —
+build §13 first and this table is simply created correctly.
 
 `GET /api/plan` is `SELECT *` (`index.js:1038`), so all three columns reach the child device
 with no route change.
@@ -260,11 +274,12 @@ with no route change.
 `handleAssignmentsCreate` resolves groups **before** it builds its insert statements, because
 D1's `batch()` is a transaction whose results cannot be read mid-flight:
 
-1. Collect `(sourceId, date)` for every row in the chunk with `shared: true` and a non-null
-   `sourceId`. A shared row with no `sourceId` is rejected 400 — it has no identity to group on.
+1. Collect `(sourceId, date, instanceKey)` for every row in the chunk with `shared: true` and a
+   non-null `sourceId` — `instanceKey` defaulting to `''` (§13). A shared row with no `sourceId`
+   is rejected 400: it has no identity to group on.
 2. One batch of `INSERT INTO claim_groups (…) VALUES (…) ON CONFLICT DO NOTHING`, one statement
-   per distinct pair, each carrying a freshly minted `crypto.randomUUID()`.
-3. One `SELECT source_id, date, id FROM claim_groups WHERE (source_id, date) IN …` to read back
+   per distinct triple, each carrying a freshly minted `crypto.randomUUID()`.
+3. One `SELECT source_id, date, instance_key, id FROM claim_groups WHERE …` to read back
    whichever id won — this device's, or the one the sibling's Commit already stored.
 4. Build the assignment inserts as today, with `claim_group` bound from that map.
 
@@ -619,7 +634,11 @@ Run against a real database from the browser, per `CLAUDE.md` §IV.C.
   to exactly one Child (`childId`) and cannot be shared across multiple children. A household
   chore two kids both do is two separate Chore records"* — is **repealed** by §0.1/§2.2. The
   replacement: a Chore names one or more participating Children (`childIds`) and an allocation
-  rule. Its §5 field table gains `childIds`, `allocation`, and `childDays`, and loses `childId`.
+  rule. Its §5 field table gains `childIds`, `allocation`, `childDays`, and `instances` (§13),
+  and loses `childId`.
+- **`SRS_Management_Module_06` FR-1** describes a Chore's recurrence as `daysOfWeek[]` alone,
+  which implies at most one occurrence per day. §13 adds an optional `instances` list; FR-1 needs
+  a sentence saying a Chore recurs on its days *once per instance*, defaulting to one.
 - **`SRS_Management_Module_06` §2.5** (deletion does not recall delivered content) is unchanged
   and now also covers removing a participant from a chore.
 - **`CLAUDE.md` §III.A** — narrowed for `claim_group` rows only, per §0.7/§4.7. The Quick
@@ -627,3 +646,176 @@ Run against a real database from the browser, per `CLAUDE.md` §IV.C.
   a specific write is online-required, and does not touch the general guarantee.
 - **`CLAUDE.md` §VII** gains one row: *Shared chore claims — LOCKED — server-arbitrated,
   online-required, `each`/`claim` allocation on a single Chore record.*
+
+---
+
+## 13. Amendment 1 — multiple occurrences per day (2026-08-12)
+
+**Status:** Added in-session with Ray, after §1–§12 were drafted. Carried as an amendment rather
+than folded in, so every cross-reference in §1–§12 stays valid. It changes the unit of occurrence
+identity, which is why §2.2 and §4.2 were edited in place above.
+
+### 13.1 The problem
+
+A Chore generates at most one occurrence per day. Ray's working arrangement today is three
+separate Chore records — Breakfast Dishes, Lunch Dishes, Dinner Dishes — which is the same
+duplication §0.1 removed across *children*, repeated across *times of day*: three lines, three
+edits when the tier changes, and nothing in the system knowing they are one chore.
+
+### 13.2 Why a count alone would break the deduplication guard
+
+An occurrence's identity is `(child_id, date, kind, source_id)`, mirrored in three places that
+must agree: `naturalKey` (`worker/index.js:711`), the `WHERE NOT EXISTS` guard
+(`worker/index.js:656`), and the client-side `keyOf` (`packet.js:108`). Three rows from one chore
+on one day are **identical** under that key. Committing them would leave one row: the in-chunk
+`liveKeys.add(key)` (`index.js:630`) drops the second and third before SQL runs, and the SQL
+guard would drop them again.
+
+So the key needs a fourth component, and that component has to be **stable across
+regenerations** — that is the entire basis of the §6.6 guard.
+
+A positional ordinal (`0, 1, 2`) is not stable. Deleting *Lunch* from
+`[Breakfast, Lunch, Dinner]` slides Dinner to index 1, which is Lunch's committed key: the live
+Lunch row now blocks Dinner from inserting, and the row that survives still reads "Lunch". That
+is a silent wrong answer of exactly the kind §6.6 was landed to prevent, and it would surface
+weeks later as a chore that quietly stopped being assigned.
+
+A **stable id minted once at authoring time** is stable under every edit: reorder, mid-list
+delete, and rename all leave existing identities alone.
+
+### 13.3 `instances`
+
+```
+instances?: [
+  { id: 'i1', label: 'Breakfast', blockHint: 'morning'   },
+  { id: 'i2', label: 'Lunch',     blockHint: 'afternoon' },
+  { id: 'i3', label: 'Dinner',    blockHint: 'evening'   }
+]
+```
+
+- **Absent** means one unlabeled occurrence per day — today's behavior exactly, and what every
+  existing chore record keeps. There is no backfill.
+- `id` is minted at authoring time, unique within the chore, and **never reused or reassigned**.
+  It is opaque and only ever compared for equality. It must contain no `-` (§13.5).
+- `label` is optional. When present the projected title is `"{chore.title} — {label}"`, snapshotted
+  at assign time like every other denormalized column (Online Revamp §3.3). Renaming a label later
+  leaves committed rows reading what they read when they were assigned, which is the intended
+  behavior of a snapshot, not a defect.
+- `blockHint` is optional and overrides the chore's own for that occurrence — which is what makes
+  the three dishes land in three different parts of the kid's day.
+
+A bare count is deliberately not offered. It would throw away the one thing Ray's current
+three-record workaround gets right: on the child's planner, "Dishes / Dishes / Dishes" is worse
+than what he has now, and the labels are what make the instances distinguishable.
+
+### 13.4 Schema — `migrations/0006_chore_instances.sql`
+
+```sql
+ALTER TABLE assignments ADD COLUMN instance_key TEXT NOT NULL DEFAULT '';
+```
+
+`NOT NULL DEFAULT ''` rather than a nullable column, and the choice is load-bearing:
+`NULL = NULL` is never true in SQLite, and the existing guard already relies on that property for
+`source_id` (`index.js:640`). A nullable `instance_key` would make the `NOT EXISTS` subquery
+never match for single-occurrence chores, silently disabling the duplicate guard for every chore
+that exists today. An empty string compares cleanly, so old rows, single-occurrence chores, and
+activities and events all share one code path with no `COALESCE`.
+
+SQLite permits `ADD COLUMN … NOT NULL` when the default is a non-null constant, and existing rows
+read the default — so this is a metadata-only change with no table rewrite.
+
+No new index. `loadLiveAssignmentKeys` (`index.js:721`) is already an indexed range scan on
+`idx_assign_child_date`; it gains one column in its `SELECT` list and nothing in its `WHERE`.
+
+### 13.5 The occurrence key, end to end
+
+**Worker** (`management-app/worker/`):
+
+| Site | Change |
+|---|---|
+| `ASSIGNMENT_CREATE_FIELDS` (`index.js:49`) | add `instanceKey: 'instance_key'`. Parent-owned; never patchable, never child-writable. |
+| `naturalKey` (`index.js:711`) | `` `${date} ${kind} ${sourceId} ${instanceKey}` `` |
+| the `NOT EXISTS` guard (`index.js:656`) | add `AND instance_key = ?N` |
+| `loadLiveAssignmentKeys` (`index.js:735`) | select `instance_key`, feed it to `naturalKey` |
+| insert column list (`index.js:643`) | add `instance_key`, bound from `row.instanceKey ?? ''` |
+
+**Management App** (`management-app/js/packet.js`):
+
+| Site | Change |
+|---|---|
+| `keyOf` (`:108`) | fourth component, mirroring `naturalKey` exactly |
+| `loadCommittedKeys`, D1 branch (`:133`) | key on `row.instance_key` |
+| `loadCommittedKeys`, log fallback (`:150`) | recover the instance from the occurrence id (below) |
+| Step 2 reproduce (`:240`) | carry the parsed instance onto the reproduced item |
+| Step 4 expansion (`:277`) | inner loop over `instancesOf(chore)`, one item per instance per day |
+| `assignmentFromChore` (`:507`) | set `instanceKey`; apply the instance's `label` to the title and its `blockHint` |
+
+The Generation Log's per-occurrence id becomes `CHR-{token}-{YYYYMMDD}-{instanceId}`, with the
+suffix omitted for a chore with no `instances`. This is why §13.3 forbids `-` in an instance id:
+the two existing parse sites read `itemId.split('-')[1]` to recover the chore token
+(`packet.js:154`, `packet.js:242`), and a fourth segment leaves that index untouched while a
+hyphen inside the id would not. `decisionItemIds` (`packet.js:206`) then suppresses a dropped
+instance individually rather than the whole day's set, which is the behavior a parent dropping
+one of three dishes expects.
+
+Note that this id lives only in `generationLog` — local scheduling history — and never becomes
+an assignment id. Online Revamp §3.3.1's repeal of derived ids is untouched: `assignments.id`
+stays a server-minted UUID, and `instance_key` is an opaque authoring value, not a parsed one.
+
+### 13.6 Interaction with the rest of this slice
+
+- **Ordering, decided.** §13 is built **before** §4's claim work. `claim_groups` is keyed
+  `(source_id, date, instance_key)` (§4.2) and SQLite cannot alter a primary key, so the reverse
+  order would force a create-copy-drop-rename migration on a table already holding live groups.
+  Built in this order, the table is created correctly once. Migration numbering follows: this is
+  `0006`, and §4.2's becomes `0007`.
+- **`each` and per-child days** are orthogonal. A chore with three instances and split days gives
+  each participant three occurrences on their own days.
+- **`claim`** gives three independent claim groups a day: Ellie can take breakfast dishes and Sam
+  dinner, and each is arbitrated on its own.
+- **Sort order within a day** is unchanged. `projectAssignments` (`packet.js:555`) already numbers
+  by position as it walks, and instances are walked in array order, so their relative order is
+  stable across runs.
+
+### 13.7 Editing the instance list
+
+| Edit | Effect |
+|---|---|
+| Add an instance | Regeneration inserts only the new occurrence; the others dedupe against themselves. |
+| Remove an instance | Future generation stops emitting it. Already-committed rows stay live — generation never retracts; the parent rescinds. Same rule as SRS Module 06 §2.5. |
+| Reorder | Nothing. Identity is the id, not the position. This is the point of §13.2. |
+| Rename a label | Committed rows keep their snapshotted title; future rows get the new one. |
+| Change a `blockHint` | Same — committed rows keep what they were assigned with. |
+
+### 13.8 Authoring UI
+
+The chore form gains an **Occurrences per day** control below Days of week: a list of rows, each
+with a label and an optional block hint, and *Add* / *Remove* buttons. An empty list is the
+default and renders nothing extra, so a one-a-day chore's form is unchanged. Removing a row warns
+that already-committed occurrences are unaffected, matching the existing delete confirmation's
+wording (`chores.js:233`).
+
+The list row (§7) shows the count when there is more than one:
+`Dishes · Ellie, Sam · Kitchen/Dining · Mon–Fri · 3×/day · Either can claim`.
+
+### 13.9 Acceptance checks
+
+Additional to §10, and to be run against a real database.
+
+1. A chore with no `instances` generates and commits exactly as it does today, with
+   `instance_key = ''` on every row.
+2. A chore with three instances commits three rows per child per day, with distinct
+   `instance_key`, distinct titles, and distinct block hints.
+3. Re-running Propose and Commit over an **overlapping** range inserts nothing new — `skipped`
+   equals the full row count, for all three instances. This is §6.6's guard under the new key and
+   is the check this amendment exists to satisfy.
+4. Deleting the middle instance and regenerating leaves the other two live and untouched, and
+   does not resurrect or rename the deleted one.
+5. Reordering the instance list and regenerating inserts nothing.
+6. Dropping one instance from one day in Propose suppresses that instance only; the other two
+   are still proposed for that day.
+7. A migration applied to a database with existing chore assignments leaves every pre-existing
+   row deduplicating correctly — the `NULL`-comparison trap in §13.4, verified rather than
+   assumed.
+8. With §4 also built: three instances a day produce three separate claim groups, and claiming
+   one leaves the other two claimable.
