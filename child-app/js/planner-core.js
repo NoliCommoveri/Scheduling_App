@@ -72,6 +72,47 @@
     };
   }
 
+  // Lesson-order sort within a course group: sequence_no ascending, id as tie-break.
+  function bySequenceNo(x, y) {
+    if (x.sequence_no !== y.sequence_no) return x.sequence_no - y.sequence_no;
+    return x.id < y.id ? -1 : (x.id > y.id ? 1 : 0);
+  }
+
+  // Child Feedback Loop §4.2 — School's three-pass sort, passes 2 and 3.
+  // `items` is already restricted to one kind and one block. Groups by
+  // course_name, in first-appearance order (same convention subjectsView
+  // already uses); course-less items fall into one unlabeled group, forced
+  // last so they never vanish from the list. Within a group, sorts by
+  // sequence_no when every item in it has one, else falls back to position.
+  function byCourseThenLesson(items) {
+    var pos = byPosition();
+    var groups = [];
+    var index = Object.create(null);
+    var noCourse = null;
+    items.forEach(function (r) {
+      var name = r.course_name;
+      if (!name) {
+        if (!noCourse) noCourse = { course_name: null, items: [] };
+        noCourse.items.push(r);
+        return;
+      }
+      if (!(name in index)) {
+        index[name] = { course_name: name, items: [] };
+        groups.push(index[name]);
+      }
+      index[name].items.push(r);
+    });
+    if (noCourse) groups.push(noCourse);
+
+    var out = [];
+    groups.forEach(function (grp) {
+      var everySequenced = grp.items.every(function (r) { return typeof r.sequence_no === "number"; });
+      grp.items.sort(everySequenced ? bySequenceNo : pos);
+      out = out.concat(grp.items);
+    });
+    return out;
+  }
+
   // Is this actionable row on the Today list for `today`?
   //  - due today (effective date == today), or
   //  - overdue: still-pending, required, effective date before today (roll-forward).
@@ -122,7 +163,9 @@
     var blocks = [];
     CANON_BLOCKS.forEach(function (blockName) {
       var inBlock = function (r) { return effectiveBlock(r) === blockName; };
-      var school = actionableA.filter(inBlock).sort(pos);
+      // School: block, then course, then lesson order (§4.2). Chores have no
+      // course concept, so they keep the plain position sort.
+      var school = byCourseThenLesson(actionableA.filter(inBlock));
       var chores = actionableC.filter(inBlock).sort(pos);
       if (school.length || chores.length) {
         blocks.push({ name: blockName, school: school, chores: chores });
@@ -135,18 +178,31 @@
     return { blocks: blocks, events: events };
   }
 
-  // Flat, position-ordered list of one category from the Today set (School / Chores filter views).
+  // Flat, ordered list of one category from the Today set (School / Chores
+  // filter views). Chores: block, then position — unchanged (§4.4, chores
+  // have no course concept). School: block, then course, then lesson order
+  // (§4.2) — each block's items run through byCourseThenLesson.
   function filterView(rows, today, isResolved, category) {
     isResolved = isResolved || function () { return false; };
     var pos = byPosition();
-    return ofKind(rows, category === "chores" ? "chore" : "activity")
-      .filter(function (r) { return onToday(r, today, isResolved); })
-      .sort(function (a, b) {
+    var items = ofKind(rows, category === "chores" ? "chore" : "activity")
+      .filter(function (r) { return onToday(r, today, isResolved); });
+
+    if (category === "chores") {
+      return items.sort(function (a, b) {
         var ba = CANON_BLOCKS.indexOf(effectiveBlock(a));
         var bb = CANON_BLOCKS.indexOf(effectiveBlock(b));
         if (ba !== bb) return ba - bb;
         return pos(a, b);
       });
+    }
+
+    var out = [];
+    CANON_BLOCKS.forEach(function (blockName) {
+      var inBlock = items.filter(function (r) { return effectiveBlock(r) === blockName; });
+      if (inBlock.length) out = out.concat(byCourseThenLesson(inBlock));
+    });
+    return out;
   }
 
   function eventsView(rows, today) {

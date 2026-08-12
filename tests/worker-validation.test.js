@@ -16,6 +16,7 @@ import {
   splitStatements,
   capRows,
   MAX_QUERY_ROWS,
+  MAX_NOTE_LEN,
   clampInt,
   randomPairCode,
   PAIR_CODE_ALPHABET,
@@ -57,9 +58,20 @@ test('validateCompletionValue rejects a status outside the enum', () => {
 });
 
 test('validateCompletionValue always permits null — clearing is a real write', () => {
-  for (const key of ['status', 'completedAt', 'grade', 'deferredTo', 'childBlockHint', 'childSortOrder']) {
+  for (const key of [
+    'status', 'completedAt', 'grade', 'deferredTo', 'childBlockHint', 'childSortOrder', 'completionNote',
+  ]) {
     assert.equal(validateCompletionValue(key, null), null, `${key} should accept null`);
   }
+});
+
+// Child Feedback Loop §5.2
+test('validateCompletionValue bounds completionNote at MAX_NOTE_LEN', () => {
+  assert.equal(validateCompletionValue('completionNote', 'skipped #11'), null);
+  assert.equal(validateCompletionValue('completionNote', ''), null, 'an empty string is a valid write, distinct from null');
+  assert.ok(validateCompletionValue('completionNote', 'x'.repeat(MAX_NOTE_LEN + 1)));
+  assert.equal(validateCompletionValue('completionNote', 'x'.repeat(MAX_NOTE_LEN)), null);
+  assert.ok(validateCompletionValue('completionNote', 42), 'must be a string');
 });
 
 test('validateCompletionValue rejects malformed timestamps, grades and dates', () => {

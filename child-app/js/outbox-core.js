@@ -27,7 +27,11 @@
   // ASSIGNMENT_COMPLETION_FIELDS map accepts. Anything not in here is either
   // parent-owned or bookkeeping, and must never appear in a request body.
   var CHILD_FIELDS = [
-    "status", "completedAt", "grade", "deferredTo", "childBlockHint", "childSortOrder"
+    "status", "completedAt", "grade", "deferredTo", "childBlockHint", "childSortOrder",
+    // Child Feedback Loop §5.3. Requires the Worker's matching
+    // ASSIGNMENT_COMPLETION_FIELDS entry, which requires migration 0004
+    // (release 1 of that slice) already applied — see DEPLOY.md.
+    "completionNote"
   ];
 
   // §3.3's child-owned planner columns, and the camelCase name each is sent

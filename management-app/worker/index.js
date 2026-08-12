@@ -62,6 +62,10 @@ const ASSIGNMENT_COMPLETION_FIELDS = {
   status: 'status', completedAt: 'completed_at', grade: 'grade',
   deferredTo: 'deferred_to', childBlockHint: 'child_block_hint',
   childSortOrder: 'child_sort_order',
+  // Child Feedback Loop §5.2. Requires migration 0004 to already be applied
+  // (release 1 of that slice) — see DEPLOY.md's note on why the ordering
+  // matters.
+  completionNote: 'completion_note',
 };
 
 export default {

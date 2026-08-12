@@ -25,6 +25,9 @@
     if (!g.Outbox) return Promise.resolve();
     var fields = { status: record.status, completedAt: at };
     if (typeof record.grade === "number") fields.grade = record.grade;
+    // §5.3: only sent when a note was actually given — a blank note at
+    // completion time is "nothing to say," not a write of empty string.
+    if (typeof record.note === "string") fields.completionNote = record.note;
     return g.Outbox.enqueueCompletion(item.id, fields).then(function () {
       return g.Outbox.enqueueReward(earn);
     });
@@ -49,7 +52,11 @@
   //
   // The fold check that used to sit between the earn and the upload is gone with
   // the store it maintained (§8.1) — an append is now the whole of the write.
-  function completeItem(item, rawGrade) {
+  //
+  // Child Feedback Loop §5.3: `rawNote` is validated unconditionally (unlike
+  // grade, it is never gated on capturesGrade — every completion may carry
+  // one).
+  function completeItem(item, rawGrade, rawNote) {
     return g.DB.get("activityRecords", item.id).then(function (existing) {
       if (existing) return { ok: true, alreadyDone: true };
 
@@ -60,9 +67,13 @@
         grade = v.grade;
       }
 
+      var noteResult = C.validateNote(rawNote);
+      if (!noteResult.ok) return { ok: false, noteError: noteResult.message };
+      var note = noteResult.note;
+
       var today = g.DateUtil.today();
       var at = Date.now();
-      var record = C.buildActivityRecord(item.id, today, grade);
+      var record = C.buildActivityRecord(item.id, today, grade, note);
       // Minted before the row is stored, let alone sent, so the local entry and
       // the uploaded one are the same entry (§5.5).
       //
@@ -82,5 +93,78 @@
     });
   }
 
-  g.Completion = { completeItem: completeItem };
+  // Child Feedback Loop TDS §3.3 — reverses everything completeItem granted,
+  // in the same action: the reward is clawed back and the streak advance
+  // (§3.4) is walked back. With both reversals intact, Undo needs no parent
+  // PIN (§0.1) — there is nothing left to bank, so there is nothing to game.
+  function undoItem(item) {
+    return g.DB.get("activityRecords", item.id).then(function (existing) {
+      // Only a live 'complete' row can be undone. A 'waived' row is left
+      // untouched — no Undo button is rendered for one either (§3.2), and
+      // SRS Module 5 already frames a waive as not undoable.
+      if (!existing || existing.status !== "complete") return { ok: false };
+
+      var today = g.DateUtil.today();
+      var at = Date.now();
+      // Recomputed from the assignment row's own snapshotted values, not
+      // looked up from the original ledger entry, so it can never disagree
+      // with what was actually earned (§3.3 step 2).
+      var amount = typeof item.reward_amount === "number" && isFinite(item.reward_amount) ? item.reward_amount : 1;
+      var reversal = C.buildEntry(C.mintEntryId(), item.reward_category, -amount, "adjustment", today, at, item.id);
+
+      return g.DB.del("activityRecords", item.id)
+        .then(function () { return g.DB.put("rewardEntries", reversal); })
+        .then(function () {
+          // completionNote cleared alongside grade — §3.3 step 4 deferred this
+          // until §5 landed; it now has.
+          return g.Outbox.enqueueCompletion(item.id, {
+            status: "pending", completedAt: null, grade: null, completionNote: null
+          });
+        })
+        .then(function () { return g.Outbox.enqueueReward(reversal); })
+        .then(notifyStreakUndo)
+        .then(function () { return { ok: true }; });
+    });
+  }
+
+  // Not notifyStreak()/recheckToday() — that path only ever advances a
+  // streak and never retracts one, so it would be a no-op in this direction
+  // (§3.4). Streak (Module 7) may not be loaded in every context this file
+  // runs in, same guard as notifyStreak above.
+  function notifyStreakUndo() {
+    if (g.Streak && typeof g.Streak.undoToday === "function") return g.Streak.undoToday();
+    return Promise.resolve();
+  }
+
+  // Child Feedback Loop §5.3 — the note is editable after the fact from the
+  // Completed view, unlike grade: an always-writable child-owned column, not
+  // a write-once field. Same shape as completeItem/undoItem: guard, local
+  // write, enqueue.
+  //
+  // Blank clears an existing note — a real write of NULL, same rule §4.2/
+  // outbox-core.js already applies to every other completion field — rather
+  // than "leave whatever was there," which validateNote's blank-is-absent
+  // reading would otherwise imply for a fresh completion.
+  function updateNote(item, rawNote) {
+    return g.DB.get("activityRecords", item.id).then(function (existing) {
+      if (!existing || existing.status !== "complete") return { ok: false };
+
+      var v = C.validateNote(rawNote);
+      if (!v.ok) return { ok: false, noteError: v.message };
+
+      var updated = Object.assign({}, existing);
+      if (typeof v.note === "string") updated.note = v.note;
+      else delete updated.note;
+
+      return g.DB.put("activityRecords", updated)
+        .then(function () {
+          return g.Outbox.enqueueCompletion(item.id, {
+            completionNote: typeof v.note === "string" ? v.note : null
+          });
+        })
+        .then(function () { return { ok: true }; });
+    });
+  }
+
+  g.Completion = { completeItem: completeItem, undoItem: undoItem, updateNote: updateNote };
 })(typeof window !== "undefined" ? window : globalThis);

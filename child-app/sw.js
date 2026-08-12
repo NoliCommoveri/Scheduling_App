@@ -50,7 +50,22 @@
 // reasoning applies: this handler is cache-first for the shell, so a device
 // left on v9 would never see the header land, and would keep reasoning about
 // "today" with no on-screen check against a mis-set device clock (§7.1).
-const CACHE_NAME = "daily-plan-shell-v10";
+// v11: three more Child Feedback Loop features landed on top of v10 without a
+// bump — the same v6/v10 hazard, missed again. No file added or removed;
+// planner-core.js, completion.js, completion-core.js, outbox-core.js,
+// streak.js and planner-ui.js all changed contents:
+//   - §4 course-ordered filtering (planner-core.js).
+//   - §3 Completed view + Undo (completion.js, streak.js, planner-ui.js) —
+//     a device stuck on v10 would have no Undo button at all, and Module 7's
+//     new FR-8 reversal would never run, silently reopening the exact
+//     bank-a-streak-day gap §0.1's no-PIN decision depends on staying closed.
+//   - §5 completion notes (completion-core.js, completion.js,
+//     outbox-core.js, planner-ui.js).
+// A device left on v10 would run the old "Mark done" dialog (no note field)
+// against a Worker that now accepts one, which is harmless — but would also
+// keep completing items with no Undo path and no course grouping, on a shell
+// that looks current because index.html itself is part of the cached set.
+const CACHE_NAME = "daily-plan-shell-v11";
 
 const APP_SHELL = [
   "./",

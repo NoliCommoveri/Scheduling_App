@@ -151,14 +151,15 @@ const Reporting = (() => {
   function toCsv(rows) {
     const header = [
       'date', 'kind', 'title', 'course', 'activity_type', 'status',
-      'completed_on', 'grade', 'deferred_to', 'rescinded_on', 'reward_category', 'assignment_id',
+      'completed_on', 'grade', 'completion_note', 'deferred_to', 'rescinded_on',
+      'reward_category', 'assignment_id',
     ];
     const lines = [header.join(',')];
     for (const row of rows) {
       lines.push([
         row.date, row.kind, row.title, row.course_name, row.activity_type,
         isRescinded(row) ? 'rescinded' : (row.status || 'pending'),
-        formatTimestamp(row.completed_at), row.grade, row.deferred_to,
+        formatTimestamp(row.completed_at), row.grade, row.completion_note, row.deferred_to,
         formatTimestamp(row.rescinded_at), row.reward_category, row.id,
       ].map(csvCell).join(','));
     }
@@ -410,12 +411,15 @@ const Reporting = (() => {
     section.innerHTML = `<h3>Detail (${rows.length} ${rows.length === 1 ? 'row' : 'rows'})</h3>`;
     section.appendChild(table(
       'report-detail',
-      ['Date', 'Kind', 'Title', 'Course', 'Status', 'Done', 'Grade', 'Moved to'],
+      ['Date', 'Kind', 'Title', 'Course', 'Status', 'Done', 'Grade', 'Note', 'Moved to'],
       rows.map((row) => [
         escapeHtml(row.date), escapeHtml(row.kind), escapeHtml(row.title),
         escapeHtml(row.course_name || ''), statusCell(row),
         escapeHtml(formatTimestamp(row.completed_at)),
         row.grade == null ? '' : escapeHtml(row.grade),
+        // Child Feedback Loop §5.4 — read-only, wherever a completed item's
+        // grade already shows.
+        escapeHtml(row.completion_note || ''),
         escapeHtml(row.deferred_to || ''),
       ])
     ));

@@ -150,6 +150,15 @@ test('toCsv emits a header even with no rows', () => {
   assert.equal(Reporting.toCsv([]).split('\n').length, 1);
 });
 
+// Child Feedback Loop §5.4 — the same read-only surface as grade.
+test('toCsv includes completion_note alongside grade', () => {
+  const csv = Reporting.toCsv([row({ status: 'complete', grade: 90, completion_note: 'skipped #11' })]);
+  const [header, line] = csv.split('\n');
+  assert.ok(header.includes('grade'));
+  assert.ok(header.includes('completion_note'));
+  assert.ok(line.includes('skipped #11'));
+});
+
 // =================================================  Assignments helpers
 
 test('a row is editable only while pending and not rescinded', () => {

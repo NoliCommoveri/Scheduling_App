@@ -33,6 +33,7 @@
     { id: "chores", label: "Chores" },
     { id: "events", label: "Events" },
     { id: "subjects", label: "Subjects" },
+    { id: "completed", label: "Completed" },
     { id: "rewards", label: "Rewards" }
   ];
 
@@ -391,8 +392,11 @@
       var container = node("div");
       // Rewards (Module 6) is never gated by the empty-content state below —
       // a category balance or the completion count can exist independent of
-      // whatever's currently imported.
+      // whatever's currently imported. Completed (§3.2) is the same: it asks
+      // "what did I do today," which is independent of whether new work has
+      // been assigned since.
       if (state.view === "rewards") { container.appendChild(renderRewards()); return container; }
+      if (state.view === "completed") { container.appendChild(renderCompleted()); return container; }
 
       if (d.rows.length === 0) { container.appendChild(emptyState()); return container; }
 
@@ -570,6 +574,127 @@
       return wrap;
     }
 
+    // ---------- Completed view + Undo (Child Feedback Loop §3) ----------
+    // Bounded to the real device-local day, never state.today (§0.4, §3.2) —
+    // a preview lets a child point the rest of the screen at any date, but a
+    // destructive control (Undo) may not follow it. Waived items are out of
+    // scope (§3.2): they simply never carry status 'complete'.
+    function renderCompleted() {
+      var d = state.data;
+      var rowsById = Object.create(null);
+      (d.rows || []).forEach(function (r) { rowsById[r.id] = r; });
+      var today = g.DateUtil.localISODate(new Date());
+
+      var pairs = (state.records || [])
+        .filter(function (rec) { return rec.status === "complete" && rec.date === today; })
+        .map(function (rec) { return { rec: rec, item: rowsById[rec.activityId] }; })
+        .filter(function (pair) { return !!pair.item; });
+
+      var wrap = node("div");
+      if (pairs.length === 0) {
+        wrap.appendChild(node("div", "section-empty", "Nothing completed yet today."));
+        return wrap;
+      }
+      pairs.forEach(function (pair) { wrap.appendChild(completedCard(pair.item, pair.rec)); });
+      return wrap;
+    }
+
+    // Read-only apart from the note (§5.3 — always-writable, not a write-once
+    // field like grade) — no reorder controls, no block picker; this is a
+    // list, not a plan. Shares itemCard's rendering conventions for the
+    // fields it shows.
+    function completedCard(item, rec) {
+      var kind = item.kind === "chore" ? "chore" : "activity";
+      var blockName = P.effectiveBlock(item);
+      var card = node("div", "card");
+      card.style.setProperty("--lane-color", "var(--" + blockName + ")");
+
+      var top = node("div", "card-top");
+      var main = node("div", "card-main");
+
+      var tagrow = node("div", "tagrow");
+      var typeText = kind === "chore" ? item.choreType : item.activity_type;
+      if (typeText) tagrow.appendChild(node("span", "type-tag", typeText));
+      if (typeof item.sequence_no === "number") {
+        tagrow.appendChild(node("span", "ordinal", "No. " + item.sequence_no));
+      }
+      if (tagrow.childNodes.length) main.appendChild(tagrow);
+
+      if (kind === "activity" && item.course_name) {
+        main.appendChild(node("div", "course-sub", item.course_name));
+      }
+      main.appendChild(node("div", "title", item.title));
+      if (kind === "activity" && item.lessonTitle) {
+        main.appendChild(node("div", "lesson-sub", item.lessonTitle));
+      }
+      if (typeof rec.grade === "number") {
+        main.appendChild(node("div", "payload", "Grade: " + rec.grade + "%"));
+      }
+      if (rec.note) {
+        main.appendChild(node("div", "payload", "Note: " + rec.note));
+      }
+      top.appendChild(main);
+      card.appendChild(top);
+
+      var footer = node("div", "footer-row");
+      var noteBtn = node("button", "btn ghost small", rec.note ? "Edit note" : "Add note");
+      noteBtn.onclick = function () { openNoteDialog(item, rec); };
+      footer.appendChild(noteBtn);
+      var undoBtn = node("button", "btn ghost small", "Undo");
+      undoBtn.onclick = function () { handleUndo(item); };
+      footer.appendChild(undoBtn);
+      card.appendChild(footer);
+      return card;
+    }
+
+    function handleUndo(item) {
+      g.Completion.undoItem(item).then(function (res) {
+        if (!res.ok) { toast("Couldn't undo that.", true); return; }
+        toast("Undone.", false);
+        reload();
+      }).catch(function (e) {
+        toast("Something went wrong undoing that.", true);
+        console.error(e);
+      });
+    }
+
+    // §5.3 — the note is editable after the fact, unlike grade. Blank clears
+    // an existing note rather than leaving it, same as every other completion
+    // field's null-clears rule.
+    function openNoteDialog(item, rec) {
+      var overlay = node("div", "modal-overlay");
+      var card = node("div", "modal-card");
+      card.appendChild(node("h2", "modal-title", rec.note ? "Edit note" : "Add a note"));
+      var noteInput = node("textarea", "modal-input");
+      noteInput.rows = 4;
+      noteInput.maxLength = g.CompletionCore.MAX_NOTE_LEN;
+      noteInput.value = rec.note || "";
+      card.appendChild(noteInput);
+      var err = node("div", "err-text");
+      card.appendChild(err);
+
+      var actions = node("div", "modal-actions");
+      var cancel = node("button", "btn ghost", "Cancel");
+      cancel.onclick = function () { overlay.remove(); };
+      var save = node("button", "btn", "Save");
+      save.onclick = function () {
+        g.Completion.updateNote(item, noteInput.value).then(function (res) {
+          if (!res.ok) { err.textContent = res.noteError || "Couldn't save that note."; return; }
+          overlay.remove();
+          toast("Note saved.", false);
+          reload();
+        }).catch(function (e) {
+          err.textContent = "Something went wrong.";
+          console.error(e);
+        });
+      };
+      actions.appendChild(cancel); actions.appendChild(save);
+      card.appendChild(actions);
+      overlay.appendChild(card);
+      document.body.appendChild(overlay);
+      noteInput.focus();
+    }
+
     // ---------- item card ----------
     function itemCard(item, kind, blockName, group, indexInGroup) {
       var card = node("div", "card");
@@ -693,18 +818,20 @@
       return card;
     }
 
-    // ---------- completion (Module 4) ----------
-    // Grade entry is offered only when the item's own capturesGrade is true
-    // (never inferred from activity_type/kind — Chores simply lack the field,
-    // SRS Module 4 FR-1/FR-2). Either way completion always succeeds.
+    // ---------- completion (Module 4, widened by Child Feedback Loop §5.3) ----------
+    // Every "Mark done" tap opens the same small dialog now: a grade field
+    // only when the item's own capturesGrade is true (never inferred from
+    // activity_type/kind — Chores simply lack the field, SRS Module 4
+    // FR-1/FR-2), a note field always, both optional. "Just mark done"
+    // preserves the one-tap path for the common case of nothing to say.
+    // Either way completion always succeeds.
     function handleComplete(item) {
-      if (item.capturesGrade) openGradeDialog(item);
-      else doComplete(item, undefined);
+      openCompleteDialog(item);
     }
 
-    function doComplete(item, grade) {
-      g.Completion.completeItem(item, grade).then(function (res) {
-        if (!res.ok) { toast(res.gradeError || "Couldn't mark that complete.", true); return; }
+    function doComplete(item, grade, rawNote) {
+      g.Completion.completeItem(item, grade, rawNote).then(function (res) {
+        if (!res.ok) { toast(res.gradeError || res.noteError || "Couldn't mark that complete.", true); return; }
         if (res.alreadyDone) toast("Already marked done.", false);
         else toast("Marked done" + (typeof grade === "number" ? " — grade " + grade + "%" : "") + ".", false);
         reload();
@@ -714,39 +841,58 @@
       });
     }
 
-    function openGradeDialog(item) {
+    function openCompleteDialog(item) {
       var overlay = node("div", "modal-overlay");
       var card = node("div", "modal-card");
-      card.appendChild(node("h2", "modal-title", "Add a grade?"));
-      card.appendChild(node("p", "modal-help", "Optional — a whole number 0 to 100. You can skip this and still mark it done."));
-      var input = node("input", "modal-input");
-      input.type = "number"; input.min = "0"; input.max = "100"; input.inputMode = "numeric";
-      card.appendChild(input);
+      card.appendChild(node("h2", "modal-title", "Mark done"));
+
+      var gradeInput = null;
+      if (item.capturesGrade) {
+        card.appendChild(node("p", "modal-help", "Grade — optional, a whole number 0 to 100."));
+        gradeInput = node("input", "modal-input");
+        gradeInput.type = "number"; gradeInput.min = "0"; gradeInput.max = "100"; gradeInput.inputMode = "numeric";
+        gradeInput.placeholder = "Grade";
+        card.appendChild(gradeInput);
+      }
+
+      card.appendChild(node("p", "modal-help", "Anything to add? Optional."));
+      var noteInput = node("textarea", "modal-input");
+      noteInput.rows = 3;
+      noteInput.maxLength = g.CompletionCore.MAX_NOTE_LEN;
+      noteInput.placeholder = "Note (optional)";
+      noteInput.style.marginTop = gradeInput ? "10px" : "0";
+      card.appendChild(noteInput);
+
       var err = node("div", "err-text");
       card.appendChild(err);
 
       var actions = node("div", "modal-actions");
       var cancel = node("button", "btn ghost", "Cancel");
       cancel.onclick = function () { overlay.remove(); };
-      var skip = node("button", "btn ghost", "Skip grade");
-      skip.onclick = function () { overlay.remove(); doComplete(item, undefined); };
+      var justDone = node("button", "btn ghost", "Just mark done");
+      justDone.onclick = function () { overlay.remove(); doComplete(item, undefined, undefined); };
       var save = node("button", "btn", "Complete");
       save.onclick = function () {
-        var raw = input.value.trim();
-        if (raw === "") { overlay.remove(); doComplete(item, undefined); return; }
-        var n = Number(raw);
-        if (!Number.isInteger(n) || n < 0 || n > 100) {
-          err.textContent = "Enter a whole number 0–100, or leave it blank.";
-          return;
+        var grade;
+        if (gradeInput) {
+          var raw = gradeInput.value.trim();
+          if (raw !== "") {
+            var n = Number(raw);
+            if (!Number.isInteger(n) || n < 0 || n > 100) {
+              err.textContent = "Enter a whole number 0–100 for the grade, or leave it blank.";
+              return;
+            }
+            grade = n;
+          }
         }
         overlay.remove();
-        doComplete(item, n);
+        doComplete(item, grade, noteInput.value);
       };
-      actions.appendChild(cancel); actions.appendChild(skip); actions.appendChild(save);
+      actions.appendChild(cancel); actions.appendChild(justDone); actions.appendChild(save);
       card.appendChild(actions);
       overlay.appendChild(card);
       document.body.appendChild(overlay);
-      input.focus();
+      (gradeInput || noteInput).focus();
     }
 
     // ---------- deferment / waive (Module 5) ----------
