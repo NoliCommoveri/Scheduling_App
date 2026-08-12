@@ -123,6 +123,7 @@ button { font-family: inherit; cursor: pointer; }
 .appbar-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .greeting { font-family: var(--font-display); font-weight: 800; font-size: 26px; letter-spacing: -.02em; margin: 0; }
 .semester { color: var(--ink-soft); font-size: 13px; font-weight: 600; letter-spacing: .01em; }
+.date-header { color: var(--ink-soft); font-size: 13px; font-weight: 600; letter-spacing: .01em; margin-top: 4px; }
 .preview {
   display: flex; align-items: center; gap: 6px;
   color: var(--ink-faint); font-size: 12px; font-weight: 600;
