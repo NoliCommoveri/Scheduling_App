@@ -114,6 +114,19 @@
 
       return g.DB.del("activityRecords", item.id)
         .then(function () { return g.DB.put("rewardEntries", reversal); })
+        // The cached row goes back to pending in the same action, not when the
+        // drain lands. Deleting the record is only half of un-completing: the
+        // row the server last sent still says `complete`, and §6.4 keeps such a
+        // row out of every plan view — so between the tap and the round-trip the
+        // item would be in no view at all, neither Completed nor Today. Local
+        // write first, queue second, exactly as §8.4 has every other child
+        // action do it; the enqueue below is what tells the server, never what
+        // makes the change visible.
+        .then(function () {
+          return g.DB.setAssignmentFields(item.id, {
+            status: "pending", completed_at: null, grade: null, completion_note: null
+          });
+        })
         .then(function () {
           // completionNote cleared alongside grade — §3.3 step 4 deferred this
           // until §5 landed; it now has.

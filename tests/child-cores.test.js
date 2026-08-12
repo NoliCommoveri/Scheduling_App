@@ -229,6 +229,41 @@ test('toState returns only the decorated rows', () => {
   assert.equal(state.rows.length, 3);
 });
 
+test('decorateById indexes rows toState drops, which is the whole point of it', () => {
+  // The Completed view's join source. A completed assignment is never in
+  // toState's output (§6.4), so joining a completion record against `rows` finds
+  // nothing the moment the server echoes the completion back — that is the bug
+  // this function exists to close.
+  const rows = [
+    row({ id: 'a1', status: 'complete' }),
+    row({ id: 'a2', status: 'waived' }),
+    row({ id: 'a3', status: 'complete', rescinded_at: 123 }),
+    row({ id: 'a4' }),
+  ];
+  assert.equal(AssignmentCore.toState(rows).rows.length, 1);
+
+  const byId = AssignmentCore.decorateById(rows);
+  assert.deepEqual(Object.keys(byId).sort(), ['a1', 'a2', 'a3', 'a4']);
+  assert.equal(byId.a1.status, 'complete');
+});
+
+test('decorateById decorates each row exactly as the planner does', () => {
+  const source = row({ id: 'a1', status: 'complete', course_name: 'Math', sequence_no: 4 });
+  const byId = AssignmentCore.decorateById([source]);
+  assert.deepEqual(byId.a1, AssignmentCore.decorate(source));
+  assert.notEqual(byId.a1, source); // copied, never the stored row itself
+});
+
+test('decorateById skips an unknown kind and an id-less row, same as toState', () => {
+  const byId = AssignmentCore.decorateById([
+    row({ id: 'x1', kind: 'somethingNew' }),
+    row({ id: undefined }),
+    null,
+    row({ id: 'a1' }),
+  ]);
+  assert.deepEqual(Object.keys(byId), ['a1']);
+});
+
 test('decorate keeps the row it was given, and does not mutate it', () => {
   // One object per assignment is the point of the phase — the planning columns
   // have to survive decoration or planner-core has nothing to read.

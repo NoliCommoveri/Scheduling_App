@@ -78,7 +78,7 @@
     };
 
     function reload() {
-      return Promise.all([g.DB.loadState(), g.DB.getAll("activityRecords"), g.Export.reminderState(), g.Reward.gatherDisplay(), g.PlanSync.status(), g.Outbox.status()]).then(function (r) {
+      return Promise.all([g.DB.loadState(), g.DB.getAll("activityRecords"), g.Export.reminderState(), g.Reward.gatherDisplay(), g.PlanSync.status(), g.Outbox.status(), g.DB.loadAssignmentIndex()]).then(function (r) {
         state.data = r[0];
         state.records = r[1]; // activityRecords — drives the daily completion visual
         var resolved = Object.create(null);
@@ -88,6 +88,9 @@
         state.rewards = r[3];
         state.sync = r[4]; // Online Revamp §8.3 — link state, for the empty state and Settings
         state.upload = r[5]; // Online Revamp §8.4 — how much is still queued to go up
+        // Every cached row by id, resolved ones included — the Completed view's
+        // join source. Not state.data.rows: see renderCompleted.
+        state.rowsById = r[6];
         render();
       });
     }
@@ -579,10 +582,17 @@
     // a preview lets a child point the rest of the screen at any date, but a
     // destructive control (Undo) may not follow it. Waived items are out of
     // scope (§3.2): they simply never carry status 'complete'.
+    //
+    // The join is against `state.rowsById` — every cached row — and NOT
+    // `state.data.rows`, which §3.2 originally named. `loadState()` returns the
+    // *plannable* set (AssignmentCore §6.4), and a completed assignment is the
+    // one thing that is guaranteed not to be in it. Built that way, this view
+    // worked only in the gap between the tap and the sync: the completion
+    // uploads, the next poll brings the row back down as `status: 'complete'`,
+    // `toState` drops it, every pair here loses its `item`, and the tab reads
+    // "Nothing completed yet today" for work finished minutes ago.
     function renderCompleted() {
-      var d = state.data;
-      var rowsById = Object.create(null);
-      (d.rows || []).forEach(function (r) { rowsById[r.id] = r; });
+      var rowsById = state.rowsById || Object.create(null);
       var today = g.DateUtil.localISODate(new Date());
 
       var pairs = (state.records || [])

@@ -339,6 +339,16 @@
     });
   }
 
+  // The same cache, indexed by id and unfiltered — what a completion record has
+  // to be joined against to render at all. Deliberately a second read rather
+  // than a second key on loadState(): §IV.B of CLAUDE.md pins that function's
+  // shape at `{ rows }`, and `rows` means the plan. See decorateById.
+  function loadAssignmentIndex() {
+    return getAll("assignments").then(function (rows) {
+      return g.AssignmentCore.decorateById(rows);
+    });
+  }
+
   // ---- outbox (§8.1, §8.4) ----
   //
   // The queue that makes a completion survive a dead network. A write commits
@@ -453,6 +463,7 @@
     rejectionCount: rejectionCount,
     rejectionClear: rejectionClear,
     loadState: loadState,
+    loadAssignmentIndex: loadAssignmentIndex,
     setAssignmentFields: setAssignmentFields,
     devWipeAll: devWipeAll
   };

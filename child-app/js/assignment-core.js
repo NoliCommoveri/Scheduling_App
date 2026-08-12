@@ -148,8 +148,34 @@
     return { rows: out };
   }
 
+  // Every cached row, decorated, indexed by id — with **no visibility filter**.
+  //
+  // `toState` answers one question: what is still part of the plan. §6.4 says a
+  // resolved or rescinded row is not, so it drops one, and every planner view
+  // is built on that. But two surfaces join a *record* back to the assignment it
+  // resolved — the Completed view (Child Feedback Loop §3.2) and the CSV export
+  // — and for those, "the row has left the plan" is the normal case, not a
+  // reason to skip it. Joining either against `toState`'s output means the row
+  // is present only until the completion reaches the server and comes back down
+  // as `status: 'complete'`, at which point the join silently finds nothing.
+  //
+  // A caller here already holds a record naming the row, so it is not asking
+  // whether the row is plannable; it is asking what the row said.
+  function decorateById(rows) {
+    var byId = Object.create(null);
+    (rows || []).forEach(function (row) {
+      if (!row || !row.id) return;
+      // Same guard as toState — an unknown kind is a newer parent build, and
+      // decorate() would hand back a row no renderer here knows how to draw.
+      if (row.kind !== "activity" && row.kind !== "chore" && row.kind !== "event") return;
+      byId[row.id] = decorate(row);
+    });
+    return byId;
+  }
+
   g.AssignmentCore = {
     toState: toState,
+    decorateById: decorateById,
     decorate: decorate,
     isPlannable: isPlannable,
     parsePayload: parsePayload
