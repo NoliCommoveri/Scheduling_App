@@ -111,7 +111,19 @@ const Children = (() => {
       Storage.getAll('familyEvents'),
     ]);
     await Storage.runTransaction(['children', 'chores', 'familyEvents'], 'readwrite', (t) => {
-      for (const c of chores.filter((c) => c.childId === childId)) t.objectStore('chores').delete(c.id);
+      // Shared Chores §4.4 — prune the departing child from every chore's
+      // participant list; delete a chore only once that list is empty. A flat
+      // "delete where I'm a participant" match (Family Events' pattern, and
+      // this cascade's own pre-§4.4 behavior) would take a sibling's half of
+      // a shared chore down with it.
+      for (const c of chores) {
+        const rest = Chores.participantsOf(c).filter((id) => id !== childId);
+        if (rest.length === 0) {
+          t.objectStore('chores').delete(c.id);
+        } else if (rest.length !== Chores.participantsOf(c).length) {
+          t.objectStore('chores').put(Chores.pruneParticipant(c, childId));
+        }
+      }
       for (const e of familyEvents.filter((e) => (e.childIds || []).includes(childId))) {
         t.objectStore('familyEvents').delete(e.id);
       }

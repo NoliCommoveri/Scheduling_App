@@ -31,13 +31,46 @@ const Chores = (() => {
     return div.innerHTML;
   }
 
+  // ---- Normalizing helpers (Shared Chores §2.3) ----
+  //
+  // Every call site in this app — listChores, the list row, the edit/create
+  // forms, Propose (packet.js) and the child cascade (children.js) — reads a
+  // chore's participants/allocation/days/instances through these four
+  // functions rather than its raw fields. That is what lets an old-shape
+  // record ({childId}, no allocation, no instances) and a new-shape one
+  // ({childIds, allocation, childDays?, instances?}) behave identically with
+  // no migration and no dual-write window: a chore never edited keeps its old
+  // shape and keeps working.
+
+  function participantsOf(chore) {
+    return chore.childIds || (chore.childId ? [chore.childId] : []);
+  }
+
+  function allocationOf(chore) {
+    return chore.allocation || 'each';
+  }
+
+  function daysFor(chore, childId) {
+    return (chore.childDays && chore.childDays[childId]) || chore.daysOfWeek;
+  }
+
+  function instancesOf(chore) {
+    return chore.instances || [{ id: '' }];
+  }
+
   // ---- Validation & CRUD (FR-1, FR-2, FR-4, FR-5, FR-7) ----
 
   async function validateFields(fields) {
     if (!fields.title || !fields.title.trim()) return 'Title is required.';
-    if (!fields.childId) return 'Child is required.';
-    const child = await Storage.get('children', fields.childId);
-    if (!child) return 'Child must resolve to an existing Child.';
+    const childIds = fields.childIds || [];
+    if (childIds.length === 0) return 'At least one participating Child is required.';
+    if (new Set(childIds).size !== childIds.length) return 'Participants must not contain duplicates.';
+    for (const id of childIds) {
+      const child = await Storage.get('children', id);
+      if (!child) return 'Every participant must resolve to an existing Child.';
+    }
+    const allocation = fields.allocation || 'each';
+    if (allocation !== 'each' && allocation !== 'claim') return 'Allocation must be "each" or "claim".';
     if (!CHORE_TYPES.includes(fields.choreType)) return 'Chore type must be one of the listed options.';
     const days = fields.daysOfWeek || [];
     if (days.length === 0) return 'At least one day of the week is required.';
@@ -46,6 +79,25 @@ const Chores = (() => {
       if (!DAYS.includes(d)) return 'Invalid day of week.';
       if (seen.has(d)) return 'Days of week must not contain duplicates.';
       seen.add(d);
+    }
+    // Shared Chores §4.3 — per-child days only mean something for `each`;
+    // a `claim` chore with split days would produce a one-row "group" on most
+    // days, so the combination is rejected outright rather than defined.
+    if (fields.childDays != null) {
+      if (allocation === 'claim') return 'A claimed chore cannot have per-child days.';
+      for (const childId of Object.keys(fields.childDays)) {
+        if (!childIds.includes(childId)) return 'Per-child days may only be set for a participant.';
+        const childDays = fields.childDays[childId];
+        if (!Array.isArray(childDays) || childDays.length === 0) {
+          return 'A participant\'s days, when set, must be a non-empty list.';
+        }
+        const seenChildDays = new Set();
+        for (const d of childDays) {
+          if (!days.includes(d)) return 'A participant\'s days must be a subset of the chore\'s days.';
+          if (seenChildDays.has(d)) return 'A participant\'s days must not contain duplicates.';
+          seenChildDays.add(d);
+        }
+      }
     }
     if (!fields.difficultyTier) return 'Difficulty Tier is required.';
     const tier = await Storage.get('tiers', fields.difficultyTier);
@@ -71,11 +123,15 @@ const Chores = (() => {
     return null;
   }
 
-  // Optional fields omitted, never null (same rule as curriculum.js).
+  // Optional fields omitted, never null (same rule as curriculum.js). Always
+  // written in the new shape (§2.3) — a save through the edit or create form
+  // never re-emits the legacy single-`childId` shape, even for a one-child
+  // chore (§0.5: `childIds: [x]`, `allocation: 'each'`).
   function buildRecord(id, fields) {
     const record = {
       id,
-      childId: fields.childId,
+      childIds: fields.childIds,
+      allocation: fields.allocation || 'each',
       title: fields.title.trim(),
       choreType: fields.choreType,
       daysOfWeek: fields.daysOfWeek,
@@ -83,8 +139,32 @@ const Chores = (() => {
     };
     if (fields.notes && fields.notes.trim()) record.notes = fields.notes.trim();
     if (fields.blockHint) record.blockHint = fields.blockHint;
+    if (fields.childDays && Object.keys(fields.childDays).length) record.childDays = fields.childDays;
     if (fields.instances && fields.instances.length) record.instances = fields.instances;
     return record;
+  }
+
+  // Shared Chores §4.4 — called from children.js's cascade when a Child is
+  // deleted. Drops the departing child from participants and from
+  // `childDays`, leaves `allocation` and everything else alone. Built on
+  // `buildRecord` so a pruned record is written in the same normalized shape
+  // an edit-form save would produce.
+  function pruneParticipant(chore, childId) {
+    const childIds = participantsOf(chore).filter((id) => id !== childId);
+    const childDays = chore.childDays ? { ...chore.childDays } : undefined;
+    if (childDays) delete childDays[childId];
+    return buildRecord(chore.id, {
+      childIds,
+      allocation: allocationOf(chore),
+      title: chore.title,
+      choreType: chore.choreType,
+      daysOfWeek: chore.daysOfWeek,
+      difficultyTier: chore.difficultyTier,
+      notes: chore.notes,
+      blockHint: chore.blockHint,
+      childDays,
+      instances: chore.instances,
+    });
   }
 
   // FR-1 — choreToken minted, uniqueness-checked against existing `chores`
@@ -129,9 +209,9 @@ const Chores = (() => {
     return { record };
   }
 
-  // FR-2 — every field editable, including childId/choreType/daysOfWeek/
-  // difficultyTier; id (and therefore the choreToken stem) never changes,
-  // not even on a childId change.
+  // FR-2 — every field editable, including childIds/allocation/choreType/
+  // daysOfWeek/difficultyTier; id (and therefore the choreToken stem) never
+  // changes, not even when the participant list changes.
   async function editChore(id, fields) {
     const error = await validateFields(fields);
     if (error) return { error };
@@ -150,7 +230,7 @@ const Chores = (() => {
   async function listChores(childId) {
     const all = await Storage.getAll('chores');
     if (!childId) return all;
-    return all.filter((c) => c.childId === childId);
+    return all.filter((c) => participantsOf(c).includes(childId));
   }
 
   // ---- Rendering ----
@@ -232,16 +312,136 @@ const Chores = (() => {
     return fs;
   }
 
-  // Authoring picker, so archived children are not offered (§3.2's `active`).
-  // One that is already on the chore being edited stays in the list regardless:
-  // dropping it would leave the select showing a different child and silently
-  // reassign the chore on the next save. The browse filter above is built from
-  // the full list, so an archived child's existing chores stay reachable.
-  function childOptions(allChildren, selected) {
-    const children = allChildren.filter((c) => Children.isActive(c) || c.id === selected);
-    return ['<option value="">(select)</option>']
-      .concat(children.map((c) => `<option value="${c.id}" ${c.id === selected ? 'selected' : ''}>${escapeHtml(c.name)}</option>`))
-      .join('');
+  // Shared Chores §8 — Participants, arrangement, and per-child days, built
+  // as one stateful fieldset so checking/unchecking a participant can grow or
+  // shrink the arrangement and day-grid controls beneath it. `chore` is `{}`
+  // for the create form.
+  //
+  // Archived children are not offered (§3.2's `active`), except one already a
+  // participant on the chore being edited: dropping it would leave the
+  // checkbox list showing a different set of participants than the record
+  // holds, and silently rewrite `childIds` on the next save. The browse
+  // filter above the list is built from the full child list either way, so
+  // an archived child's chores stay reachable. (The Propose form's flat
+  // exclusion is the *other* case — it generates new work and has no
+  // already-selected child to preserve.)
+  function buildParticipationFieldset(chore, allChildren) {
+    const participants = new Set(participantsOf(chore));
+    let allocation = allocationOf(chore);
+    const existingChildDays = chore.childDays || {};
+    let sameDays = Object.keys(existingChildDays).length === 0;
+    const chosenDays = {}; // childId -> days[], seeded lazily on first reveal
+
+    const eligible = allChildren.filter((c) => Children.isActive(c) || participants.has(c.id));
+
+    const fs = document.createElement('fieldset');
+    fs.className = 'chore-participation';
+    const legend = document.createElement('legend');
+    legend.textContent = 'Participants';
+    fs.appendChild(legend);
+
+    const checkboxWrap = document.createElement('div');
+    checkboxWrap.className = 'participant-checkboxes';
+    const arrangementWrap = document.createElement('div');
+    arrangementWrap.className = 'chore-arrangement';
+    const sameDaysWrap = document.createElement('div');
+    sameDaysWrap.className = 'chore-same-days';
+    const perChildDaysWrap = document.createElement('div');
+    perChildDaysWrap.className = 'chore-per-child-days';
+    fs.append(checkboxWrap, arrangementWrap, sameDaysWrap, perChildDaysWrap);
+
+    function currentDaysOfWeek() {
+      // Reads the sibling Days-of-week fieldset live, once this fieldset is
+      // attached to the form, so a freshly-revealed per-child grid seeds from
+      // whatever the parent has checked in this same edit session. Before
+      // attachment (the initial render, still building the form) falls back
+      // to the chore's own days.
+      const form = fs.closest('form');
+      return form ? readDays(form) : (chore.daysOfWeek || []);
+    }
+
+    function renderCheckboxes() {
+      checkboxWrap.innerHTML = eligible.map((c) => `
+        <label class="participant-option">
+          <input type="checkbox" name="childIds" value="${c.id}" ${participants.has(c.id) ? 'checked' : ''}> ${escapeHtml(c.name)}
+        </label>
+      `).join('');
+      checkboxWrap.querySelectorAll('input[name="childIds"]').forEach((el) => {
+        el.addEventListener('change', () => {
+          if (el.checked) participants.add(el.value); else participants.delete(el.value);
+          renderDerived();
+        });
+      });
+    }
+
+    function renderArrangement() {
+      if (participants.size <= 1) { arrangementWrap.innerHTML = ''; return; }
+      arrangementWrap.innerHTML = `
+        <label><input type="radio" name="allocation" value="each" ${allocation === 'each' ? 'checked' : ''}> Each child does their own</label>
+        <label><input type="radio" name="allocation" value="claim" ${allocation === 'claim' ? 'checked' : ''}> Either child can claim it — first one earns the reward</label>
+      `;
+      arrangementWrap.querySelectorAll('input[name="allocation"]').forEach((el) => {
+        el.addEventListener('change', () => { allocation = el.value; renderDerived(); });
+      });
+    }
+
+    function renderSameDays() {
+      if (participants.size <= 1 || allocation !== 'each') { sameDaysWrap.innerHTML = ''; return; }
+      sameDaysWrap.innerHTML = `<label><input type="checkbox" name="sameDays" ${sameDays ? 'checked' : ''}> Same days for everyone</label>`;
+      sameDaysWrap.querySelector('input[name="sameDays"]').addEventListener('change', (e) => {
+        sameDays = e.target.checked;
+        renderPerChildDays();
+      });
+    }
+
+    function renderPerChildDays() {
+      if (participants.size <= 1 || allocation !== 'each' || sameDays) { perChildDaysWrap.innerHTML = ''; return; }
+      const base = currentDaysOfWeek();
+      perChildDaysWrap.innerHTML = '';
+      for (const childId of participants) {
+        if (!(childId in chosenDays)) {
+          const seeded = existingChildDays[childId] || base;
+          chosenDays[childId] = seeded.filter((d) => base.includes(d));
+        }
+        const child = allChildren.find((c) => c.id === childId);
+        const wrap = document.createElement('div');
+        wrap.className = 'chore-child-days';
+        const label = document.createElement('span');
+        label.textContent = (child ? child.name : childId) + ':';
+        wrap.appendChild(label);
+        const grid = document.createElement('span');
+        grid.innerHTML = daysHtml(`childDays-${childId}`, chosenDays[childId]);
+        wrap.appendChild(grid);
+        perChildDaysWrap.appendChild(wrap);
+        grid.querySelectorAll(`input[name="childDays-${childId}"]`).forEach((el) => {
+          el.addEventListener('change', () => {
+            chosenDays[childId] = Array.from(grid.querySelectorAll(`input[name="childDays-${childId}"]:checked`)).map((e2) => e2.value);
+          });
+        });
+      }
+    }
+
+    function renderDerived() {
+      renderArrangement();
+      renderSameDays();
+      renderPerChildDays();
+    }
+    renderCheckboxes();
+    renderDerived();
+
+    fs.readParticipation = () => {
+      const childIds = Array.from(participants);
+      const out = { childIds, allocation: childIds.length > 1 ? allocation : 'each' };
+      if (childIds.length > 1 && allocation === 'each' && !sameDays) {
+        const childDays = {};
+        for (const childId of childIds) {
+          if (chosenDays[childId] && chosenDays[childId].length) childDays[childId] = chosenDays[childId];
+        }
+        if (Object.keys(childDays).length) out.childDays = childDays;
+      }
+      return out;
+    };
+    return fs;
   }
 
   function choreTypeOptions(selected) {
@@ -298,14 +498,23 @@ const Chores = (() => {
   }
 
   function buildDisplayItem(root, chore, children) {
-    const child = children.find((c) => c.id === chore.childId);
+    const participantNames = participantsOf(chore)
+      .map((id) => {
+        const c = children.find((x) => x.id === id);
+        return c ? c.name : '(unresolved child)';
+      })
+      .join(', ');
+    const arrangementLabel = participantsOf(chore).length > 1
+      ? (allocationOf(chore) === 'claim' ? 'Either can claim' : 'Each own')
+      : '';
     const item = document.createElement('li');
     item.innerHTML = `
       <span class="chore-title">${escapeHtml(chore.title)}</span>
-      <span class="chore-child">${child ? escapeHtml(child.name) : '(unresolved child)'}</span>
+      <span class="chore-child">${escapeHtml(participantNames || '(no participants)')}</span>
       <span class="chore-type">${escapeHtml(chore.choreType)}</span>
       <span class="chore-days">${chore.daysOfWeek.join(', ')}</span>
       ${chore.instances && chore.instances.length > 1 ? `<span class="chore-instance-count">${chore.instances.length}×/day</span>` : ''}
+      ${arrangementLabel ? `<span class="chore-arrangement-label">${arrangementLabel}</span>` : ''}
       <button data-action="edit">Edit</button>
       <button data-action="delete">Delete</button>
     `;
@@ -330,10 +539,9 @@ const Chores = (() => {
     const form = document.createElement('form');
     form.className = 'chore-edit-form';
     form.innerHTML = `
-      <label>Child<select name="childId">${childOptions(children, chore.childId)}</select></label>
       <label>Title<input type="text" name="title" value="${escapeHtml(chore.title)}" required></label>
       <label>Chore type<select name="choreType">${choreTypeOptions(chore.choreType)}</select></label>
-      <fieldset><legend>Days of week</legend>${daysHtml('daysOfWeek', chore.daysOfWeek)}</fieldset>
+      <fieldset class="chore-days-of-week"><legend>Days of week</legend>${daysHtml('daysOfWeek', chore.daysOfWeek)}</fieldset>
       <label>Difficulty Tier<select name="difficultyTier">${tierOptions(tiers, chore.difficultyTier)}</select></label>
       <label>Notes<input type="text" name="notes" value="${escapeHtml(chore.notes || '')}"></label>
       <label>Block hint<select name="blockHint">${blockHintOptions(chore.blockHint)}</select></label>
@@ -341,8 +549,10 @@ const Chores = (() => {
       <button type="submit">Save</button>
       <button type="button" data-action="cancel">Cancel</button>
     `;
+    const participationFieldset = buildParticipationFieldset(chore, children);
+    form.insertBefore(participationFieldset, form.firstChild);
     const instancesFieldset = buildInstancesFieldset(chore.instances);
-    form.querySelector('fieldset').insertAdjacentElement('afterend', instancesFieldset);
+    form.querySelector('.chore-days-of-week').insertAdjacentElement('afterend', instancesFieldset);
     const errorEl = form.querySelector('.error');
     form.querySelector('[data-action="cancel"]').addEventListener('click', () => {
       editingId = null;
@@ -351,7 +561,7 @@ const Chores = (() => {
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const result = await editChore(chore.id, {
-        childId: form.childId.value,
+        ...participationFieldset.readParticipation(),
         title: form.title.value,
         choreType: form.choreType.value,
         daysOfWeek: readDays(form),
@@ -376,23 +586,24 @@ const Chores = (() => {
     const form = document.createElement('form');
     form.innerHTML = `
       <h2>Add Chore</h2>
-      <label>Child<select name="childId">${childOptions(children, '')}</select></label>
       <label>Title<input type="text" name="title" required></label>
       <label>Chore type<select name="choreType">${choreTypeOptions('')}</select></label>
-      <fieldset><legend>Days of week</legend>${daysHtml('daysOfWeek', [])}</fieldset>
+      <fieldset class="chore-days-of-week"><legend>Days of week</legend>${daysHtml('daysOfWeek', [])}</fieldset>
       <label>Difficulty Tier<select name="difficultyTier">${tierOptions(tiers, '')}</select></label>
       <label>Notes<input type="text" name="notes"></label>
       <label>Block hint<select name="blockHint">${blockHintOptions('')}</select></label>
       <p class="error" hidden></p>
       <button type="submit">Add Chore</button>
     `;
+    const participationFieldset = buildParticipationFieldset({}, children);
+    form.querySelector('h2').insertAdjacentElement('afterend', participationFieldset);
     const instancesFieldset = buildInstancesFieldset([]);
-    form.querySelector('fieldset').insertAdjacentElement('afterend', instancesFieldset);
+    form.querySelector('.chore-days-of-week').insertAdjacentElement('afterend', instancesFieldset);
     const errorEl = form.querySelector('.error');
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const result = await createChore({
-        childId: form.childId.value,
+        ...participationFieldset.readParticipation(),
         title: form.title.value,
         choreType: form.choreType.value,
         daysOfWeek: readDays(form),
@@ -411,5 +622,8 @@ const Chores = (() => {
     return form;
   }
 
-  return { render, createChore, editChore, deleteChore, listChores };
+  return {
+    render, createChore, editChore, deleteChore, listChores,
+    participantsOf, allocationOf, daysFor, instancesOf, pruneParticipant,
+  };
 })();
