@@ -274,6 +274,33 @@ const Sync = (() => {
     return api('/api/sync/status');
   }
 
+  // ---- factory reset (Settings → Database "Reset everything") ----
+
+  // The mirror image of restoreFromCloud: wipes D1 back to empty, then empties
+  // the same local stores instead of repopulating them. appSettings is never
+  // touched, so this device keeps its launchPin and sync token — losing the
+  // token here would strand the reset button that just ran.
+  async function factoryReset() {
+    await api('/api/admin/reset', { method: 'POST', body: { confirm: 'RESET' } });
+
+    const targetStores = Storage.STORE_NAMES.filter((name) => !Storage.SYNC_EXCLUDED.has(name));
+
+    // captureForSync: false — these clears describe a database that no longer
+    // exists; re-queuing them as outbox writes would try to push deletes for
+    // records the server has already dropped.
+    await Storage.runTransaction(targetStores, 'readwrite', (t) => {
+      for (const storeName of targetStores) t.objectStore(storeName).clear();
+    }, { captureForSync: false });
+
+    await Storage.runTransaction([OUTBOX], 'readwrite', (t) => {
+      t.objectStore(OUTBOX).clear();
+    }, { captureForSync: false });
+
+    state.pending = 0;
+    state.lastSyncedAt = null;
+    emit();
+  }
+
   // ---- observable state ----
 
   function emit() {
@@ -312,6 +339,6 @@ const Sync = (() => {
 
   return {
     init, drain, subscribe, getState, getConfig, setToken,
-    restoreFromCloud, status, countOutbox, api,
+    restoreFromCloud, factoryReset, status, countOutbox, api,
   };
 })();

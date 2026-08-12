@@ -714,6 +714,43 @@ test('/admin/migrations renders a no-JS form and refuses a wrong token', async (
   assert.equal(rejected.status, 401);
 });
 
+// ==========================  admin reset
+
+test('a device token on /api/admin/reset is 401', async () => {
+  const { env } = makeEnv(deviceResolver());
+  const res = await call(env, '/api/admin/reset', {
+    method: 'POST', token: DEVICE_TOKEN, body: { confirm: 'RESET' },
+  });
+  assert.equal(res.status, 401);
+});
+
+test('/api/admin/reset with the parent token but no typed confirmation is a 400, and writes nothing', async () => {
+  const { env, DB } = makeEnv();
+  const res = await call(env, '/api/admin/reset', { method: 'POST', token: PARENT_TOKEN, body: {} });
+  assert.equal(res.status, 400);
+  assert.equal(DB.batched.length, 0);
+});
+
+test('/api/admin/reset with confirm:"RESET" deletes every data table in one batch', async () => {
+  const { env, DB } = makeEnv();
+  const res = await call(env, '/api/admin/reset', {
+    method: 'POST', token: PARENT_TOKEN, body: { confirm: 'RESET' },
+  });
+  assert.equal(res.status, 200);
+  const out = await res.json();
+  assert.equal(out.ok, true);
+
+  assert.equal(DB.batched.length, 1);
+  const statements = DB.batched[0].map((s) => s.sql);
+  assert.ok(statements.every((sql) => /^DELETE FROM \w+$/.test(sql)));
+  // d1_migrations is deliberately untouched — a reset empties data, not the
+  // record of which migrations have already been applied.
+  assert.ok(!statements.some((sql) => sql.includes('d1_migrations')));
+  for (const table of ['assignments', 'devices', 'records', 'children', 'reward_entries']) {
+    assert.ok(statements.some((sql) => sql === `DELETE FROM ${table}`), `missing DELETE for ${table}`);
+  }
+});
+
 // ==========================  assignment messages (§6.2, SRS Module 13)
 
 // Resolves the ownership lookup: CH-1 owns a1 and a2, nothing else.

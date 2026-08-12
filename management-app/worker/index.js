@@ -143,6 +143,11 @@ async function routeApi(request, env, ctx, url) {
     return withParent(request, env, () => handleMigrationsApply(env));
   }
 
+  // ---- Admin reset — parent only ----
+  if (pathname === '/api/admin/reset' && method === 'POST') {
+    return withParent(request, env, () => handleAdminReset(request, env));
+  }
+
   // ---- Curriculum mirror (§5.1) — unchanged behaviour, narrowed store list ----
   if (pathname === '/api/sync/push' && method === 'POST') {
     return withParent(request, env, () => handleSyncPush(request, env));
@@ -451,6 +456,40 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   }[c]));
+}
+
+// ============================================================================
+// Admin reset — parent only. Empties every data table; the schema itself
+// (and d1_migrations' record of what has been applied) is untouched, so a
+// reset never re-triggers a migration run. This is a data wipe, not a
+// schema rebuild — the two are deliberately kept separate.
+// ============================================================================
+
+// Fixed, hardcoded list — never built from user input — so interpolating
+// these names into DELETE FROM is safe. Order does not matter: every
+// statement rides in one env.DB.batch(), which D1 runs as a transaction.
+const RESET_TABLES = [
+  'assignment_messages', 'claim_groups', 'commit_chunks', 'reward_entries',
+  'streaks', 'devices', 'pair_codes', 'assignments', 'children', 'records',
+];
+
+async function handleAdminReset(request, env) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Body must be JSON.' }, 400);
+  }
+  // Typed confirmation, not just a bearer token — the parent token already
+  // authorizes this request; this second check is what stops a stray or
+  // scripted POST from wiping the database by accident.
+  if (!body || body.confirm !== 'RESET') {
+    return json({ error: 'Send {"confirm":"RESET"} to proceed.' }, 400);
+  }
+
+  await env.DB.batch(RESET_TABLES.map((t) => env.DB.prepare(`DELETE FROM ${t}`).bind()));
+
+  return json({ ok: true, tables: RESET_TABLES });
 }
 
 // ============================================================================
