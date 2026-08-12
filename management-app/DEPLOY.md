@@ -111,6 +111,11 @@ with nothing pending writes nothing and says so.
 > the header that opts into the per-row behaviour, so it still gets the old
 > whole-batch retry. Nothing is lost either way — the rows stay queued — but the
 > drain stalls for that device until it updates or the migration is applied.
+>
+> **`0005_assignment_messages.sql` is a free one.** It creates the messages
+> table, and as of this deploy nothing calls the routes that use it — the Child
+> App composer and the Management App inbox are both later releases. Apply it
+> whenever you next open this page; there is no window to get wrong.
 
 > **The console path is retired.** The `records` table on the live database was created
 > by hand there before the runner existed, which is why `0001_online_revamp_init.sql`

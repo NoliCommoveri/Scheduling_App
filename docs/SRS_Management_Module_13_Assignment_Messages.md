@@ -98,16 +98,43 @@ Parent replies; child-visible read receipts; child-side polling; notifications o
 
 ---
 
-## 7. Open items
+## 7. Decisions and open items
 
-1. **Body cap.** Slice §6.2 proposes 500 characters, against the completion note's 1000. Not
-   confirmed. Needs a number before `validation.js` gains a case.
-2. **Two-way messaging** — deferred by slice §0.3 / §11.2.
-3. **Phase split.** Slice §6.5 expects the inbox alone to exceed `CLAUDE.md` §V.A's 2-3 hour
-   threshold once the UI is included, and recommends the Child App composer and the Management App
-   inbox be separate build sessions. Sequencing needs Ray's call before code.
-4. **Mark-unread.** Omitted from FR-4. Whether a parent can put a message back in the queue after
-   opening it by accident is a real question, deliberately left unanswered here.
+Three of the five below were decided in-session with Ray on 2026-08-12, before any code was
+written. They are recorded here rather than removed, so the contract shows what was chosen and
+what it was chosen against.
+
+1. ~~**Body cap.**~~ **DECIDED: 500 characters** (`MAX_MESSAGE_LEN`, `validation.js`), deliberately
+   shorter than the completion note's 1000. A message is a question, not the account of finished
+   work a note carries, and the inbox is a list a parent scans rather than reads. Measured after
+   trimming, so padding cannot push a legal body over the line and a whitespace-only body is
+   rejected as empty rather than stored.
+2. **Two-way messaging** — still deferred, by slice §0.3 / §11.2. No reply route exists and no
+   `created_by: 'parent'` write path exists; that absence is the enforcement.
+3. ~~**Phase split.**~~ **DECIDED: backend first, UIs deferred.** Migration 0005 and the three
+   routes ship on their own; the Child App composer (slice §6.3) and this module's inbox (§6.5) are
+   later releases, each to be sequenced when it is taken up. The migration ships *with* the routes
+   rather than one release ahead — the §5.5 ordering exists to protect a client mid-drain, and at
+   this point no client calls these routes at all.
+4. ~~**Mark-unread.**~~ **DECIDED: not in v1.** `read_at` goes from NULL to a timestamp and is never
+   cleared, matching `rescinded_at` and `revoked_at`. There is no route that clears it, which is
+   how the decision is enforced rather than merely documented.
 5. **What the child sees after sending.** Slice §6.3 proposes a local "📨 sent" marker on the card.
    That is Child Module 04's surface, but it is the only feedback a one-way channel offers, so it
-   should be confirmed alongside this module rather than after it.
+   should be confirmed when the composer is built. **Still open.**
+
+---
+
+## 8. Build status
+
+| Piece | Status |
+|---|---|
+| `migrations/0005_assignment_messages.sql`, registered in `worker/migrations.js` | ✅ Landed |
+| `POST /api/messages` (device) — per-row rejection, ownership check, idempotent insert | ✅ Landed |
+| `GET /api/messages` (parent) — filters, assignment join, unread count | ✅ Landed |
+| `POST /api/messages/read` (parent) | ✅ Landed |
+| Child App composer (slice §6.3) — IndexedDB store, outbox op, UI | ⬜ Not started |
+| Management App inbox (§1-§5 above) | ⬜ Not started |
+
+**Ray applies migration 0005** from Settings → Database before the first client release. Nothing
+reads or writes the table until then, so there is no window to get wrong.

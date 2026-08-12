@@ -401,6 +401,19 @@ Revamp's §5.6 put there deliberately — is not specific to this column and is 
 
 ## 6. Feature D — Assignment messages (one-way, v1)
 
+> **Build status, 2026-08-12.** The schema and the API have landed; both UIs are deferred.
+> Ray's call on §6.5's phasing question was "migration and backend only for now" — the routes
+> exist so the two clients can be built against something real, and each UI is sequenced when it
+> is taken up.
+>
+> Two things settled with it: the body cap is **500 characters** (§6.2's proposal, confirmed), and
+> there is **no mark-unread** in v1 (`read_at` is set once, never cleared — enforced by there
+> being no route that clears it). See `SRS_Management_Module_13_Assignment_Messages.md` §7.
+>
+> Migration 0005 ships alongside the routes rather than one release ahead of them, which is not a
+> departure from §5.5. That sequence exists to protect a client mid-drain; at this point no client
+> calls these routes. The first client release lands long after the migration is applied.
+
 ### 6.1 Shape
 
 Not a column — many messages can reference one assignment, and it's an append-only log, not a

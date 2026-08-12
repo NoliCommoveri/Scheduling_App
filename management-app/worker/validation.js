@@ -32,6 +32,36 @@ export const MAX_BLOCK_HINT_LEN = 200;
 // 11, wasn't sure how" without being an open text dump.
 export const MAX_NOTE_LEN = 1000;
 
+// Child Feedback Loop §6.2, confirmed 2026-08-12 — deliberately shorter than a
+// completion note. A message is a question ("I don't understand problem 7"),
+// not the account of finished work a note carries, and the inbox is a list a
+// parent scans rather than reads.
+export const MAX_MESSAGE_LEN = 500;
+
+// One message as `POST /api/messages` accepts it. Returns an error string, or
+// null when the row is acceptable — same contract as validateCompletionValue,
+// so handleMessages can reject per row the way every other device batch route
+// does (§5.6). Ownership of `assignment_id` is *not* checked here: it needs a
+// database round trip, so the route does it (§6.2).
+export function validateMessage(row) {
+  if (!row || typeof row !== 'object') return 'Each message must be an object.';
+  if (typeof row.id !== 'string' || !row.id) return 'Each message needs an id.';
+  if (typeof row.assignmentId !== 'string' || !row.assignmentId) {
+    return 'Each message needs an assignmentId.';
+  }
+  if (typeof row.body !== 'string') return 'body must be a string.';
+  // Trimmed before measuring and before storing: a body of spaces is not a
+  // question, and the child's composer should not be able to queue one.
+  const body = row.body.trim();
+  if (!body) return 'body must not be empty.';
+  if (body.length > MAX_MESSAGE_LEN) return `body must be at most ${MAX_MESSAGE_LEN} characters.`;
+  if (row.createdAt !== undefined && row.createdAt !== null
+      && !(Number.isSafeInteger(row.createdAt) && row.createdAt >= 0)) {
+    return 'createdAt must be a millisecond timestamp.';
+  }
+  return null;
+}
+
 // §4.2 puts the Worker, not the client, in charge of what a credential may
 // write. That was read narrowly as *which columns*, and the child's values went
 // in unchecked while every parent-supplied value was validated. Same rule, same

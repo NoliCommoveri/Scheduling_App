@@ -22,6 +22,7 @@ import {
   clampInt,
   randomPairCode,
   timingSafeEqual,
+  validateMessage,
 } from './validation.js';
 
 const MAX_BATCH = 500;
@@ -171,6 +172,15 @@ async function routeApi(request, env, ctx, url) {
     return withParent(request, env, () => handleRewardsAdjust(request, env));
   }
 
+  // ---- Assignment messages (Child Feedback Loop §6.2) ----
+  // Read and read-marking are the parent's; appending is the child's, below.
+  if (pathname === '/api/messages' && method === 'GET') {
+    return withParent(request, env, () => handleMessagesQuery(url, env));
+  }
+  if (pathname === '/api/messages/read' && method === 'POST') {
+    return withParent(request, env, () => handleMessagesRead(request, env));
+  }
+
   // ---- Child — unauthenticated (§5.4) ----
   if (pathname === '/api/pair' && method === 'POST') {
     return await handlePair(request, env);
@@ -191,6 +201,9 @@ async function routeApi(request, env, ctx, url) {
   }
   if (pathname === '/api/streak' && method === 'PUT') {
     return withDevice(request, env, ctx, (device) => handleStreakUpsert(request, env, device));
+  }
+  if (pathname === '/api/messages' && method === 'POST') {
+    return withDevice(request, env, ctx, (device) => handleMessages(request, env, device));
   }
 
   return json({ error: 'Not found.' }, 404);
@@ -1147,6 +1160,180 @@ async function handleStreakUpsert(request, env, device) {
   ).bind(device.childId, currentStreak, longestStreak, lastQualifiedDate, now).run();
 
   return json({ ok: true });
+}
+
+// ============================================================================
+// Assignment messages (Child Feedback Loop §6, SRS Management Module 13)
+//
+// One-way for v1: the child appends, the parent reads and marks read. There is
+// no reply route and no `created_by: 'parent'` write path — that is §11.2's
+// deferred scope, not an omission to be filled in opportunistically.
+//
+// Nothing calls these yet. The Child App composer (§6.3) and the Management
+// App inbox (§6.5) are later releases; this is the API landing first so both
+// can be built against something real.
+// ============================================================================
+
+async function handleMessages(request, env, device) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Body must be JSON.' }, 400);
+  }
+  const messages = body && body.messages;
+  if (!Array.isArray(messages)) return json({ error: 'Body must include a "messages" array.' }, 400);
+  if (messages.length > MAX_BATCH) return json({ error: `At most ${MAX_BATCH} messages per batch.` }, 413);
+  if (messages.length === 0) return json({ applied: 0, rejected: [], deferred: [] });
+
+  const now = Date.now();
+  const createdBy = `device:${device.deviceId}`;
+  const rejected = [];
+  const deferred = [];
+
+  const shaped = [];
+  for (const row of messages) {
+    const problem = validateMessage(row);
+    if (problem) {
+      rejected.push({ id: row && row.id, error: problem });
+      continue;
+    }
+    shaped.push(row);
+  }
+
+  // The ownership check §6.2 calls for, and the one thing this route needs that
+  // /api/rewards/entries does not: a device must not be able to staple a
+  // message onto an assignment belonging to another child. Batched into one
+  // query rather than one per row — a drain can carry MAX_BATCH of these.
+  //
+  // `child_id` comes from the token (§III.E). The body's assignmentId is the
+  // only thing being trusted, and this is what stops it being trusted blindly.
+  //
+  // Rescinded assignments deliberately still count as owned. A device queues a
+  // message offline and drains later; if the parent rescinded the work in
+  // between, filtering on `rescinded_at IS NULL` here would reject the question
+  // rather than deliver it — and Module 13 FR-6 wants it kept precisely then,
+  // because "why was this taken away" is a thing a child asks.
+  const owned = new Set();
+  if (shaped.length > 0) {
+    const ids = [...new Set(shaped.map((r) => r.assignmentId))];
+    try {
+      const { results } = await env.DB.prepare(
+        `SELECT id FROM assignments
+         WHERE child_id = ?1 AND id IN (${ids.map((_, i) => `?${i + 2}`).join(',')})`
+      ).bind(device.childId, ...ids).all();
+      for (const r of results || []) owned.add(r.id);
+    } catch (err) {
+      // §11.7: the lookup itself failed, so ownership is unknown for every row.
+      // Unknown is not "not owned" — deferring is the only answer that neither
+      // drops a child's question nor writes one it could not verify.
+      const error = dbFaultMessage(err);
+      for (const r of shaped) deferred.push({ id: r.id, error });
+      if (!understandsDeferred(request)) return deferralUnsupportedResponse(deferred);
+      return json({ applied: 0, rejected, deferred });
+    }
+  }
+
+  const statements = [];
+  const queuedIds = [];
+  for (const row of shaped) {
+    if (!owned.has(row.assignmentId)) {
+      // Deliberately the same wording handleCompletions uses for the same
+      // situation, and a rejection rather than a 403: one row naming someone
+      // else's assignment must not wedge the batch behind it.
+      rejected.push({ id: row.id, error: 'Not found for this child.' });
+      continue;
+    }
+    queuedIds.push(row.id);
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO assignment_messages (id, child_id, assignment_id, body, created_at, created_by)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT (id) DO NOTHING`
+      ).bind(row.id, device.childId, row.assignmentId, row.body.trim(), row.createdAt || now, createdBy)
+    );
+  }
+
+  let applied = 0;
+  if (statements.length > 0) {
+    try {
+      await env.DB.batch(statements);
+      applied = statements.length;
+    } catch (err) {
+      const error = dbFaultMessage(err);
+      for (const id of queuedIds) deferred.push({ id, error });
+    }
+  }
+
+  if (deferred.length > 0 && !understandsDeferred(request)) return deferralUnsupportedResponse(deferred);
+  return json({ applied, rejected, deferred });
+}
+
+async function handleMessagesQuery(url, env) {
+  const childId = url.searchParams.get('childId');
+  const unreadOnly = ['1', 'true'].includes(url.searchParams.get('unreadOnly'));
+  const since = url.searchParams.get('since');
+
+  // The assignment join is what makes a message identifiable in the inbox —
+  // a body with no title beside it is not actionable (Module 13 FR-1). LEFT,
+  // because FR-6 keeps a message readable after its assignment is rescinded,
+  // and a plain join would silently drop exactly those rows.
+  let sql = `SELECT m.*, a.title AS assignment_title, a.date AS assignment_date,
+                    a.course_name AS assignment_course, a.rescinded_at AS assignment_rescinded_at
+             FROM assignment_messages m
+             LEFT JOIN assignments a ON a.id = m.assignment_id
+             WHERE 1=1`;
+  const params = [];
+  let i = 1;
+  if (childId) { sql += ` AND m.child_id = ?${i}`; params.push(childId); i++; }
+  if (unreadOnly) sql += ` AND m.read_at IS NULL`;
+  if (since !== null && since !== '') {
+    const sinceMs = Number(since);
+    if (!Number.isSafeInteger(sinceMs) || sinceMs < 0) {
+      return json({ error: 'since must be a millisecond timestamp.' }, 400);
+    }
+    sql += ` AND m.created_at > ?${i}`; params.push(sinceMs); i++;
+  }
+  // One over the cap, so a truncated answer can say so — same convention
+  // handleAssignmentsQuery uses.
+  sql += ` ORDER BY m.created_at DESC LIMIT ${MAX_QUERY_ROWS + 1}`;
+
+  const { results } = await env.DB.prepare(sql).bind(...params).all();
+  const body = capRows(results || [], 'messages');
+
+  // The badge's number (Module 13 FR-3). Counted rather than derived from the
+  // page above, which is capped and may be filtered to one child.
+  const unread = await env.DB.prepare(
+    childId
+      ? `SELECT COUNT(*) AS n FROM assignment_messages WHERE read_at IS NULL AND child_id = ?1`
+      : `SELECT COUNT(*) AS n FROM assignment_messages WHERE read_at IS NULL`
+  ).bind(...(childId ? [childId] : [])).first();
+
+  return json({ ...body, unread: (unread && unread.n) || 0 });
+}
+
+async function handleMessagesRead(request, env) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Body must be JSON.' }, 400);
+  }
+  const ids = body && body.ids;
+  if (!Array.isArray(ids) || ids.length === 0) return json({ error: 'Body must include a non-empty "ids" array.' }, 400);
+  if (ids.length > MAX_BATCH) return json({ error: `At most ${MAX_BATCH} ids per request.` }, 413);
+
+  // `read_at IS NULL` in the WHERE, so a message already read keeps its
+  // original timestamp rather than having it bumped by a second click. There
+  // is no route that clears it: Module 13 FR-4 has no mark-unread in v1, and
+  // omitting the path is how that stays true.
+  const now = Date.now();
+  const result = await env.DB.prepare(
+    `UPDATE assignment_messages SET read_at = ?1
+     WHERE read_at IS NULL AND id IN (${ids.map((_, i) => `?${i + 2}`).join(',')})`
+  ).bind(now, ...ids).run();
+
+  return json({ read: (result.meta && result.meta.changes) || 0, readAt: now });
 }
 
 // ============================================================================

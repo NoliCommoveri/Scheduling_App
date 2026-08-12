@@ -17,6 +17,8 @@ import {
   capRows,
   MAX_QUERY_ROWS,
   MAX_NOTE_LEN,
+  MAX_MESSAGE_LEN,
+  validateMessage,
   clampInt,
   randomPairCode,
   PAIR_CODE_ALPHABET,
@@ -249,4 +251,41 @@ test('timingSafeEqual matches only identical strings', () => {
   assert.equal(timingSafeEqual('', ''), true);
   assert.equal(timingSafeEqual('', 'x'), false);
   assert.equal(timingSafeEqual('sécret', 'sécret'), true);
+});
+
+// -------------------------------------  assignment messages (§6.2, Module 13)
+
+test('validateMessage requires an id, an assignmentId and a non-empty body', () => {
+  assert.equal(validateMessage({ id: 'm1', assignmentId: 'a1', body: 'why?' }), null);
+  assert.match(validateMessage(null), /must be an object/);
+  assert.match(validateMessage({ assignmentId: 'a1', body: 'why?' }), /needs an id/);
+  assert.match(validateMessage({ id: 'm1', body: 'why?' }), /needs an assignmentId/);
+  assert.match(validateMessage({ id: 'm1', assignmentId: 'a1' }), /body must be a string/);
+});
+
+test('validateMessage treats a whitespace-only body as empty', () => {
+  // The composer must not be able to queue a question that says nothing.
+  assert.match(validateMessage({ id: 'm1', assignmentId: 'a1', body: '   \n ' }), /must not be empty/);
+});
+
+test('validateMessage bounds the body at MAX_MESSAGE_LEN, measured after trimming', () => {
+  const atCap = { id: 'm1', assignmentId: 'a1', body: 'x'.repeat(MAX_MESSAGE_LEN) };
+  assert.equal(validateMessage(atCap), null);
+  const overCap = { id: 'm1', assignmentId: 'a1', body: 'x'.repeat(MAX_MESSAGE_LEN + 1) };
+  assert.match(validateMessage(overCap), /at most 500 characters/);
+  // Padding does not push a legal body over the line.
+  const padded = { id: 'm1', assignmentId: 'a1', body: `   ${'x'.repeat(MAX_MESSAGE_LEN)}   ` };
+  assert.equal(validateMessage(padded), null);
+});
+
+test('a message body is capped shorter than a completion note', () => {
+  // §6.2: a question, not the account of finished work a note carries.
+  assert.ok(MAX_MESSAGE_LEN < MAX_NOTE_LEN);
+});
+
+test('validateMessage accepts an absent createdAt but not a malformed one', () => {
+  assert.equal(validateMessage({ id: 'm1', assignmentId: 'a1', body: 'why?' }), null);
+  assert.equal(validateMessage({ id: 'm1', assignmentId: 'a1', body: 'why?', createdAt: 1754870400000 }), null);
+  assert.match(validateMessage({ id: 'm1', assignmentId: 'a1', body: 'why?', createdAt: 'now' }), /millisecond timestamp/);
+  assert.match(validateMessage({ id: 'm1', assignmentId: 'a1', body: 'why?', createdAt: -1 }), /millisecond timestamp/);
 });

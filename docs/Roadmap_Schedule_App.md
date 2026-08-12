@@ -53,7 +53,7 @@ be reconciled.
 | **B** — Course-ordered filtering | §4 | ✅ Landed |
 | **A** — Completed view + Undo, incl. the streak reversal | §3 | ✅ Landed (SRS Module 07 gained FR-8/FR-9) |
 | **C** — Completion notes | §5 | ✅ Landed, in the two releases §5.5 requires |
-| **D** — Assignment messages (one-way) | §6 | ⬜ Not started — see below |
+| **D** — Assignment messages (one-way) | §6 | 🟡 Backend landed (migration 0005 + three routes); both UIs deferred |
 
 Two of the slice's §11 open items were closed on 2026-08-12, before Feature D began, because both
 touch the ground D would build on:
@@ -67,10 +67,11 @@ touch the ground D would build on:
   whole drain), distinct from `rejected` (discard). Gated on an `X-Outbox-Protocol: 2` header so an
   older Child App shell still gets the retryable 5xx it knows how to handle.
 
-**Before Feature D is built**, per the slice's §6.5 and §11.10: `SRS_Management_Module_13_
-Assignment_Messages.md` is now authored as a stub, and its §7 lists what still needs Ray's
-decision — the body-length cap, the phase split between the Child App composer and the Management
-App inbox, and whether mark-unread exists in v1.
+**Feature D's three decisions** (Module 13 §7, settled in-session 2026-08-12): the body cap is 500
+characters, there is no mark-unread in v1, and the build is phased backend-first. Migration 0005
+and the three routes have landed; the Child App composer and the Management App inbox are each
+their own later release, unsequenced. What remains open is what the child sees after sending
+(slice §6.3's "📨 sent" marker), to be confirmed when the composer is built.
 
 Still open and *not* blocking Feature D: §11.1 (subject as a grouping level), §11.2 (two-way
 messaging), §11.3 (Undo's PIN gate), §11.5 (retiring the Subjects tab), §11.6 (historical
