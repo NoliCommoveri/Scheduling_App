@@ -631,7 +631,7 @@ blob mirror, parent credential, unchanged behaviour, narrowed store list per §3
 
 | Route | Purpose |
 |---|---|
-| `POST /api/assignments` | Commit one chunk of a batch. Body `{ batchId, chunkIndex, childId, assignments:[…] }`. Worker mints each `id`, sets `assigned_at`/`updated_at`, returns `{ ids, applied }`. Idempotent on `(batchId, chunkIndex)` per §3.8 — a replay inserts nothing and answers `{ ids: [], applied, duplicate: true }`. `chunkIndex` defaults to `0` when absent. |
+| `POST /api/assignments` | Commit one chunk of a batch. Body `{ batchId, chunkIndex, childId, assignments:[…] }`. Worker mints each `id`, sets `assigned_at`/`updated_at`, returns `{ ids, applied, skipped }`. Idempotent on `(batchId, chunkIndex)` per §3.8 — a replay inserts nothing and answers `{ ids: [], applied, duplicate: true }`. Also deduplicated on the natural key `(child_id, date, kind, source_id)` per §6.6, which is what catches a *different* Commit over the same range; those rows come back in `skipped`, not as an error. `chunkIndex` defaults to `0` when absent. |
 | `PATCH /api/assignments/:id` | Edit parent-owned columns of one assignment (§6.5). |
 | `POST /api/assignments/rescind` | Rescind by `batchId`, explicit `ids[]`, or `childId` + date range (§6.3). |
 | `GET /api/assignments` | Query by `childId`, `from`, `to`, `status`, `includeRescinded`. **This replaces Completion CSV import entirely.** |
@@ -787,6 +787,73 @@ this required regenerating and re-importing an entire packet.
 Child-side deferment writes `deferred_to`, leaving `date` intact. The planner renders on
 `COALESCE(deferred_to, date)`, and reporting can therefore distinguish "assigned Monday"
 from "actually done Tuesday" — information the old model discarded.
+
+### 6.6 The same range, committed twice
+
+§3.8 made a Commit replay-safe, and stopped there. `commit_chunks` is keyed on
+`(batch_id, chunk_index)`, so it recognises a **retry of one Commit** and nothing else. Two
+*different* Commits over the same range carry two different `batchId`s, collide with
+nothing, and both insert in full. Propose the same fortnight a second time — the ordinary
+way a parent extends a plan or fixes one day of it — and every chore in it is on the child's
+plan twice.
+
+**6.6.1 Why re-proposing a covered range is normal, not a mistake.** Propose deliberately
+reproduces prior `sent` decisions that fall in range (M7 §4.2.2) so the parent sees the
+whole period rather than a hole where last week's work was. Under the packet model that
+cost nothing: re-committing produced a byte-identical packet, and the child *replaced* its
+plan on import — M7's acceptance check 9 asserts exactly this, and it was true. Insert-only
+D1 turns the same act into a second copy. The reversal in §0 repealed the transport; this
+is a guarantee that quietly went with it and was never rebuilt.
+
+**6.6.2 The natural key.** An `id` is a server-minted UUID (§3.3.1) and can never answer
+"have I already assigned this?". What can is the identity the domain already has:
+
+```
+(child_id, date, kind, source_id)
+```
+
+`POST /api/assignments` refuses to insert a row whose natural key already matches a **live**
+row — `rescinded_at IS NULL`, whatever its `status`. Refused rows are reported as `skipped`,
+never as an error: a Commit that overlaps existing work is a normal thing for a parent to
+press, not a fault.
+
+- **Rescinded rows do not block.** Pull a bad batch back, fix the pacing, generate the range
+  again — §6.3's repair path stays open. A tombstone that blocked re-assignment would make
+  rescind a one-way door.
+- **Resolved rows do.** A `complete` or `waived` row is still live, and re-issuing work a
+  child has already finished is the same duplicate wearing a hat.
+- **A row with no `source_id` has no natural key** and always inserts. `source_id = NULL` is
+  never true in SQL, so this falls out of the guard rather than needing a branch.
+
+Enforcement is in two places on purpose. One `SELECT` per chunk, bounded by that chunk's own
+date span and served by `idx_assign_child_date`, builds the set of live keys and is what
+produces an accurate `skipped` count. Each `INSERT` then carries its own `WHERE NOT EXISTS`
+on the same condition, which is what holds when a second parent device commits the same
+range concurrently — the set was read before the statements were built, so it alone is not
+enough. No unique index: a constraint violation inside `env.DB.batch()` would roll back a
+whole chunk and hand the parent a 500 where the honest answer is "already there".
+
+**6.6.3 What the Management App does with it.** Propose asks `GET /api/assignments` for the
+range and marks every item whose natural key is already live. Those items are **shown**, and
+they still count against the day's pacing budget, but:
+
+- Commit does not send them, and reports how many it left alone.
+- Review actions on them are refused, pointing at the Assignments view. Every Review action
+  is a local rearrangement that Commit realises by *inserting*, so "relocate" on a live item
+  would leave Monday's row where it is and add a second one on Tuesday — the same duplicate,
+  wearing the parent's own intent as a disguise. Moving and editing a live row is §6.5's
+  `PATCH`, which changes the row that exists.
+- `sort_order` still advances across skipped items. The position is occupied by a row
+  already in D1 carrying that number; renumbering the new rows over it would scramble the
+  day.
+
+D1 is asked rather than the Generation Log because it is the only source that knows about a
+rescind — pulling a batch back leaves its `sent` log rows behind. The log is the fallback
+when the device has no token or no network: conservative in the safe direction (it can
+believe something is still assigned after a rescind, never the reverse) and blind to events,
+which are re-derived each Propose rather than logged. The Worker's own check stands behind
+both readings; the client check exists so the screen tells the truth *before* the parent
+presses Commit.
 
 ---
 
@@ -1128,6 +1195,19 @@ The current app keeps working throughout.
 25. Pair a device, rename the child in the Child App's Settings, then revoke and re-pair to
     the *same* child: the chosen name survives. Re-pair to a *different* child: the name
     follows the new token.
+26. **§6.6, the check M7's acceptance 9 used to make.** Commit a range containing a weekly
+    chore, then Propose the *same* range again and Commit: the already-assigned items are
+    marked on screen, `SELECT COUNT(*)` over the child's live rows for that range is
+    unchanged, and the child's planner shows each chore once. Repeat with `sourceId`
+    unchanged but the date moved by a day: that one *is* a new row, because it is a
+    different assignment.
+27. Rescind that batch, Propose the same range again: every item is offered as new — no
+    tombstone blocks it — and Commit restores the plan. With the device offline instead
+    (no token, or the API unreachable), Propose falls back to the Generation Log, says so
+    on screen, and Commit still assigns nothing twice because the Worker refuses it.
+28. Relocate, Exclude, Defer or Drop an already-assigned item in a proposal: each is
+    refused and names the Assignments view. Moving it there instead changes the row's
+    `date` in place and produces no second row.
 
 ---
 

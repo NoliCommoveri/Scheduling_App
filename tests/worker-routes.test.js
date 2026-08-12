@@ -182,6 +182,130 @@ test('a racing duplicate is answered as a duplicate, not a 500', async () => {
   assert.equal((await res.json()).duplicate, true);
 });
 
+// ---- §6.6: the same range committed twice ------------------------------
+//
+// `commit_chunks` is keyed on (batch_id, chunk_index), so it only ever caught a
+// *retry* of one Commit. Proposing the same fortnight a second time mints a new
+// batchId, collides with nothing, and used to put every chore on the plan twice.
+// These cover the natural key that closes that.
+
+const choreRow = {
+  date: '2026-08-11', kind: 'chore', sourceId: 'CHR-7k2', title: 'Empty the dishwasher',
+};
+
+// Answers the pre-check with whatever `live` says is already on the plan.
+function envWithLivePlan(live) {
+  return makeEnv((sql) => {
+    if (sql.includes('FROM commit_chunks')) return { first: null };
+    if (sql.includes('SELECT date, kind, source_id FROM assignments')) return { results: live };
+    return {};
+  });
+}
+
+function insertsIn(DB) {
+  return DB.batched[0]
+    .map((s) => s.sql.replace(/\s+/g, ' '))
+    .filter((s) => s.includes('INSERT INTO assignments'));
+}
+
+test('§13.21: a row already live for that child, day and source is not assigned again', async () => {
+  const { env, DB } = envWithLivePlan([{ date: '2026-08-11', kind: 'chore', source_id: 'CHR-7k2' }]);
+  const res = await call(env, '/api/assignments', {
+    method: 'POST', token: PARENT_TOKEN,
+    body: { batchId: 'B2', chunkIndex: 0, childId: 'CH-1', assignments: [choreRow] },
+  });
+  const out = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(out.applied, 0);
+  assert.equal(out.skipped, 1);
+  assert.deepEqual(out.ids, []);
+  assert.equal(insertsIn(DB).length, 0, 'the duplicate must never reach an INSERT');
+  const sqls = DB.batched[0].map((s) => s.sql.replace(/\s+/g, ' '));
+  assert.equal(
+    sqls.filter((s) => s.includes('INSERT INTO commit_chunks')).length, 1,
+    'the chunk is still accounted for, so a retry of it is still recognised'
+  );
+});
+
+test('§13.21: a different day, kind or source is a different assignment', async () => {
+  const { env, DB } = envWithLivePlan([{ date: '2026-08-11', kind: 'chore', source_id: 'CHR-7k2' }]);
+  const res = await call(env, '/api/assignments', {
+    method: 'POST', token: PARENT_TOKEN,
+    body: {
+      batchId: 'B2', chunkIndex: 0, childId: 'CH-1',
+      assignments: [
+        { ...choreRow, date: '2026-08-12' },            // same chore, next day
+        { ...choreRow, kind: 'activity' },              // same id, different kind
+        { ...choreRow, sourceId: 'CHR-999' },           // another chore, same day
+      ],
+    },
+  });
+  const out = await res.json();
+  assert.equal(out.applied, 3);
+  assert.equal(out.skipped, 0);
+  assert.equal(insertsIn(DB).length, 3);
+});
+
+test('§13.21: the same row twice inside one chunk is stored once', async () => {
+  const { env, DB } = envWithLivePlan([]);
+  const res = await call(env, '/api/assignments', {
+    method: 'POST', token: PARENT_TOKEN,
+    body: { batchId: 'B2', chunkIndex: 0, childId: 'CH-1', assignments: [choreRow, choreRow] },
+  });
+  const out = await res.json();
+  assert.equal(out.applied, 1);
+  assert.equal(out.skipped, 1);
+  assert.equal(insertsIn(DB).length, 1);
+});
+
+test('§13.21: a rescinded row does not block assigning that work again', async () => {
+  // The repair path §6.3 exists for: pull a bad batch back, fix the pacing,
+  // generate the range again. A tombstone that blocked the re-assign would make
+  // rescind a one-way door, so the lookup has to exclude rescinded rows — and
+  // the guard on the INSERT has to agree with it.
+  const { env, statements, DB } = envWithLivePlan([]);
+  await call(env, '/api/assignments', {
+    method: 'POST', token: PARENT_TOKEN,
+    body: { batchId: 'B2', chunkIndex: 0, childId: 'CH-1', assignments: [choreRow] },
+  });
+  const lookup = statements.find((s) => s.sql.includes('SELECT date, kind, source_id FROM assignments'));
+  assert.ok(lookup, 'the pre-check must run');
+  assert.match(lookup.sql, /rescinded_at IS NULL/);
+  assert.match(insertsIn(DB)[0], /NOT EXISTS/);
+  assert.match(insertsIn(DB)[0], /rescinded_at IS NULL/);
+});
+
+test('§13.21: the lookup is bounded by the chunk\'s own date span', async () => {
+  // Unbounded, this would read the child's whole history on every chunk of a
+  // four-chunk semester Commit. Bounded, it is one indexed range scan.
+  const { env, statements } = envWithLivePlan([]);
+  await call(env, '/api/assignments', {
+    method: 'POST', token: PARENT_TOKEN,
+    body: {
+      batchId: 'B2', chunkIndex: 0, childId: 'CH-1',
+      assignments: [{ ...choreRow, date: '2026-09-04' }, choreRow, { ...choreRow, date: '2026-08-20' }],
+    },
+  });
+  const lookup = statements.find((s) => s.sql.includes('SELECT date, kind, source_id FROM assignments'));
+  assert.deepEqual(lookup.args, ['CH-1', '2026-08-11', '2026-09-04']);
+});
+
+test('§13.21: a row with no sourceId has no natural key and is always inserted', async () => {
+  // `oneRow` carries no provenance, so nothing can call it a repeat. It must
+  // not be silently deduped against another provenance-less row.
+  const { env, DB, statements } = envWithLivePlan([]);
+  const res = await call(env, '/api/assignments', {
+    method: 'POST', token: PARENT_TOKEN,
+    body: { batchId: 'B2', chunkIndex: 0, childId: 'CH-1', assignments: [oneRow, oneRow] },
+  });
+  assert.equal((await res.json()).applied, 2);
+  assert.equal(insertsIn(DB).length, 2);
+  assert.ok(
+    !statements.some((s) => s.sql.includes('SELECT date, kind, source_id FROM assignments')),
+    'with nothing to key on there is nothing to look up'
+  );
+});
+
 test('a genuine batch failure is still an error', async () => {
   const { env } = makeEnv((sql) => (sql.includes('FROM commit_chunks') ? { first: null } : {}));
   env.DB.batch = async () => { throw new Error('database is locked'); };

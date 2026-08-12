@@ -340,6 +340,29 @@ button.secondary {
   color: #888;
 }
 
+/* Already assigned and live in D1 (Revamp §6.6) — shown for context, not
+   editable here, and not sent again by Commit. Dimmed so a day's *new* work
+   reads at a glance, with the tag saying why the buttons are missing. */
+.is-committed {
+  opacity: 0.6;
+}
+
+.item-activity em.already-assigned,
+.item-chore em.already-assigned,
+.item-event em.already-assigned {
+  color: var(--color-accent);
+  font-style: normal;
+  font-weight: 600;
+}
+
+.notice {
+  background: #eef3f0;
+  border: 1px solid var(--color-accent);
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+  font-size: 0.85rem;
+}
+
 .day-section li button, .pending-box button {
   padding: 0.25rem 0.55rem;
   font-size: 0.8rem;
