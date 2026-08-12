@@ -33,6 +33,7 @@
     { id: "chores", label: "Chores" },
     { id: "events", label: "Events" },
     { id: "subjects", label: "Subjects" },
+    { id: "completed", label: "Completed" },
     { id: "rewards", label: "Rewards" }
   ];
 
@@ -391,8 +392,11 @@
       var container = node("div");
       // Rewards (Module 6) is never gated by the empty-content state below —
       // a category balance or the completion count can exist independent of
-      // whatever's currently imported.
+      // whatever's currently imported. Completed (§3.2) is the same: it asks
+      // "what did I do today," which is independent of whether new work has
+      // been assigned since.
       if (state.view === "rewards") { container.appendChild(renderRewards()); return container; }
+      if (state.view === "completed") { container.appendChild(renderCompleted()); return container; }
 
       if (d.rows.length === 0) { container.appendChild(emptyState()); return container; }
 
@@ -568,6 +572,82 @@
         });
       });
       return wrap;
+    }
+
+    // ---------- Completed view + Undo (Child Feedback Loop §3) ----------
+    // Bounded to the real device-local day, never state.today (§0.4, §3.2) —
+    // a preview lets a child point the rest of the screen at any date, but a
+    // destructive control (Undo) may not follow it. Waived items are out of
+    // scope (§3.2): they simply never carry status 'complete'.
+    function renderCompleted() {
+      var d = state.data;
+      var rowsById = Object.create(null);
+      (d.rows || []).forEach(function (r) { rowsById[r.id] = r; });
+      var today = g.DateUtil.localISODate(new Date());
+
+      var pairs = (state.records || [])
+        .filter(function (rec) { return rec.status === "complete" && rec.date === today; })
+        .map(function (rec) { return { rec: rec, item: rowsById[rec.activityId] }; })
+        .filter(function (pair) { return !!pair.item; });
+
+      var wrap = node("div");
+      if (pairs.length === 0) {
+        wrap.appendChild(node("div", "section-empty", "Nothing completed yet today."));
+        return wrap;
+      }
+      pairs.forEach(function (pair) { wrap.appendChild(completedCard(pair.item, pair.rec)); });
+      return wrap;
+    }
+
+    // Read-only — no reorder controls, no block picker; this is a list, not
+    // a plan. Shares itemCard's rendering conventions for the fields it shows.
+    function completedCard(item, rec) {
+      var kind = item.kind === "chore" ? "chore" : "activity";
+      var blockName = P.effectiveBlock(item);
+      var card = node("div", "card");
+      card.style.setProperty("--lane-color", "var(--" + blockName + ")");
+
+      var top = node("div", "card-top");
+      var main = node("div", "card-main");
+
+      var tagrow = node("div", "tagrow");
+      var typeText = kind === "chore" ? item.choreType : item.activity_type;
+      if (typeText) tagrow.appendChild(node("span", "type-tag", typeText));
+      if (typeof item.sequence_no === "number") {
+        tagrow.appendChild(node("span", "ordinal", "No. " + item.sequence_no));
+      }
+      if (tagrow.childNodes.length) main.appendChild(tagrow);
+
+      if (kind === "activity" && item.course_name) {
+        main.appendChild(node("div", "course-sub", item.course_name));
+      }
+      main.appendChild(node("div", "title", item.title));
+      if (kind === "activity" && item.lessonTitle) {
+        main.appendChild(node("div", "lesson-sub", item.lessonTitle));
+      }
+      if (typeof rec.grade === "number") {
+        main.appendChild(node("div", "payload", "Grade: " + rec.grade + "%"));
+      }
+      top.appendChild(main);
+      card.appendChild(top);
+
+      var footer = node("div", "footer-row");
+      var undoBtn = node("button", "btn ghost small", "Undo");
+      undoBtn.onclick = function () { handleUndo(item); };
+      footer.appendChild(undoBtn);
+      card.appendChild(footer);
+      return card;
+    }
+
+    function handleUndo(item) {
+      g.Completion.undoItem(item).then(function (res) {
+        if (!res.ok) { toast("Couldn't undo that.", true); return; }
+        toast("Undone.", false);
+        reload();
+      }).catch(function (e) {
+        toast("Something went wrong undoing that.", true);
+        console.error(e);
+      });
     }
 
     // ---------- item card ----------

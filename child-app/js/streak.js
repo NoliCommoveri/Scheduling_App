@@ -27,13 +27,26 @@
   // could come from. Nothing in the Child App reads it; it is carried, not
   // used. Derived rather than stored independently, so a device that upgrades
   // mid-semester starts from its current streak instead of zero.
+  //
+  // Two optional `next` fields, both FR-8/§3.4 of the Child Feedback Loop TDS:
+  //   - `priorStreak`: stamped onto the stored record when passed, omitted
+  //     (and so cleared — this is a `put`, not a patch) otherwise. Only
+  //     recheckToday's live advance below passes one.
+  //   - `longestStreak`: when passed, used verbatim instead of the derived
+  //     max. undoToday is the only caller that passes this — a restore has
+  //     to put the pre-advance high-water mark back exactly, and deriving it
+  //     from `prev` here would just re-read the inflated value being undone.
   function write(prev, next) {
     var current = Math.max(0, next.currentStreak || 0);
+    var longest = typeof next.longestStreak === "number"
+      ? next.longestStreak
+      : Math.max((prev && prev.longestStreak) || 0, (prev && prev.currentStreak) || 0, current);
     var record = {
       currentStreak: current,
       lastQualifyingDate: next.lastQualifyingDate || null,
-      longestStreak: Math.max((prev && prev.longestStreak) || 0, (prev && prev.currentStreak) || 0, current)
+      longestStreak: longest
     };
+    if (next.priorStreak) record.priorStreak = next.priorStreak;
     return g.DB.putSingleton("streak", record).then(function () {
       if (!g.Outbox) return record;
       return g.Outbox.enqueueStreak(record).then(function () { return record; });
@@ -51,7 +64,43 @@
       if (ctx.streak.lastQualifyingDate === today) return; // already counted today
       return write(ctx.streak, {
         currentStreak: ctx.streak.currentStreak + 1,
-        lastQualifyingDate: today
+        lastQualifyingDate: today,
+        // FR-8: what this advance is displacing, so an Undo later today can
+        // restore it exactly. FR-1's own same-day cap means at most one of
+        // these can ever be live at once.
+        priorStreak: {
+          currentStreak: ctx.streak.currentStreak,
+          lastQualifyingDate: ctx.streak.lastQualifyingDate,
+          longestStreak: ctx.streak.longestStreak
+        }
+      });
+    });
+  }
+
+  // FR-8/FR-9 (Child Feedback Loop TDS §3.4) — the reversal of recheckToday's
+  // live advance. Called from Completion.undoItem, in the same action as that
+  // feature's reward clawback, never on its own timer.
+  //
+  // Writes only when both hold: today is the day most recently counted, and
+  // today no longer qualifies now that the just-undone item is unresolved
+  // again. Either condition failing means nothing here needs to change —
+  // undoing a non-required item, or a required one on a day still fully
+  // resolved by its other items, correctly leaves the streak alone.
+  function undoToday() {
+    return loadContext().then(function (ctx) {
+      var today = g.DateUtil.today();
+      if (ctx.streak.lastQualifyingDate !== today) return;
+      if (C.dayStatus(ctx.rows, ctx.resolved, today) === "resolved") return;
+
+      var prior = ctx.streak.priorStreak;
+      if (!prior) return; // nothing to restore to — see §5's priorStreak note
+      return write(ctx.streak, {
+        currentStreak: prior.currentStreak,
+        lastQualifyingDate: prior.lastQualifyingDate,
+        // Restored verbatim, not re-derived — see write()'s comment above.
+        longestStreak: prior.longestStreak
+        // priorStreak intentionally omitted: one level of history is
+        // sufficient (FR-1's same-day cap), and the restore consumes it.
       });
     });
   }
@@ -73,6 +122,9 @@
         if (status === "breaking") {
           // A reset keeps longestStreak — that is the point of a high-water
           // mark, and write() derives it from the run being ended.
+          // No priorStreak passed: a reset is not an advance, so there is
+          // nothing here for a later Undo to walk back to (FR-8's note in
+          // §5) — omitting the field clears any stale one left over.
           return write(ctx.streak, { currentStreak: 0, lastQualifyingDate: d });
         }
         d = g.DateUtil.addDays(d, 1);
@@ -80,5 +132,5 @@
     });
   }
 
-  g.Streak = { recheckToday: recheckToday, reconcileOnOpen: reconcileOnOpen, write: write };
+  g.Streak = { recheckToday: recheckToday, undoToday: undoToday, reconcileOnOpen: reconcileOnOpen, write: write };
 })(typeof window !== "undefined" ? window : globalThis);
