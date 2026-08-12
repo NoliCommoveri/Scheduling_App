@@ -43,6 +43,13 @@
     if (text != null) n.textContent = text;
     return n;
   }
+  // Shared by the date header (§7.2) and previewBanner, so the two read as
+  // the same clock face when a preview puts them on screen together.
+  function formatDateLabel(dateStr) {
+    return new Date(dateStr + "T00:00:00").toLocaleDateString(undefined, {
+      weekday: "short", month: "short", day: "numeric"
+    });
+  }
   function svgGlyph(block) {
     // simple line glyphs: rising sun / high sun / low sun / moon
     var paths = {
@@ -124,6 +131,7 @@
       menuBtn.onclick = openMenu;
       row.appendChild(menuBtn);
       bar.appendChild(row);
+      bar.appendChild(dateHeader());
 
       var tabs = node("div", "tabs");
       VIEWS.forEach(function (v) {
@@ -152,6 +160,13 @@
       }
 
       return bar;
+    }
+
+    // §7.2: the real device-local date, re-derived every render so it can
+    // never drift from the clock it's reporting — unlike the preview banner
+    // below, this never reads state.today (§7.1 is exactly the reason why).
+    function dateHeader() {
+      return node("div", "date-header", formatDateLabel(g.DateUtil.localISODate(new Date())));
     }
 
     // ---------- menu sheet (all the tucked-away, non-daily actions) ----------
@@ -240,9 +255,7 @@
     // cue that what's on screen isn't the real day's plan.
     function previewBanner() {
       var banner = node("div", "preview-banner");
-      var label = new Date(state.today + "T00:00:00").toLocaleDateString(undefined, {
-        weekday: "short", month: "short", day: "numeric"
-      });
+      var label = formatDateLabel(state.today);
       banner.appendChild(node("span", null, "Previewing " + label + " — not today's plan."));
       var back = node("button", "btn ghost small", "Back to today");
       back.onclick = backToToday;

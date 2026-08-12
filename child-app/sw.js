@@ -45,7 +45,12 @@
 //      carries the IndexedDB v9 upgrade. Same hazard v7 called out: a device
 //      left on the old shell runs superseded code against whichever schema its
 //      browser happens to hold.
-const CACHE_NAME = "daily-plan-shell-v9";
+// v10: Child Feedback Loop §7.2 — the date header. No file added or removed
+// (planner-ui.js and style.css only changed contents), but the same v6
+// reasoning applies: this handler is cache-first for the shell, so a device
+// left on v9 would never see the header land, and would keep reasoning about
+// "today" with no on-screen check against a mis-set device clock (§7.1).
+const CACHE_NAME = "daily-plan-shell-v10";
 
 const APP_SHELL = [
   "./",
