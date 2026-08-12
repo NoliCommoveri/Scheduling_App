@@ -182,6 +182,17 @@ test('0003 creates commit_chunks with the composite primary key', () => {
   assert.match(sql, /PRIMARY KEY \(batch_id, chunk_index\)/);
 });
 
+test('0007 adds the claim columns and creates claim_groups keyed on the occurrence', () => {
+  // Shared Chores §5.2: the primary key is what lets two independent
+  // per-child Commits agree on one group without coordinating.
+  const sql = readMigration('0007_shared_chore_claims.sql').replace(/\s+/g, ' ');
+  assert.match(sql, /ALTER TABLE assignments ADD COLUMN claim_group TEXT;/);
+  assert.match(sql, /ALTER TABLE assignments ADD COLUMN claimed_by TEXT;/);
+  assert.match(sql, /ALTER TABLE assignments ADD COLUMN claimed_at INTEGER;/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS claim_groups/);
+  assert.match(sql, /PRIMARY KEY \(source_id, date, instance_key\)/);
+});
+
 // ------------------------------------------------------- query bounds
 
 test('capRows passes short results through untouched', () => {

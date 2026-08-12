@@ -46,6 +46,12 @@ const ALLOWED_SYNC_STORES = new Set([
 // not in either owned block in the schema comment, but §6.5 is explicit that
 // only a PATCH (parent-authenticated) may move it; the child writes
 // `deferred_to` instead and leaves `date` untouched.
+//
+// Shared Chores §7 adds a third ownership class: `claimed_by`/`claimed_at`
+// are neither parent- nor child-owned. They are derived by the Worker from a
+// race between two device credentials, and are set only by the claim and
+// release routes below — never through ASSIGNMENT_CREATE_FIELDS,
+// ASSIGNMENT_PATCH_FIELDS, or ASSIGNMENT_COMPLETION_FIELDS.
 const ASSIGNMENT_CREATE_FIELDS = {
   date: 'date', kind: 'kind', sourceId: 'source_id', title: 'title',
   courseName: 'course_name', activityType: 'activity_type', sequenceNo: 'sequence_no',
@@ -56,6 +62,11 @@ const ASSIGNMENT_CREATE_FIELDS = {
   // Commit. Never in ASSIGNMENT_PATCH_FIELDS: moving a row between
   // instances is a different occurrence, not an edit.
   instanceKey: 'instance_key',
+  // Shared Chores §5.3 — a signal, not a stored column. Marks a row for
+  // claim_groups resolution before insert; `claim_group` (server-minted) is
+  // what actually lands in the table. Listed here only so the per-row
+  // "may not set" check (below) accepts it.
+  shared: 'shared',
 };
 const ASSIGNMENT_PATCH_FIELDS = {
   date: 'date', sourceId: 'source_id', title: 'title', courseName: 'course_name',
@@ -199,6 +210,15 @@ async function routeApi(request, env, ctx, url) {
   }
   if (pathname === '/api/completions' && method === 'POST') {
     return withDevice(request, env, ctx, (device) => handleCompletions(request, env, device));
+  }
+  // Shared Chores §5.4/§5.5 — the one synchronous, arbitrated write in the
+  // API (§5.6 says why this is not folded into /api/completions).
+  const claimMatch = /^\/api\/assignments\/([^/]+)\/claim$/.exec(pathname);
+  if (claimMatch && method === 'POST') {
+    return withDevice(request, env, ctx, (device) => handleAssignmentClaim(request, env, device, claimMatch[1]));
+  }
+  if (claimMatch && method === 'DELETE') {
+    return withDevice(request, env, ctx, (device) => handleAssignmentClaimRelease(env, device, claimMatch[1]));
   }
   if (pathname === '/api/rewards/entries' && method === 'POST') {
     return withDevice(request, env, ctx, (device) => handleRewardEntries(request, env, device));
@@ -612,6 +632,12 @@ async function handleAssignmentsCreate(request, env) {
     if (typeof row.title !== 'string' || !row.title) {
       return json({ error: 'Each assignment needs a title.' }, 400);
     }
+    // Shared Chores §5.3 step 1 — a shared row has no identity to group on
+    // without a sourceId, so there is nothing §5.3's resolution could key it
+    // by.
+    if (row.shared && row.sourceId == null) {
+      return json({ error: 'A shared assignment needs a sourceId to group on.' }, 400);
+    }
   }
 
   // §3.8's idempotency is scoped to one batch, which is the wrong scope for the
@@ -623,6 +649,12 @@ async function handleAssignmentsCreate(request, env) {
   // the plan. §6.6 is the rule this enforces.
   const liveKeys = await loadLiveAssignmentKeys(env, childId, assignments);
 
+  // Shared Chores §5.3 — resolved before the insert statements are built,
+  // because D1's batch() is a transaction whose results cannot be read
+  // mid-flight. A chunk with no `shared: true` rows costs nothing here:
+  // resolveClaimGroups returns an empty map without touching the database.
+  const claimGroups = await resolveClaimGroups(env, assignments);
+
   const now = Date.now();
   const ids = [];
   const statements = [];
@@ -632,6 +664,10 @@ async function handleAssignmentsCreate(request, env) {
     const key = naturalKey(row.date, row.kind, row.sourceId, row.instanceKey ?? '');
     if (key !== null && liveKeys.has(key)) { skipped++; continue; }
     if (key !== null) liveKeys.add(key); // a repeat inside one chunk is the same duplicate
+
+    const claimGroup = row.shared
+      ? claimGroups.get(claimGroupKey(row.date, row.sourceId, row.instanceKey ?? ''))
+      : null;
 
     const id = crypto.randomUUID();
     ids.push(id);
@@ -648,15 +684,15 @@ async function handleAssignmentsCreate(request, env) {
            id, child_id, date, kind, batch_id,
            source_id, title, course_name, activity_type, sequence_no,
            payload, expected_duration_min, reward_amount, reward_category,
-           block_hint, sort_order, instance_key,
+           block_hint, sort_order, instance_key, claim_group,
            status, assigned_at, updated_at, updated_by
          )
          SELECT
            ?1, ?2, ?3, ?4, ?5,
            ?6, ?7, ?8, ?9, ?10,
            ?11, ?12, ?13, ?14,
-           ?15, ?16, ?17,
-           'pending', ?18, ?18, 'parent'
+           ?15, ?16, ?17, ?18,
+           'pending', ?19, ?19, 'parent'
          WHERE NOT EXISTS (
            SELECT 1 FROM assignments
             WHERE child_id = ?2 AND date = ?3 AND kind = ?4 AND source_id = ?6
@@ -668,7 +704,7 @@ async function handleAssignmentsCreate(request, env) {
         row.sourceId ?? null, row.title, row.courseName ?? null, row.activityType ?? null, row.sequenceNo ?? null,
         row.payload ? JSON.stringify(row.payload) : null, row.expectedDurationMin ?? null,
         row.rewardAmount ?? null, row.rewardCategory ?? null,
-        row.blockHint ?? null, row.sortOrder ?? null, row.instanceKey ?? '',
+        row.blockHint ?? null, row.sortOrder ?? null, row.instanceKey ?? '', claimGroup ?? null,
         now
       )
     );
@@ -747,6 +783,60 @@ async function loadLiveAssignmentKeys(env, childId, rows) {
     keys.add(naturalKey(row.date, row.kind, row.source_id, row.instance_key));
   }
   return keys;
+}
+
+// Shared Chores §5.3 — resolves `(sourceId, date, instanceKey)` triples for
+// every `shared: true` row in the chunk to the `claim_groups` id that owns
+// that occurrence, minting one if this is the first Commit to reach it.
+//
+// The insert is `ON CONFLICT DO NOTHING` rather than a SELECT-then-INSERT,
+// because two children's per-child Commits can resolve the same triple at
+// the same time: whichever insert lands first wins the row, and the other's
+// insert is silently absorbed. The read-back that follows is what makes
+// either order see the same, single id.
+async function resolveClaimGroups(env, assignments) {
+  const triples = new Map(); // claimGroupKey(...) -> { sourceId, date, instanceKey }
+  for (const row of assignments) {
+    if (!row.shared || row.sourceId == null) continue;
+    const instanceKey = row.instanceKey ?? '';
+    triples.set(claimGroupKey(row.date, row.sourceId, instanceKey), {
+      sourceId: row.sourceId, date: row.date, instanceKey,
+    });
+  }
+
+  const resolved = new Map();
+  if (triples.size === 0) return resolved;
+
+  const now = Date.now();
+  await env.DB.batch(
+    [...triples.values()].map(({ sourceId, date, instanceKey }) =>
+      env.DB.prepare(
+        `INSERT INTO claim_groups (source_id, date, instance_key, id, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT (source_id, date, instance_key) DO NOTHING`
+      ).bind(sourceId, date, instanceKey, crypto.randomUUID(), now)
+    )
+  );
+
+  // One read-back for the whole chunk — a composite-key IN via row values,
+  // which reads whichever id won the insert above, this device's or a
+  // sibling Commit's that raced it.
+  const values = [...triples.values()];
+  const placeholders = values.map(() => '(?, ?, ?)').join(', ');
+  const params = values.flatMap(({ sourceId, date, instanceKey }) => [sourceId, date, instanceKey]);
+  const { results } = await env.DB.prepare(
+    `SELECT source_id, date, instance_key, id FROM claim_groups
+      WHERE (source_id, date, instance_key) IN (VALUES ${placeholders})`
+  ).bind(...params).all();
+
+  for (const row of results || []) {
+    resolved.set(claimGroupKey(row.date, row.source_id, row.instance_key), row.id);
+  }
+  return resolved;
+}
+
+function claimGroupKey(date, sourceId, instanceKey) {
+  return `${date}\0${sourceId}\0${instanceKey}`;
 }
 
 async function findCommitChunk(env, batchId, chunkIndex) {
@@ -1106,9 +1196,12 @@ async function handleCompletions(request, env, device) {
     // mid-batch, so one bad row cannot wedge a device's whole outbox drain.
     let result;
     try {
+      // Shared Chores §5.6 — a claim_group row is unarbitrated through this
+      // route; the batch route drains asynchronously and has no way to answer
+      // "someone else got it" before the tap's UI needs to know.
       result = await env.DB.prepare(
         `UPDATE assignments SET ${setClauses.join(', ')}, updated_at = ?${keys.length + 1}, updated_by = ?${keys.length + 2}
-         WHERE id = ?${keys.length + 3} AND child_id = ?${keys.length + 4}`
+         WHERE id = ?${keys.length + 3} AND child_id = ?${keys.length + 4} AND claim_group IS NULL`
       ).bind(...values, now, updatedBy, row.id, device.childId).run();
     } catch (err) {
       // Child Feedback Loop §11.7, closed. This throw used to escape the loop
@@ -1134,12 +1227,146 @@ async function handleCompletions(request, env, device) {
       continue;
     }
 
-    if (result.meta && result.meta.changes > 0) applied++;
-    else rejected.push({ id: row.id, error: 'Not found for this child.' });
+    if (result.meta && result.meta.changes > 0) {
+      applied++;
+      continue;
+    }
+
+    // The row exists but the WHERE excluded it (shared) rather than never
+    // matching (not found / another child's). Only queried on the reject
+    // path, so an ordinary drain of unshared rows pays nothing extra here.
+    const owned = await env.DB.prepare(
+      `SELECT claim_group FROM assignments WHERE id = ?1 AND child_id = ?2`
+    ).bind(row.id, device.childId).first();
+    if (owned && owned.claim_group != null) {
+      rejected.push({ id: row.id, error: 'This assignment is shared; use /api/assignments/:id/claim instead.' });
+    } else {
+      rejected.push({ id: row.id, error: 'Not found for this child.' });
+    }
   }
 
   if (deferred.length > 0 && !understandsDeferred(request)) return deferralUnsupportedResponse(deferred);
   return json({ applied, rejected, deferred });
+}
+
+// Shared Chores §5.4 — the arbitrated claim. `grade` and `completionNote`
+// only: the rest of ASSIGNMENT_COMPLETION_FIELDS is the route's own to set
+// (status, completedAt) or belongs to the ordinary local-first path
+// (deferredTo, childBlockHint, childSortOrder — §5.4's field-list note).
+const CLAIM_BODY_KEYS = ['grade', 'completionNote'];
+
+async function handleAssignmentClaim(request, env, device, id) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Body must be JSON.' }, 400);
+  }
+  body = body || {};
+
+  const badKeys = Object.keys(body).filter((k) => !CLAIM_BODY_KEYS.includes(k));
+  if (badKeys.length > 0) {
+    return json({ error: `Claim body may not set: ${badKeys.join(', ')}` }, 400);
+  }
+  const badValues = CLAIM_BODY_KEYS
+    .filter((k) => body[k] !== undefined)
+    .map((k) => { const problem = validateCompletionValue(k, body[k]); return problem ? `${k}: ${problem}` : null; })
+    .filter(Boolean);
+  if (badValues.length > 0) return json({ error: badValues.join(' ') }, 400);
+
+  // child_id from the token, never the body (§4.2) — a miss here (wrong
+  // child, wrong id) is a 404, not a 403, matching every other device route.
+  const row = await env.DB.prepare(
+    `SELECT claim_group, rescinded_at FROM assignments WHERE id = ?1 AND child_id = ?2`
+  ).bind(id, device.childId).first();
+  if (!row) return json({ error: 'Not found.' }, 404);
+  if (row.claim_group == null) {
+    return json({ error: 'This assignment is not shared; use /api/completions.' }, 400);
+  }
+  if (row.rescinded_at != null) return json({ error: 'This assignment was rescinded.' }, 409);
+
+  const now = Date.now();
+
+  // The arbitration, one statement. Writes every live row in the group — the
+  // caller's and the sibling's — so the loser's row learns the outcome at the
+  // same instant, with no second write to race against. §5.4 step 2.
+  const arbitration = await env.DB.prepare(
+    `UPDATE assignments
+        SET claimed_by = ?1, claimed_at = ?2, updated_at = ?2
+      WHERE claim_group = ?3
+        AND rescinded_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM assignments held
+           WHERE held.claim_group = ?3
+             AND held.rescinded_at IS NULL
+             AND held.claimed_by IS NOT NULL
+        )`
+  ).bind(device.childId, now, row.claim_group).run();
+
+  let won = !!(arbitration.meta && arbitration.meta.changes > 0);
+
+  if (!won) {
+    // Someone already holds it. Reading the group's live claimant — not the
+    // caller's own row — is what makes a replay survive a regeneration: the
+    // caller's fresh row is unclaimed even when the caller is the one
+    // holding the group. §5.4 step 3.
+    const claimant = await env.DB.prepare(
+      `SELECT claimed_by FROM assignments
+        WHERE claim_group = ?1 AND rescinded_at IS NULL AND claimed_by IS NOT NULL
+        LIMIT 1`
+    ).bind(row.claim_group).first();
+    won = !!claimant && claimant.claimed_by === device.childId;
+    if (!won) return json({ claimed: false });
+  }
+
+  // On a win only — first-time or an idempotent replay — record the
+  // completion on the caller's own row. §5.4 step 4.
+  const updatedBy = `device:${device.deviceId}`;
+  await env.DB.prepare(
+    `UPDATE assignments
+        SET status = 'complete', completed_at = ?1, grade = ?2, completion_note = ?3,
+            updated_at = ?1, updated_by = ?4
+      WHERE id = ?5 AND child_id = ?6`
+  ).bind(now, body.grade ?? null, body.completionNote ?? null, updatedBy, id, device.childId).run();
+
+  const assignment = await env.DB.prepare(`SELECT * FROM assignments WHERE id = ?1`).bind(id).first();
+  return json({ claimed: true, assignment });
+}
+
+// Shared Chores §5.5 — undo has to give the chore back, or a mis-tap locks a
+// sibling out of work they could still do.
+async function handleAssignmentClaimRelease(env, device, id) {
+  const row = await env.DB.prepare(
+    `SELECT claim_group FROM assignments WHERE id = ?1 AND child_id = ?2`
+  ).bind(id, device.childId).first();
+  if (!row) return json({ error: 'Not found.' }, 404);
+  if (row.claim_group == null) {
+    return json({ error: 'This assignment is not shared.' }, 400);
+  }
+
+  const now = Date.now();
+  // `claimed_by = ?3` is the authorization: only the current claimant can
+  // release. A caller who already lost the race releases nothing.
+  const result = await env.DB.prepare(
+    `UPDATE assignments
+        SET claimed_by = NULL, claimed_at = NULL, updated_at = ?1
+      WHERE claim_group = ?2 AND claimed_by = ?3 AND rescinded_at IS NULL`
+  ).bind(now, row.claim_group, device.childId).run();
+
+  if (!result.meta || result.meta.changes === 0) return json({ released: false });
+
+  // The sibling's row is not touched beyond claimed_by/claimed_at/updated_at
+  // above — it was never completed, so there is nothing on it to clear.
+  const updatedBy = `device:${device.deviceId}`;
+  await env.DB.prepare(
+    `UPDATE assignments
+        SET status = 'pending', completed_at = NULL, grade = NULL, completion_note = NULL,
+            updated_at = ?1, updated_by = ?2
+      WHERE id = ?3 AND child_id = ?4`
+  ).bind(now, updatedBy, id, device.childId).run();
+
+  const assignment = await env.DB.prepare(`SELECT * FROM assignments WHERE id = ?1`).bind(id).first();
+  return json({ released: true, assignment });
 }
 
 async function handleRewardEntries(request, env, device) {
