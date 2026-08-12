@@ -6,6 +6,9 @@
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#5a3fc0">
   <title>Daily Plan</title>
+  <!-- start_url is "./", not "./index.html": the asset server 307s the second
+       onto the first, and a redirect on the launch URL is what sw.js's
+       shellPath() note describes as fatal. Keep new installs off it. -->
   <link rel="manifest" href="manifest.json">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="stylesheet" href="css/style.css">
