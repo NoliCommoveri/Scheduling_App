@@ -157,6 +157,14 @@ button { font-family: inherit; cursor: pointer; }
 }
 .menu-btn:active { transform: translateY(1px); }
 
+/* ---------- Preview-another-day banner ---------- */
+.preview-banner {
+  margin-top: 12px; background: transparent; border: 1.5px dashed var(--danger);
+  border-radius: 12px; padding: 10px 14px; font-size: 14px; font-weight: 600; color: var(--danger);
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+}
+.preview-banner .btn.ghost { border-color: var(--danger); color: var(--danger); flex-shrink: 0; }
+
 /* ---------- End-of-week reminder banner (Module 8 FR-7) ---------- */
 .reminder-banner {
   margin-top: 12px; background: var(--primary-soft); border: 1px solid var(--primary);
