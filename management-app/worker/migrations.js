@@ -10,6 +10,7 @@ import m0003 from '../../migrations/0003_commit_chunks.sql';
 import m0004 from '../../migrations/0004_completion_note.sql';
 import m0005 from '../../migrations/0005_assignment_messages.sql';
 import m0006 from '../../migrations/0006_chore_instances.sql';
+import m0007 from '../../migrations/0007_shared_chore_claims.sql';
 
 export const MIGRATIONS = [
   { name: '0001_online_revamp_init.sql', sql: m0001 },
@@ -18,4 +19,5 @@ export const MIGRATIONS = [
   { name: '0004_completion_note.sql', sql: m0004 },
   { name: '0005_assignment_messages.sql', sql: m0005 },
   { name: '0006_chore_instances.sql', sql: m0006 },
+  { name: '0007_shared_chore_claims.sql', sql: m0007 },
 ];

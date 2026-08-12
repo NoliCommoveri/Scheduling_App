@@ -279,7 +279,9 @@ test('Shared Chores §3: instanceKey defaults to the empty string, not null', as
   const insertStmt = DB.batched[0].find((s) => s.sql.includes('INSERT INTO assignments'));
   assert.ok(insertStmt.sql.includes('instance_key'), 'instance_key is in the column list');
   assert.ok(insertStmt.sql.includes('instance_key = ?17'), 'the NOT EXISTS guard keys on it too');
-  assert.equal(insertStmt.args.at(-2), '', 'bound as empty string, never null — NULL = NULL never matches in SQLite');
+  // Shared Chores §5.2 added claim_group as the bind right after instance_key,
+  // pushing instance_key to third-from-last (claim_group, then now).
+  assert.equal(insertStmt.args.at(-3), '', 'bound as empty string, never null — NULL = NULL never matches in SQLite');
 });
 
 test('§13.21: the same row twice inside one chunk is stored once', async () => {
@@ -901,4 +903,222 @@ test('there is no route that clears read_at — FR-4 has no mark-unread in v1', 
     const res = await call(env, path, { method: 'POST', token: PARENT_TOKEN, body: { ids: ['m1'] } });
     assert.equal(res.status, 404, `${path} must not exist`);
   }
+});
+
+// ============================================  Shared Chores §5: claim/release
+
+const CLAIM_PATH = '/api/assignments/AS-1/claim';
+
+test('the claim route needs a device credential, not a parent token', async () => {
+  const { env } = makeEnv(deviceResolver());
+  const res = await call(env, CLAIM_PATH, { method: 'POST', token: PARENT_TOKEN, body: {} });
+  assert.equal(res.status, 401);
+});
+
+test('§5.4: a claim body may not set anything but grade and completionNote', async () => {
+  const { env } = makeEnv(deviceResolver());
+  const res = await call(env, CLAIM_PATH, {
+    method: 'POST', token: DEVICE_TOKEN, body: { status: 'complete' },
+  });
+  assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /may not set: status/);
+});
+
+test('§5.4: a claim body value is validated the same way a completion value is', async () => {
+  const { env } = makeEnv(deviceResolver());
+  const res = await call(env, CLAIM_PATH, {
+    method: 'POST', token: DEVICE_TOKEN, body: { grade: 'A+' },
+  });
+  assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /grade must be a finite number/);
+});
+
+test('§5.4: an unknown or another child\'s assignment id is 404, not 403', async () => {
+  const { env } = makeEnv(deviceResolver((sql) => (
+    sql.includes('SELECT claim_group, rescinded_at FROM assignments') ? { first: null } : {}
+  )));
+  const res = await call(env, CLAIM_PATH, { method: 'POST', token: DEVICE_TOKEN, body: {} });
+  assert.equal(res.status, 404);
+});
+
+test('§5.4: a row with no claim_group is rejected, pointed at /api/completions', async () => {
+  const { env } = makeEnv(deviceResolver((sql) => (
+    sql.includes('SELECT claim_group, rescinded_at FROM assignments')
+      ? { first: { claim_group: null, rescinded_at: null } } : {}
+  )));
+  const res = await call(env, CLAIM_PATH, { method: 'POST', token: DEVICE_TOKEN, body: {} });
+  assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /use \/api\/completions/);
+});
+
+test('§5.4: a rescinded row is 409 — the parent pulled it', async () => {
+  const { env } = makeEnv(deviceResolver((sql) => (
+    sql.includes('SELECT claim_group, rescinded_at FROM assignments')
+      ? { first: { claim_group: 'GRP-1', rescinded_at: 1700000000000 } } : {}
+  )));
+  const res = await call(env, CLAIM_PATH, { method: 'POST', token: DEVICE_TOKEN, body: {} });
+  assert.equal(res.status, 409);
+});
+
+test('§5.4: winning the arbitration writes the completion and returns the row', async () => {
+  const { env, statements } = makeEnv(deviceResolver((sql) => {
+    if (sql.includes('SELECT claim_group, rescinded_at FROM assignments')) {
+      return { first: { claim_group: 'GRP-1', rescinded_at: null } };
+    }
+    if (sql.includes('SET claimed_by = ?1, claimed_at = ?2')) return { meta: { changes: 2 } };
+    if (sql.includes("SET status = 'complete'")) return { meta: { changes: 1 } };
+    if (sql.startsWith('SELECT * FROM assignments WHERE id')) {
+      return { first: { id: 'AS-1', status: 'complete', claimed_by: 'CH-1' } };
+    }
+    return {};
+  }));
+  const res = await call(env, CLAIM_PATH, { method: 'POST', token: DEVICE_TOKEN, body: { grade: 95 } });
+  const out = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(out.claimed, true);
+  assert.equal(out.assignment.id, 'AS-1');
+
+  // The arbitration writes the whole group in one statement, not just the
+  // caller's row — that is what puts the outcome on the sibling's row too.
+  const arbitration = statements.find((s) => s.sql.includes('SET claimed_by = ?1, claimed_at = ?2'));
+  assert.ok(!arbitration.sql.includes('AND child_id'), 'the arbitration UPDATE is not scoped to one child');
+  assert.equal(arbitration.args[0], 'CH-1');
+  assert.equal(arbitration.args[2], 'GRP-1');
+});
+
+test('§5.4: losing the arbitration writes nothing and answers claimed: false', async () => {
+  const { env, DB } = makeEnv(deviceResolver((sql) => {
+    if (sql.includes('SELECT claim_group, rescinded_at FROM assignments')) {
+      return { first: { claim_group: 'GRP-1', rescinded_at: null } };
+    }
+    if (sql.includes('SET claimed_by = ?1, claimed_at = ?2')) return { meta: { changes: 0 } };
+    if (sql.includes('SELECT claimed_by FROM assignments')) return { first: { claimed_by: 'CH-SIBLING' } };
+    return {};
+  }));
+  const res = await call(env, CLAIM_PATH, { method: 'POST', token: DEVICE_TOKEN, body: {} });
+  const out = await res.json();
+  assert.equal(res.status, 200);
+  assert.deepEqual(out, { claimed: false });
+  assert.equal(DB.batched.length, 0, 'the claim route writes directly, never through batch()');
+});
+
+test('§5.4: a replay of an already-won claim is answered as a win, idempotently', async () => {
+  // The window §5.4 names: this caller's own arbitration write already
+  // landed, so this attempt's UPDATE matches nothing new — but the group's
+  // live claimant is still this caller, read back from the group rather than
+  // the caller's own (still-unclaimed-looking) row.
+  const { env } = makeEnv(deviceResolver((sql) => {
+    if (sql.includes('SELECT claim_group, rescinded_at FROM assignments')) {
+      return { first: { claim_group: 'GRP-1', rescinded_at: null } };
+    }
+    if (sql.includes('SET claimed_by = ?1, claimed_at = ?2')) return { meta: { changes: 0 } };
+    if (sql.includes('SELECT claimed_by FROM assignments')) return { first: { claimed_by: 'CH-1' } };
+    if (sql.includes("SET status = 'complete'")) return { meta: { changes: 1 } };
+    if (sql.startsWith('SELECT * FROM assignments WHERE id')) return { first: { id: 'AS-1' } };
+    return {};
+  }));
+  const res = await call(env, CLAIM_PATH, { method: 'POST', token: DEVICE_TOKEN, body: {} });
+  assert.equal((await res.json()).claimed, true);
+});
+
+test('§5.5: releasing gives the occurrence back and clears the caller\'s completion', async () => {
+  const { env, statements } = makeEnv(deviceResolver((sql) => {
+    if (sql.includes('SELECT claim_group FROM assignments WHERE id')) return { first: { claim_group: 'GRP-1' } };
+    if (sql.includes('SET claimed_by = NULL')) return { meta: { changes: 2 } };
+    if (sql.includes("SET status = 'pending'")) return { meta: { changes: 1 } };
+    if (sql.startsWith('SELECT * FROM assignments WHERE id')) return { first: { id: 'AS-1', status: 'pending' } };
+    return {};
+  }));
+  const res = await call(env, CLAIM_PATH, { method: 'DELETE', token: DEVICE_TOKEN });
+  const out = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(out.released, true);
+
+  const release = statements.find((s) => s.sql.includes('SET claimed_by = NULL'));
+  assert.ok(release.sql.includes('claimed_by = ?3'), 'only the current claimant may release');
+});
+
+test('§5.5: a caller who already lost the race releases nothing', async () => {
+  const { env } = makeEnv(deviceResolver((sql) => {
+    if (sql.includes('SELECT claim_group FROM assignments WHERE id')) return { first: { claim_group: 'GRP-1' } };
+    if (sql.includes('SET claimed_by = NULL')) return { meta: { changes: 0 } };
+    return {};
+  }));
+  const res = await call(env, CLAIM_PATH, { method: 'DELETE', token: DEVICE_TOKEN });
+  const out = await res.json();
+  assert.equal(res.status, 200);
+  assert.deepEqual(out, { released: false });
+});
+
+test('§5.6: a shared row cannot be completed through /api/completions', async () => {
+  const { env, DB } = makeEnv(deviceResolver((sql) => {
+    if (sql.startsWith('UPDATE assignments') && sql.includes('claim_group IS NULL')) {
+      return { meta: { changes: 0 } };
+    }
+    if (sql.includes('SELECT claim_group FROM assignments WHERE id')) return { first: { claim_group: 'GRP-1' } };
+    return {};
+  }));
+  const res = await call(env, '/api/completions', {
+    method: 'POST', token: DEVICE_TOKEN,
+    body: { completions: [{ id: 'AS-1', status: 'complete' }] },
+  });
+  const out = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(out.applied, 0);
+  assert.match(out.rejected[0].error, /use \/api\/assignments\/:id\/claim/);
+  assert.equal(DB.batched.length, 0, 'this route never batches');
+});
+
+test('§5.3: a shared assignment row is grouped, keyed by the resolved claim_groups id', async () => {
+  const { env, DB } = makeEnv((sql) => {
+    if (sql.includes('FROM commit_chunks')) return { first: null };
+    // Answers the read-back as if this triple already had a group — either
+    // this device minted it moments ago or a sibling Commit's insert won the
+    // race; the resolution is the same either way.
+    if (sql.includes('SELECT source_id, date, instance_key, id FROM claim_groups')) {
+      return { results: [{ source_id: 'CHR-7k2', date: '2026-08-11', instance_key: '', id: 'GRP-9' }] };
+    }
+    return {};
+  });
+  const sharedRow = { ...choreRow, shared: true };
+
+  const res = await call(env, '/api/assignments', {
+    method: 'POST', token: PARENT_TOKEN,
+    body: { batchId: 'B3', chunkIndex: 0, childId: 'CH-1', assignments: [sharedRow] },
+  });
+  const out = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(out.applied, 1);
+
+  // Two batches: the claim_groups resolution, then the assignment insert.
+  assert.equal(DB.batched.length, 2);
+  const groupInserts = DB.batched[0];
+  assert.ok(groupInserts[0].sql.includes('INSERT INTO claim_groups'));
+  assert.ok(groupInserts[0].sql.includes('ON CONFLICT'));
+
+  const insert = DB.batched[1].find((s) => s.sql.includes('INSERT INTO assignments'));
+  assert.ok(insert.sql.includes('claim_group'), 'claim_group is in the column list');
+  assert.equal(insert.args.at(-2), 'GRP-9', 'bound from the resolved group id');
+});
+
+test('§5.3: an unshared chunk never touches claim_groups', async () => {
+  const { env, DB } = makeEnv((sql) => (sql.includes('FROM commit_chunks') ? { first: null } : {}));
+  await call(env, '/api/assignments', {
+    method: 'POST', token: PARENT_TOKEN,
+    body: { batchId: 'B3', chunkIndex: 0, childId: 'CH-1', assignments: [choreRow] },
+  });
+  assert.equal(DB.batched.length, 1, 'no claim_groups resolution batch when nothing is shared');
+});
+
+test('§5.3: a shared row with no sourceId is rejected — it has no identity to group on', async () => {
+  const { env } = makeEnv((sql) => (sql.includes('FROM commit_chunks') ? { first: null } : {}));
+  const res = await call(env, '/api/assignments', {
+    method: 'POST', token: PARENT_TOKEN,
+    body: {
+      batchId: 'B3', chunkIndex: 0, childId: 'CH-1',
+      assignments: [{ date: '2026-08-11', kind: 'chore', title: 'Dishes', shared: true }],
+    },
+  });
+  assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /needs a sourceId to group on/);
 });
