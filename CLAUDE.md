@@ -1,8 +1,8 @@
 # CLAUDE.md – Build Session Guardrails
 
-**Version:** 2.0  
+**Version:** 2.1  
 **Project:** Homeschool Curriculum & Chore Scheduling System  
-**Last Updated:** 2026-08-10  
+**Last Updated:** 2026-08-12  
 
 ---
 
@@ -105,6 +105,7 @@ same commit — the assets directory is the repo root.
 - **Network is the normal path.** Both apps make API calls during ordinary operation.
 - **Offline is tolerated, not guaranteed.** The Child App opens from cache, renders the last known plan, and queues completions. It does **not** need to function indefinitely without a network, and no design may be contorted to make it.
 - **Local writes never block on the network.** A completion commits locally and drains later.
+- **Narrowed exception: `claim_group` rows.** Per `TDS_Slice_Shared_Chores.md` §0.8/§5.7, a row with `claim_group IS NOT NULL` requires a live connection to complete — the claim is the write, and it is synchronous, because only the server knows whether a sibling got there first. This applies to that row class only. Every other row — activities, events, private chores, `each` chores including multi-child, and deferment/waive/note/message writes even on a claim row — keeps the local-first path above, unchanged.
 
 ### B. The Shared Assignment Table
 
@@ -238,6 +239,7 @@ Ask explicitly, list the candidate readings, state which you are proceeding with
 | `plannerMeta` as a store | **REPEALED** | Now columns on `assignments`. |
 | Google Drive integration | **ABANDONED** | Solved a problem that no longer exists. |
 | Module 10 (Theming) | **DEFERRED** | Wizard choice → CSS integration. |
+| Shared chore claims | **LOCKED** | Server-arbitrated, online-required, `each`/`claim` allocation and per-day instances on a single Chore record. See `TDS_Slice_Shared_Chores.md`. |
 
 ---
 
@@ -258,8 +260,8 @@ Ask explicitly, list the candidate readings, state which you are proceeding with
 
 ## IX. Version & Amendments
 
-**Current Version:** 2.0  
-**Date:** 2026-08-10
+**Current Version:** 2.1  
+**Date:** 2026-08-12
 
 | Version | Date | Change |
 |---------|------|--------|
@@ -267,6 +269,7 @@ Ask explicitly, list the candidate readings, state which you are proceeding with
 | 1.1 | 2026-07-13 | Corrected reward ledger fold cadence to N=100. |
 | 1.2 | 2026-07-13 | Corrected `plannerMeta` shape. |
 | 2.0 | 2026-08-10 | **Architectural reversal.** Offline-first repealed; D1 becomes the system of record; packet and CSV interchange replaced by a shared `assignments` table and an HTTP API; per-occurrence chore IDs, reserved prefixes, and the N=100 ledger fold repealed; no-CLI added as a hard constraint with browser-applied migrations. Authorized by Ray in-session. See `docs/TDS_Slice_Online_Revamp.md`. |
+| 2.1 | 2026-08-12 | §III.A gains the `claim_group` narrowing (online-required for shared-chore claims only; every other row keeps the local-first path). §VII gains the "Shared chore claims" locked-decision row. Closes the §14 amendment gap left open by `TDS_Slice_Shared_Chores.md` — the SRS modules were updated in commit `9715b50`, this file was not. Authorized by Ray in-session. See `docs/TDS_Slice_Shared_Chores.md` §0.8/§5.7/§14. |
 
 ---
 
