@@ -18,11 +18,36 @@
     return { ok: true, grade: n };
   }
 
-  // TDS §3 FR-5: exactly { activityId, date, status:'complete', exported:false, grade? }.
-  // grade is present only when provided — never null, never a blank placeholder.
-  function buildActivityRecord(activityId, today, grade) {
+  // Child Feedback Loop §5.2/§5.3 — mirrors the Worker's MAX_NOTE_LEN
+  // (validation.js), independently, since the two run in different runtimes.
+  // This bound is a UX nicety, not a security boundary; the Worker is
+  // authoritative.
+  var MAX_NOTE_LEN = 1000;
+
+  // Note: a free-text string, or absent. Blank/undefined input is valid (skip
+  // the note) — same shape as validateGrade. Trimmed, since a note that is
+  // only whitespace is "nothing to say," not a note.
+  // Returns { ok:true, note: string|undefined } or { ok:false, message }.
+  function validateNote(raw) {
+    if (raw === undefined || raw === null) return { ok: true, note: undefined };
+    var trimmed = String(raw).trim();
+    if (trimmed === "") return { ok: true, note: undefined };
+    if (trimmed.length > MAX_NOTE_LEN) {
+      return { ok: false, message: "Note must be at most " + MAX_NOTE_LEN + " characters." };
+    }
+    return { ok: true, note: trimmed };
+  }
+
+  // TDS §3 FR-5 / §5.3: { activityId, date, status:'complete', exported:false, grade?, note? }.
+  // grade and note are present only when provided — never null, never a blank
+  // placeholder. `note` is the local mirror of `assignments.completion_note`
+  // (§5.1) — read by the Completed view (§3.2) and fed to the outbox
+  // alongside grade, the same way completion.js's queueUpload already reads
+  // record.grade.
+  function buildActivityRecord(activityId, today, grade, note) {
     var rec = { activityId: activityId, date: today, status: "complete", exported: false };
     if (typeof grade === "number") rec.grade = grade;
+    if (typeof note === "string") rec.note = note;
     return rec;
   }
 
@@ -148,6 +173,8 @@
 
   g.CompletionCore = {
     validateGrade: validateGrade,
+    MAX_NOTE_LEN: MAX_NOTE_LEN,
+    validateNote: validateNote,
     buildActivityRecord: buildActivityRecord,
     mintEntryId: mintEntryId,
     buildEntry: buildEntry,

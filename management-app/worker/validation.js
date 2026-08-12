@@ -28,6 +28,10 @@ export const COMPLETION_STATUSES = new Set(['pending', 'complete', 'waived']);
 // A block hint is a label the child picked, not free storage.
 export const MAX_BLOCK_HINT_LEN = 200;
 
+// Child Feedback Loop §5.2 — long enough for "I did problems 1-10, skipped
+// 11, wasn't sure how" without being an open text dump.
+export const MAX_NOTE_LEN = 1000;
+
 // §4.2 puts the Worker, not the client, in charge of what a credential may
 // write. That was read narrowly as *which columns*, and the child's values went
 // in unchecked while every parent-supplied value was validated. Same rule, same
@@ -61,6 +65,11 @@ export function validateCompletionValue(key, value) {
         : `childBlockHint must be at most ${MAX_BLOCK_HINT_LEN} characters.`;
     case 'childSortOrder':
       return Number.isSafeInteger(value) ? null : 'childSortOrder must be a whole number.';
+    case 'completionNote':
+      if (typeof value !== 'string') return 'completionNote must be a string.';
+      return value.length <= MAX_NOTE_LEN
+        ? null
+        : `completionNote must be at most ${MAX_NOTE_LEN} characters.`;
     default:
       // Unreachable: the caller has already checked the key against
       // ASSIGNMENT_COMPLETION_FIELDS. Refuse rather than fall through, so a

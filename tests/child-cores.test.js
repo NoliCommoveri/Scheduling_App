@@ -54,6 +54,11 @@ test('sanitizeFields keeps only child-owned columns', () => {
   assert.deepEqual(out, { status: 'complete', grade: 90, childSortOrder: 2 });
 });
 
+test('sanitizeFields keeps completionNote (Child Feedback Loop §5.3)', () => {
+  const out = OutboxCore.sanitizeFields({ completionNote: 'skipped #11', title: 'hacked' });
+  assert.deepEqual(out, { completionNote: 'skipped #11' });
+});
+
 test('sanitizeFields drops undefined but keeps null', () => {
   // Clearing a deferment is a real write of NULL, not an absence.
   const out = OutboxCore.sanitizeFields({ deferredTo: null, grade: undefined, status: 'complete' });
@@ -501,6 +506,40 @@ test('dayStatus: neutral with nothing due, resolved only when all are', () => {
 });
 
 // =======================================================  completion-core
+
+test('validateGrade accepts a whole 0-100, or blank/absent', () => {
+  assert.deepEqual(CompletionCore.validateGrade(undefined), { ok: true, grade: undefined });
+  assert.deepEqual(CompletionCore.validateGrade(''), { ok: true, grade: undefined });
+  assert.deepEqual(CompletionCore.validateGrade('87'), { ok: true, grade: 87 });
+  assert.equal(CompletionCore.validateGrade('101').ok, false);
+  assert.equal(CompletionCore.validateGrade('A+').ok, false);
+});
+
+// Child Feedback Loop §5.2/§5.3 — mirrors the Worker's own MAX_NOTE_LEN rule.
+test('validateNote accepts a trimmed string under the cap, or blank/absent', () => {
+  assert.deepEqual(CompletionCore.validateNote(undefined), { ok: true, note: undefined });
+  assert.deepEqual(CompletionCore.validateNote(null), { ok: true, note: undefined });
+  assert.deepEqual(CompletionCore.validateNote('   '), { ok: true, note: undefined }, 'whitespace-only is "nothing to say"');
+  assert.deepEqual(CompletionCore.validateNote('  skipped #11  '), { ok: true, note: 'skipped #11' });
+});
+
+test('validateNote rejects a note over MAX_NOTE_LEN', () => {
+  const tooLong = 'x'.repeat(CompletionCore.MAX_NOTE_LEN + 1);
+  const result = CompletionCore.validateNote(tooLong);
+  assert.equal(result.ok, false);
+  assert.match(result.message, /1000/);
+  assert.equal(CompletionCore.validateNote('x'.repeat(CompletionCore.MAX_NOTE_LEN)).ok, true);
+});
+
+test('buildActivityRecord includes grade/note only when provided, never a blank placeholder', () => {
+  assert.deepEqual(CompletionCore.buildActivityRecord('a1', '2026-08-11'), {
+    activityId: 'a1', date: '2026-08-11', status: 'complete', exported: false,
+  });
+  assert.deepEqual(CompletionCore.buildActivityRecord('a1', '2026-08-11', 90, 'nice work'), {
+    activityId: 'a1', date: '2026-08-11', status: 'complete', exported: false,
+    grade: 90, note: 'nice work',
+  });
+});
 
 test('buildEarnEntry uses the snapshotted amount when there is one', () => {
   // §7: the amount comes from the assignment row, so a later edit to a tier

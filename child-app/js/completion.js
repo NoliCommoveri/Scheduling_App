@@ -25,6 +25,9 @@
     if (!g.Outbox) return Promise.resolve();
     var fields = { status: record.status, completedAt: at };
     if (typeof record.grade === "number") fields.grade = record.grade;
+    // §5.3: only sent when a note was actually given — a blank note at
+    // completion time is "nothing to say," not a write of empty string.
+    if (typeof record.note === "string") fields.completionNote = record.note;
     return g.Outbox.enqueueCompletion(item.id, fields).then(function () {
       return g.Outbox.enqueueReward(earn);
     });
@@ -49,7 +52,11 @@
   //
   // The fold check that used to sit between the earn and the upload is gone with
   // the store it maintained (§8.1) — an append is now the whole of the write.
-  function completeItem(item, rawGrade) {
+  //
+  // Child Feedback Loop §5.3: `rawNote` is validated unconditionally (unlike
+  // grade, it is never gated on capturesGrade — every completion may carry
+  // one).
+  function completeItem(item, rawGrade, rawNote) {
     return g.DB.get("activityRecords", item.id).then(function (existing) {
       if (existing) return { ok: true, alreadyDone: true };
 
@@ -60,9 +67,13 @@
         grade = v.grade;
       }
 
+      var noteResult = C.validateNote(rawNote);
+      if (!noteResult.ok) return { ok: false, noteError: noteResult.message };
+      var note = noteResult.note;
+
       var today = g.DateUtil.today();
       var at = Date.now();
-      var record = C.buildActivityRecord(item.id, today, grade);
+      var record = C.buildActivityRecord(item.id, today, grade, note);
       // Minted before the row is stored, let alone sent, so the local entry and
       // the uploaded one are the same entry (§5.5).
       //
@@ -104,7 +115,11 @@
       return g.DB.del("activityRecords", item.id)
         .then(function () { return g.DB.put("rewardEntries", reversal); })
         .then(function () {
-          return g.Outbox.enqueueCompletion(item.id, { status: "pending", completedAt: null, grade: null });
+          // completionNote cleared alongside grade — §3.3 step 4 deferred this
+          // until §5 landed; it now has.
+          return g.Outbox.enqueueCompletion(item.id, {
+            status: "pending", completedAt: null, grade: null, completionNote: null
+          });
         })
         .then(function () { return g.Outbox.enqueueReward(reversal); })
         .then(notifyStreakUndo)
@@ -121,5 +136,35 @@
     return Promise.resolve();
   }
 
-  g.Completion = { completeItem: completeItem, undoItem: undoItem };
+  // Child Feedback Loop §5.3 — the note is editable after the fact from the
+  // Completed view, unlike grade: an always-writable child-owned column, not
+  // a write-once field. Same shape as completeItem/undoItem: guard, local
+  // write, enqueue.
+  //
+  // Blank clears an existing note — a real write of NULL, same rule §4.2/
+  // outbox-core.js already applies to every other completion field — rather
+  // than "leave whatever was there," which validateNote's blank-is-absent
+  // reading would otherwise imply for a fresh completion.
+  function updateNote(item, rawNote) {
+    return g.DB.get("activityRecords", item.id).then(function (existing) {
+      if (!existing || existing.status !== "complete") return { ok: false };
+
+      var v = C.validateNote(rawNote);
+      if (!v.ok) return { ok: false, noteError: v.message };
+
+      var updated = Object.assign({}, existing);
+      if (typeof v.note === "string") updated.note = v.note;
+      else delete updated.note;
+
+      return g.DB.put("activityRecords", updated)
+        .then(function () {
+          return g.Outbox.enqueueCompletion(item.id, {
+            completionNote: typeof v.note === "string" ? v.note : null
+          });
+        })
+        .then(function () { return { ok: true }; });
+    });
+  }
+
+  g.Completion = { completeItem: completeItem, undoItem: undoItem, updateNote: updateNote };
 })(typeof window !== "undefined" ? window : globalThis);
