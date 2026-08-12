@@ -197,7 +197,7 @@ const choreRow = {
 function envWithLivePlan(live) {
   return makeEnv((sql) => {
     if (sql.includes('FROM commit_chunks')) return { first: null };
-    if (sql.includes('SELECT date, kind, source_id FROM assignments')) return { results: live };
+    if (sql.includes('SELECT date, kind, source_id, instance_key FROM assignments')) return { results: live };
     return {};
   });
 }
@@ -209,7 +209,7 @@ function insertsIn(DB) {
 }
 
 test('§13.21: a row already live for that child, day and source is not assigned again', async () => {
-  const { env, DB } = envWithLivePlan([{ date: '2026-08-11', kind: 'chore', source_id: 'CHR-7k2' }]);
+  const { env, DB } = envWithLivePlan([{ date: '2026-08-11', kind: 'chore', source_id: 'CHR-7k2', instance_key: '' }]);
   const res = await call(env, '/api/assignments', {
     method: 'POST', token: PARENT_TOKEN,
     body: { batchId: 'B2', chunkIndex: 0, childId: 'CH-1', assignments: [choreRow] },
@@ -228,7 +228,7 @@ test('§13.21: a row already live for that child, day and source is not assigned
 });
 
 test('§13.21: a different day, kind or source is a different assignment', async () => {
-  const { env, DB } = envWithLivePlan([{ date: '2026-08-11', kind: 'chore', source_id: 'CHR-7k2' }]);
+  const { env, DB } = envWithLivePlan([{ date: '2026-08-11', kind: 'chore', source_id: 'CHR-7k2', instance_key: '' }]);
   const res = await call(env, '/api/assignments', {
     method: 'POST', token: PARENT_TOKEN,
     body: {
@@ -244,6 +244,42 @@ test('§13.21: a different day, kind or source is a different assignment', async
   assert.equal(out.applied, 3);
   assert.equal(out.skipped, 0);
   assert.equal(insertsIn(DB).length, 3);
+});
+
+// ---- Shared Chores §3: instance_key is a fourth component of identity ----
+
+test('Shared Chores §3: a different instanceKey is a different occurrence, even same day/kind/source', async () => {
+  // Three-dishes: Breakfast/Lunch/Dinner share date, kind and sourceId and are
+  // distinguished only by instanceKey. Without it in the natural key, the
+  // second and third collapse into the first.
+  const { env, DB } = envWithLivePlan([{ date: '2026-08-11', kind: 'chore', source_id: 'CHR-7k2', instance_key: 'i1' }]);
+  const res = await call(env, '/api/assignments', {
+    method: 'POST', token: PARENT_TOKEN,
+    body: {
+      batchId: 'B2', chunkIndex: 0, childId: 'CH-1',
+      assignments: [
+        { ...choreRow, instanceKey: 'i1' }, // already live — skipped
+        { ...choreRow, instanceKey: 'i2' },
+        { ...choreRow, instanceKey: 'i3' },
+      ],
+    },
+  });
+  const out = await res.json();
+  assert.equal(out.applied, 2);
+  assert.equal(out.skipped, 1);
+  assert.equal(insertsIn(DB).length, 2);
+});
+
+test('Shared Chores §3: instanceKey defaults to the empty string, not null', async () => {
+  const { env, DB } = envWithLivePlan([]);
+  await call(env, '/api/assignments', {
+    method: 'POST', token: PARENT_TOKEN,
+    body: { batchId: 'B2', chunkIndex: 0, childId: 'CH-1', assignments: [choreRow] },
+  });
+  const insertStmt = DB.batched[0].find((s) => s.sql.includes('INSERT INTO assignments'));
+  assert.ok(insertStmt.sql.includes('instance_key'), 'instance_key is in the column list');
+  assert.ok(insertStmt.sql.includes('instance_key = ?17'), 'the NOT EXISTS guard keys on it too');
+  assert.equal(insertStmt.args.at(-2), '', 'bound as empty string, never null — NULL = NULL never matches in SQLite');
 });
 
 test('§13.21: the same row twice inside one chunk is stored once', async () => {
@@ -268,7 +304,7 @@ test('§13.21: a rescinded row does not block assigning that work again', async 
     method: 'POST', token: PARENT_TOKEN,
     body: { batchId: 'B2', chunkIndex: 0, childId: 'CH-1', assignments: [choreRow] },
   });
-  const lookup = statements.find((s) => s.sql.includes('SELECT date, kind, source_id FROM assignments'));
+  const lookup = statements.find((s) => s.sql.includes('SELECT date, kind, source_id, instance_key FROM assignments'));
   assert.ok(lookup, 'the pre-check must run');
   assert.match(lookup.sql, /rescinded_at IS NULL/);
   assert.match(insertsIn(DB)[0], /NOT EXISTS/);
@@ -286,7 +322,7 @@ test('§13.21: the lookup is bounded by the chunk\'s own date span', async () =>
       assignments: [{ ...choreRow, date: '2026-09-04' }, choreRow, { ...choreRow, date: '2026-08-20' }],
     },
   });
-  const lookup = statements.find((s) => s.sql.includes('SELECT date, kind, source_id FROM assignments'));
+  const lookup = statements.find((s) => s.sql.includes('SELECT date, kind, source_id, instance_key FROM assignments'));
   assert.deepEqual(lookup.args, ['CH-1', '2026-08-11', '2026-09-04']);
 });
 
@@ -301,7 +337,7 @@ test('§13.21: a row with no sourceId has no natural key and is always inserted'
   assert.equal((await res.json()).applied, 2);
   assert.equal(insertsIn(DB).length, 2);
   assert.ok(
-    !statements.some((s) => s.sql.includes('SELECT date, kind, source_id FROM assignments')),
+    !statements.some((s) => s.sql.includes('SELECT date, kind, source_id, instance_key FROM assignments')),
     'with nothing to key on there is nothing to look up'
   );
 });

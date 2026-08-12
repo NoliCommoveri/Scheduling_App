@@ -1,0 +1,21 @@
+-- Shared Chores TDS §3.1 — occurrence identity gains a fourth component.
+--
+-- A Chore may recur more than once a day (three-dishes: Breakfast/Lunch/
+-- Dinner). Without this column, three occurrences of one chore on one day
+-- are identical under the existing natural key (child_id, date, kind,
+-- source_id) and the duplicate guard collapses them to one row.
+--
+-- NOT NULL DEFAULT '' rather than a nullable column, and the choice is
+-- load-bearing: NULL = NULL is never true in SQLite, and the existing guard
+-- already relies on that property for source_id. A nullable instance_key
+-- would make the NOT EXISTS subquery never match for single-occurrence
+-- chores, silently disabling the duplicate guard for every chore that
+-- exists today. An empty string compares cleanly, so old rows,
+-- single-occurrence chores, and activities and events all share one code
+-- path with no COALESCE.
+--
+-- SQLite permits ADD COLUMN ... NOT NULL when the default is a non-null
+-- constant, and existing rows read the default — this is a metadata-only
+-- change with no table rewrite.
+
+ALTER TABLE assignments ADD COLUMN instance_key TEXT NOT NULL DEFAULT '';

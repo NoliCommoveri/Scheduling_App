@@ -102,11 +102,19 @@ const Packet = (() => {
   // Assignments view, where it is a PATCH of the row that exists rather than a
   // second copy of it.
 
+  // Shared Chores §2.3/§2.4 — a chore with no `instances` is one unlabeled
+  // occurrence a day, whose id is the empty string. That is also
+  // instance_key's schema default (§3.1), so every call site downstream of
+  // this shares one code path with no separate no-instances branch.
+  function instancesOf(chore) {
+    return chore.instances || [{ id: '' }];
+  }
+
   // Matches the Worker's natural key (worker/index.js `naturalKey`). Both ends
   // have to agree on what "the same thing on the same day" means, so if one
   // changes the other has to move with it.
-  function keyOf(date, kind, sourceId) {
-    return `${date} ${kind} ${sourceId}`;
+  function keyOf(date, kind, sourceId, instanceKey) {
+    return `${date} ${kind} ${sourceId} ${instanceKey}`;
   }
 
   // Every projection sends the underlying record's id as `sourceId`, chores
@@ -135,7 +143,7 @@ const Packet = (() => {
         const keys = new Set();
         for (const row of (result && result.assignments) || []) {
           if (row.source_id == null) continue;
-          keys.add(keyOf(row.date, row.kind, row.source_id));
+          keys.add(keyOf(row.date, row.kind, row.source_id, row.instance_key));
         }
         return { keys, source: 'plan' };
       }
@@ -149,10 +157,13 @@ const Packet = (() => {
       if (row.assignedDate < from || row.assignedDate > to) continue;
       if (row.disposition !== 'sent') continue;
       if (row.instanceId) {
-        keys.add(keyOf(row.assignedDate, 'activity', row.itemId));
+        keys.add(keyOf(row.assignedDate, 'activity', row.itemId, ''));
       } else {
-        const chore = allChores.find((c) => c.id === 'CHR-' + row.itemId.split('-')[1]);
-        if (chore) keys.add(keyOf(row.assignedDate, 'chore', chore.id));
+        // CHR-{token}-{YYYYMMDD}[-{instanceId}] (§2.4) — the fourth segment,
+        // when present, recovers the chore-occurrence instance.
+        const parts = row.itemId.split('-');
+        const chore = allChores.find((c) => c.id === 'CHR-' + parts[1]);
+        if (chore) keys.add(keyOf(row.assignedDate, 'chore', chore.id, parts[3] || ''));
       }
     }
     return { keys, source: 'log' };
@@ -237,12 +248,13 @@ const Packet = (() => {
         if (!record) continue; // deleted since — cannot reproduce content
         placeActivity(ensureDay(row.assignedDate), record, row.instanceId, row.assignedDate, 'reproduced');
       } else {
-        // Chore occurrence id: CHR-{token}-{YYYYMMDD}.
+        // Chore occurrence id: CHR-{token}-{YYYYMMDD}[-{instanceId}] (§2.4).
         const parts = row.itemId.split('-');
         const chore = allChores.find((c) => c.id === 'CHR-' + parts[1]);
         if (!chore) continue;
         ensureDay(row.assignedDate).chores.push({
-          kind: 'chore', id: row.itemId, choreId: chore.id, assignedDate: row.assignedDate, disposition: 'sent', record: chore,
+          kind: 'chore', id: row.itemId, choreId: chore.id, instanceKey: parts[3] || '',
+          assignedDate: row.assignedDate, disposition: 'sent', record: chore,
         });
       }
     }
@@ -278,9 +290,17 @@ const Packet = (() => {
       const token = chore.id.slice(4);
       for (const d of rangeDates) {
         if (!(chore.daysOfWeek || []).includes(weekday(d))) continue;
-        const occId = `CHR-${token}-${d.replace(/-/g, '')}`;
-        if (decisionItemIds.has(occId)) continue; // already reproduced/suppressed
-        ensureDay(d).chores.push({ kind: 'chore', id: occId, choreId: chore.id, assignedDate: d, disposition: 'sent', record: chore });
+        for (const inst of instancesOf(chore)) {
+          // Suffix omitted for a chore with no `instances` (§2.4) — inst.id is
+          // '' in that case, matching instance_key's schema default (§3.1).
+          const occId = inst.id ? `CHR-${token}-${d.replace(/-/g, '')}-${inst.id}` : `CHR-${token}-${d.replace(/-/g, '')}`;
+          if (decisionItemIds.has(occId)) continue; // already reproduced/suppressed
+          ensureDay(d).chores.push({
+            kind: 'chore', id: occId, choreId: chore.id, instanceKey: inst.id,
+            instanceLabel: inst.label, instanceBlockHint: inst.blockHint,
+            assignedDate: d, disposition: 'sent', record: chore,
+          });
+        }
       }
     }
 
@@ -301,7 +321,7 @@ const Packet = (() => {
     for (const [d, o] of days) {
       for (const list of [o.activities, o.chores, o.events]) {
         for (const it of list) {
-          if (!committed.keys.has(keyOf(d, it.kind, sourceIdOf(it)))) continue;
+          if (!committed.keys.has(keyOf(d, it.kind, sourceIdOf(it), it.instanceKey || ''))) continue;
           it.committed = true;
           committedCount++;
         }
@@ -517,12 +537,16 @@ const Packet = (() => {
       date: item.assignedDate,
       kind: 'chore',
       sourceId: c.id,
-      title: c.title,
+      title: item.instanceLabel ? `${c.title} — ${item.instanceLabel}` : c.title,
       rewardCategory: session.maps.rewardCat.get(c.difficultyTier),
       payload,
+      instanceKey: item.instanceKey || '',
       sortOrder,
     };
-    if (c.blockHint) row.blockHint = c.blockHint;
+    // An instance's own blockHint overrides the chore's (§2.4) — what puts
+    // three dishes in three different parts of the kid's day.
+    const blockHint = item.instanceBlockHint || c.blockHint;
+    if (blockHint) row.blockHint = blockHint;
     return row;
   }
 
