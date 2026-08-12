@@ -296,9 +296,17 @@ const Sync = (() => {
       t.objectStore(OUTBOX).clear();
     }, { captureForSync: false });
 
-    state.pending = 0;
+    // A fresh install gets its default tiers/rewardCategories/activityTypes
+    // from IndexedDB's onupgradeneeded, which only ever fires once — the
+    // clears above empty those stores without bumping DB_VERSION, so nothing
+    // would reseed them without this call. Captured to the outbox like any
+    // other write, so it also pushes the reseed back up to D1.
+    await Storage.seedDefaults();
+
+    state.pending = await countOutbox();
     state.lastSyncedAt = null;
     emit();
+    scheduleDrain(0);
   }
 
   // ---- observable state ----

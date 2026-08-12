@@ -369,8 +369,25 @@ const Storage = (() => {
     return () => commitListeners.delete(listener);
   }
 
+  // Re-applies the same tiers/rewardCategories/activityTypes/idCounters seed
+  // that a fresh install gets from onupgradeneeded's v1 block above — but as
+  // ordinary put()s through runTransaction, not a versionchange transaction,
+  // so it can run any time the DB already exists (e.g. after Settings →
+  // Database "Reset everything" empties those stores without bumping
+  // DB_VERSION, which means onupgradeneeded never fires again to reseed
+  // them). Captured to the outbox like any other write, so the reseed syncs
+  // back up to D1 on the next drain.
+  async function seedDefaults() {
+    await runTransaction(['meta', 'tiers', 'rewardCategories', 'activityTypes'], 'readwrite', (t) => {
+      t.objectStore('meta').put({ nextSeq: 5 }, 'idCounters');
+      for (const tier of TIER_SEED) t.objectStore('tiers').put(tier);
+      for (const cat of REWARD_CATEGORY_SEED) t.objectStore('rewardCategories').put(cat);
+      for (const type of ACTIVITY_TYPE_SEED) t.objectStore('activityTypes').put(type);
+    });
+  }
+
   return {
     openDB, get, getAll, getAllByIndex, put, del, runTransaction,
-    onCommit, STORE_NAMES, OUTBOX_STORE, SYNC_EXCLUDED,
+    onCommit, seedDefaults, STORE_NAMES, OUTBOX_STORE, SYNC_EXCLUDED,
   };
 })();
