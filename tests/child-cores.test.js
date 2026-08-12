@@ -175,6 +175,34 @@ test('plan of an empty queue produces no requests', () => {
   assert.deepEqual(OutboxCore.plan(null), []);
 });
 
+// Child Feedback Loop §11.7 — a deferral names row ids, so the drain needs a
+// way back from an id to the queue rows it consumed. Without this map it can
+// only keep the whole request or none of it.
+test('plan maps every id back to the seqs it consumed', () => {
+  const requests = OutboxCore.plan([
+    { seq: 1, kind: 'completion', assignmentId: 'a1', fields: { childSortOrder: 1 } },
+    { seq: 2, kind: 'completion', assignmentId: 'a1', fields: { status: 'complete' } },
+    { seq: 3, kind: 'completion', assignmentId: 'a2', fields: { status: 'complete' } },
+  ]);
+  // A null-prototype map: ids are server/client-minted strings and must not be
+  // able to collide with Object.prototype keys.
+  assert.deepEqual({ ...requests[0].seqsById }, { a1: [1, 2], a2: [3] });
+  assert.deepEqual(
+    requests[0].seqs.slice().sort((x, y) => x - y),
+    [1, 2, 3],
+    'seqsById partitions seqs — it does not replace them'
+  );
+});
+
+test('plan maps reward entry ids to seqs too, deduplication included', () => {
+  const requests = OutboxCore.plan([
+    { seq: 1, kind: 'reward', entry: { id: 'r1', category: 'RC-1', amount: 1 } },
+    { seq: 2, kind: 'reward', entry: { id: 'r1', category: 'RC-1', amount: 1 } },
+    { seq: 3, kind: 'reward', entry: { id: 'r2', category: 'RC-1', amount: 2 } },
+  ]);
+  assert.deepEqual({ ...requests[0].seqsById }, { r1: [1, 2], r2: [3] });
+});
+
 // =======================================================  assignment-core
 
 test('isPlannable keeps only live pending work', () => {
@@ -447,6 +475,67 @@ test('filterView (chores) stays block-then-position only — course_name has no 
     row({ id: 'c2', kind: 'chore', course_name: 'Aaa', sort_order: 0 })
   );
   assert.deepEqual(ids(PlannerCore.filterView(rows, TODAY, nothingResolved, 'chores')), ['c2', 'c1']);
+});
+
+// Child Feedback Loop §4.3, decided — the reorder arrows are suppressed for a
+// parent-authored lesson order, and scoped to block+course for everything else.
+test('canReorder is false only for a row carrying a parent-authored sequence_no', () => {
+  assert.equal(PlannerCore.canReorder(row({ sequence_no: null })), true);
+  assert.equal(PlannerCore.canReorder(row({ sequence_no: 0 })), false, 'zero is a real lesson order, not absence');
+  assert.equal(PlannerCore.canReorder(row({ sequence_no: 3 })), false);
+  assert.equal(PlannerCore.canReorder(row({ kind: 'chore', sequence_no: null })), true);
+});
+
+test('reorderPeers narrows an activity to its own block and course', () => {
+  const rows = plan(
+    row({ id: 'a1', course_name: 'History', block_hint: 'morning' }),
+    row({ id: 'a2', course_name: 'History', block_hint: 'morning' }),
+    row({ id: 'a3', course_name: 'Maths', block_hint: 'morning' }),
+    row({ id: 'a4', course_name: 'History', block_hint: 'afternoon' })
+  );
+  const scope = PlannerCore.reorderPeers(rows, rows[1]);
+  assert.deepEqual(ids(scope.peers), ['a1', 'a2'], 'another course and another block are both out of reach');
+  assert.equal(scope.index, 1);
+});
+
+test('reorderPeers keeps course-less activities together, apart from the courses', () => {
+  const rows = plan(
+    row({ id: 'a1', course_name: null, block_hint: 'morning' }),
+    row({ id: 'a2', course_name: 'History', block_hint: 'morning' }),
+    row({ id: 'a3', course_name: null, block_hint: 'morning' })
+  );
+  assert.deepEqual(ids(PlannerCore.reorderPeers(rows, rows[0]).peers), ['a1', 'a3']);
+});
+
+test('reorderPeers narrows a chore to its block only — chores have no course', () => {
+  const rows = plan(
+    row({ id: 'c1', kind: 'chore', course_name: 'Zzz', block_hint: 'morning' }),
+    row({ id: 'c2', kind: 'chore', course_name: 'Aaa', block_hint: 'morning' }),
+    row({ id: 'c3', kind: 'chore', course_name: null, block_hint: 'evening' }),
+    row({ id: 'a1', kind: 'activity', block_hint: 'morning' })
+  );
+  const scope = PlannerCore.reorderPeers(rows, rows[0]);
+  assert.deepEqual(ids(scope.peers), ['c1', 'c2'], 'course_name is ignored, the other block and the activity are not peers');
+  assert.equal(scope.index, 0);
+});
+
+test('reorderPeers respects a child block override, not just the parent hint', () => {
+  const rows = plan(
+    row({ id: 'a1', course_name: 'History', block_hint: 'morning' }),
+    row({ id: 'a2', course_name: 'History', block_hint: 'afternoon', child_sort_order: null })
+  );
+  rows[1].child_block_hint = 'morning';
+  assert.deepEqual(
+    ids(PlannerCore.reorderPeers(rows, rows[0]).peers),
+    ['a1', 'a2'],
+    'a2 was moved into morning by the child, so it is a peer there'
+  );
+});
+
+test('reorderPeers reports index -1 for a row outside the list', () => {
+  const rows = plan(row({ id: 'a1', course_name: 'History' }));
+  const stranger = plan(row({ id: 'a9', course_name: 'History' }))[0];
+  assert.equal(PlannerCore.reorderPeers(rows, stranger).index, -1);
 });
 
 test('assembleToday groups School by course within each block; Chores stay position-only', () => {

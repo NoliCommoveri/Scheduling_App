@@ -39,6 +39,13 @@
   // to "nothing tried yet" after a reload is honest.
   var state = { pending: 0, lastUploadedAt: null, lastError: null };
 
+  // Reset at the top of every drain (§11.7). `deferredThisRun` decides whether
+  // the run ends in a retry; `deletedThisRun` decides whether it may claim an
+  // upload happened, so a drain in which every row deferred does not move the
+  // "last uploaded" stamp — the same honesty the IDLE branch already keeps.
+  var deferredThisRun = false;
+  var deletedThisRun = 0;
+
   function mintId() {
     if (g.crypto && typeof g.crypto.randomUUID === "function") return g.crypto.randomUUID();
     // Same fallback shape packet.js uses for batch ids: unique enough to be a
@@ -139,7 +146,15 @@
   function send(request, token) {
     return fetch(request.path, {
       method: request.method,
-      headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
+      // X-Outbox-Protocol 2 (§11.7): "this client reads `deferred` and will
+      // keep the rows it names." Without it the Worker answers a database
+      // fault with a 5xx instead, because a client that cannot tell a
+      // deferral from a rejection would delete work the server never wrote.
+      headers: {
+        "Authorization": "Bearer " + token,
+        "Content-Type": "application/json",
+        "X-Outbox-Protocol": "2"
+      },
       cache: "no-store",
       body: JSON.stringify(request.body)
     }).then(function (res) {
@@ -154,7 +169,17 @@
           .catch(function () { return null; })  // 200 with no body (or a PUT) is a clean success
           .then(function (parsed) {
             var rejected = parsed && Array.isArray(parsed.rejected) ? parsed.rejected : [];
-            return rejected.length > 0 ? { ok: true, rejected: rejected } : { ok: true };
+            // §11.7's third answer, distinct from `rejected` in exactly one
+            // way that matters: these rows are kept. A rejection is the server
+            // saying "never"; a deferral is it saying "not now" — a column a
+            // migration has not added yet, a database that was briefly
+            // unavailable. Reading them the same way would discard work that
+            // was going to succeed on the next drain.
+            var deferred = parsed && Array.isArray(parsed.deferred) ? parsed.deferred : [];
+            var out = { ok: true };
+            if (rejected.length > 0) out.rejected = rejected;
+            if (deferred.length > 0) out.deferred = deferred;
+            return out;
           });
       }
       if (res.status === 401) return { ok: false, unauthorized: true };
@@ -212,6 +237,25 @@
     });
   }
 
+  // The queue rows behind a §11.7 deferral, so the drain can delete everything
+  // the request covered *except* those. Falls back to keeping the whole request
+  // when the ids cannot be mapped — a server that named a row this request did
+  // not carry is a server we do not understand, and keeping too much costs a
+  // duplicate upload of an idempotent write, while keeping too little loses it.
+  function deferredSeqs(request, result) {
+    if (!result.deferred || !result.deferred.length) return [];
+    var map = request.seqsById;
+    if (!map) return request.seqs.slice();
+    var keep = [];
+    for (var i = 0; i < result.deferred.length; i++) {
+      var id = result.deferred[i] && result.deferred[i].id;
+      var seqs = id != null ? map[id] : null;
+      if (!seqs) return request.seqs.slice();
+      keep = keep.concat(seqs);
+    }
+    return keep;
+  }
+
   // Sequential, not parallel. Completions are ordered ahead of the reward
   // entries that reference them (see OutboxCore.plan), and firing both at once
   // would throw that away for a saving measured in milliseconds on a queue this
@@ -229,9 +273,25 @@
           }
           // Deleted only after the response, and only the seqs this request
           // carried — a run that dies halfway leaves the rest queued rather
-          // than losing them.
+          // than losing them. §11.7: minus the seqs behind a deferred row,
+          // which stay queued for the next drain. The drain itself continues:
+          // a deferral is scoped to the rows named in it, so the requests
+          // behind this one still go, unlike the 500 this replaced.
+          var keep = deferredSeqs(request, result);
+          var drop = keep.length === 0
+            ? request.seqs
+            : request.seqs.filter(function (seq) { return keep.indexOf(seq) === -1; });
+          if (keep.length > 0) {
+            deferredThisRun = true;
+            console.warn("[outbox] " + result.deferred.length + " row(s) deferred by " +
+              request.path + ", kept for retry: " + result.deferred[0].error);
+          }
           return recordRejections(request, result)
-            .then(function () { return g.DB.outboxDelete(request.seqs); })
+            .then(function () {
+              if (!drop.length) return null;
+              deletedThisRun += drop.length;
+              return g.DB.outboxDelete(drop);
+            })
             .then(function () { return null; });
         });
       });
@@ -241,6 +301,8 @@
   function drain() {
     if (draining) { drainQueued = true; return Promise.resolve(state); }
     draining = true;
+    deferredThisRun = false;
+    deletedThisRun = 0;
 
     // Three outcomes, deliberately distinct: IDLE (nothing to send, so the
     // "last uploaded" stamp must not move), null (everything went), or the
@@ -281,6 +343,16 @@
         scheduleRetry();
       } else if (halt) {
         state.lastError = "offline";
+        scheduleRetry();
+      } else if (deferredThisRun) {
+        // Every request went out and the drain was not halted, but the server
+        // kept some rows back (§11.7). They are still queued, so the run has
+        // to end in a retry rather than in the clean-success branch below —
+        // otherwise nothing would ask again until the next local write.
+        if (deletedThisRun > 0) state.lastUploadedAt = Date.now();
+        // "rejected" outranks it: a deferral clears itself on the next drain,
+        // a rejection needs a parent, and only one of the two can be shown.
+        if (state.lastError !== "rejected") state.lastError = "deferred";
         scheduleRetry();
       } else {
         state.lastUploadedAt = Date.now();

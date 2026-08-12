@@ -22,6 +22,7 @@ import {
   clampInt,
   randomPairCode,
   timingSafeEqual,
+  validateMessage,
 } from './validation.js';
 
 const MAX_BATCH = 500;
@@ -171,6 +172,15 @@ async function routeApi(request, env, ctx, url) {
     return withParent(request, env, () => handleRewardsAdjust(request, env));
   }
 
+  // ---- Assignment messages (Child Feedback Loop §6.2) ----
+  // Read and read-marking are the parent's; appending is the child's, below.
+  if (pathname === '/api/messages' && method === 'GET') {
+    return withParent(request, env, () => handleMessagesQuery(url, env));
+  }
+  if (pathname === '/api/messages/read' && method === 'POST') {
+    return withParent(request, env, () => handleMessagesRead(request, env));
+  }
+
   // ---- Child — unauthenticated (§5.4) ----
   if (pathname === '/api/pair' && method === 'POST') {
     return await handlePair(request, env);
@@ -191,6 +201,9 @@ async function routeApi(request, env, ctx, url) {
   }
   if (pathname === '/api/streak' && method === 'PUT') {
     return withDevice(request, env, ctx, (device) => handleStreakUpsert(request, env, device));
+  }
+  if (pathname === '/api/messages' && method === 'POST') {
+    return withDevice(request, env, ctx, (device) => handleMessages(request, env, device));
   }
 
   return json({ error: 'Not found.' }, 404);
@@ -973,6 +986,7 @@ async function handleCompletions(request, env, device) {
   const now = Date.now();
   const updatedBy = `device:${device.deviceId}`;
   const rejected = [];
+  const deferred = [];
   let applied = 0;
 
   for (const row of completions) {
@@ -1009,16 +1023,42 @@ async function handleCompletions(request, env, device) {
     // child_id is part of the WHERE, never trusted from the body (§4.2) —
     // an assignment belonging to another child is left untouched, not 403'd
     // mid-batch, so one bad row cannot wedge a device's whole outbox drain.
-    const result = await env.DB.prepare(
-      `UPDATE assignments SET ${setClauses.join(', ')}, updated_at = ?${keys.length + 1}, updated_by = ?${keys.length + 2}
-       WHERE id = ?${keys.length + 3} AND child_id = ?${keys.length + 4}`
-    ).bind(...values, now, updatedBy, row.id, device.childId).run();
+    let result;
+    try {
+      result = await env.DB.prepare(
+        `UPDATE assignments SET ${setClauses.join(', ')}, updated_at = ?${keys.length + 1}, updated_by = ?${keys.length + 2}
+         WHERE id = ?${keys.length + 3} AND child_id = ?${keys.length + 4}`
+      ).bind(...values, now, updatedBy, row.id, device.childId).run();
+    } catch (err) {
+      // Child Feedback Loop §11.7, closed. This throw used to escape the loop
+      // and the handler, landing on the top-level catch as a 500 — which
+      // outbox.js reads as retryable and answers by halting the device's
+      // *entire* drain (completions, rewards, streak) until the fault clears.
+      // A missing column made that the documented cost of applying a migration
+      // late (§5.5).
+      //
+      // It is contained here instead, but deliberately NOT as a `rejected`
+      // row. Every property of the row was already checked above — unknown
+      // column, bad value, missing id all rejected before this point — so a
+      // throw from the statement itself is never about the row. It is the
+      // schema or the database, and it will stop being true. `rejected` means
+      // "never going to work", and outbox.js discards those rows for good
+      // (outbox.js:181); reporting a missing column that way would delete a
+      // child's completions rather than stall them, which is strictly worse
+      // than the 500 this replaces.
+      //
+      // `deferred` is the third answer: this row did not land, keep it queued,
+      // try again. The rest of the batch still applies.
+      deferred.push({ id: row.id, error: dbFaultMessage(err) });
+      continue;
+    }
 
     if (result.meta && result.meta.changes > 0) applied++;
     else rejected.push({ id: row.id, error: 'Not found for this child.' });
   }
 
-  return json({ applied, rejected });
+  if (deferred.length > 0 && !understandsDeferred(request)) return deferralUnsupportedResponse(deferred);
+  return json({ applied, rejected, deferred });
 }
 
 async function handleRewardEntries(request, env, device) {
@@ -1036,6 +1076,7 @@ async function handleRewardEntries(request, env, device) {
   const now = Date.now();
   const createdBy = `device:${device.deviceId}`;
   const statements = [];
+  const queuedIds = [];
   const rejected = [];
 
   // Per-row rejection, matching /api/completions and for the same §5.6 reason.
@@ -1063,6 +1104,7 @@ async function handleRewardEntries(request, env, device) {
     const reason = ['earned', 'adjustment', 'spend'].includes(row.reason) ? row.reason : 'earned';
 
     // Idempotent on the client-minted id (§5.5): a replay is a harmless no-op.
+    queuedIds.push(row.id);
     statements.push(
       env.DB.prepare(
         `INSERT INTO reward_entries (id, child_id, assignment_id, category, amount, reason, earned_at, created_by)
@@ -1072,8 +1114,24 @@ async function handleRewardEntries(request, env, device) {
     );
   }
 
-  if (statements.length > 0) await env.DB.batch(statements);
-  return json({ applied: statements.length, rejected });
+  // §11.7, closed — same reasoning as /api/completions, one batch rather than a
+  // per-row loop. Every row here was validated above, so a throw from the batch
+  // is the database, not the entries; the whole batch is deferred for retry
+  // rather than rejected, because rejecting it would discard an append-only
+  // ledger's rows with no way to reconstruct them.
+  const deferred = [];
+  let applied = 0;
+  if (statements.length > 0) {
+    try {
+      await env.DB.batch(statements);
+      applied = statements.length;
+    } catch (err) {
+      const error = dbFaultMessage(err);
+      for (const id of queuedIds) deferred.push({ id, error });
+    }
+  }
+  if (deferred.length > 0 && !understandsDeferred(request)) return deferralUnsupportedResponse(deferred);
+  return json({ applied, rejected, deferred });
 }
 
 async function handleStreakUpsert(request, env, device) {
@@ -1105,9 +1163,226 @@ async function handleStreakUpsert(request, env, device) {
 }
 
 // ============================================================================
+// Assignment messages (Child Feedback Loop §6, SRS Management Module 13)
+//
+// One-way for v1: the child appends, the parent reads and marks read. There is
+// no reply route and no `created_by: 'parent'` write path — that is §11.2's
+// deferred scope, not an omission to be filled in opportunistically.
+//
+// Nothing calls these yet. The Child App composer (§6.3) and the Management
+// App inbox (§6.5) are later releases; this is the API landing first so both
+// can be built against something real.
+// ============================================================================
+
+async function handleMessages(request, env, device) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Body must be JSON.' }, 400);
+  }
+  const messages = body && body.messages;
+  if (!Array.isArray(messages)) return json({ error: 'Body must include a "messages" array.' }, 400);
+  if (messages.length > MAX_BATCH) return json({ error: `At most ${MAX_BATCH} messages per batch.` }, 413);
+  if (messages.length === 0) return json({ applied: 0, rejected: [], deferred: [] });
+
+  const now = Date.now();
+  const createdBy = `device:${device.deviceId}`;
+  const rejected = [];
+  const deferred = [];
+
+  const shaped = [];
+  for (const row of messages) {
+    const problem = validateMessage(row);
+    if (problem) {
+      rejected.push({ id: row && row.id, error: problem });
+      continue;
+    }
+    shaped.push(row);
+  }
+
+  // The ownership check §6.2 calls for, and the one thing this route needs that
+  // /api/rewards/entries does not: a device must not be able to staple a
+  // message onto an assignment belonging to another child. Batched into one
+  // query rather than one per row — a drain can carry MAX_BATCH of these.
+  //
+  // `child_id` comes from the token (§III.E). The body's assignmentId is the
+  // only thing being trusted, and this is what stops it being trusted blindly.
+  //
+  // Rescinded assignments deliberately still count as owned. A device queues a
+  // message offline and drains later; if the parent rescinded the work in
+  // between, filtering on `rescinded_at IS NULL` here would reject the question
+  // rather than deliver it — and Module 13 FR-6 wants it kept precisely then,
+  // because "why was this taken away" is a thing a child asks.
+  const owned = new Set();
+  if (shaped.length > 0) {
+    const ids = [...new Set(shaped.map((r) => r.assignmentId))];
+    try {
+      const { results } = await env.DB.prepare(
+        `SELECT id FROM assignments
+         WHERE child_id = ?1 AND id IN (${ids.map((_, i) => `?${i + 2}`).join(',')})`
+      ).bind(device.childId, ...ids).all();
+      for (const r of results || []) owned.add(r.id);
+    } catch (err) {
+      // §11.7: the lookup itself failed, so ownership is unknown for every row.
+      // Unknown is not "not owned" — deferring is the only answer that neither
+      // drops a child's question nor writes one it could not verify.
+      const error = dbFaultMessage(err);
+      for (const r of shaped) deferred.push({ id: r.id, error });
+      if (!understandsDeferred(request)) return deferralUnsupportedResponse(deferred);
+      return json({ applied: 0, rejected, deferred });
+    }
+  }
+
+  const statements = [];
+  const queuedIds = [];
+  for (const row of shaped) {
+    if (!owned.has(row.assignmentId)) {
+      // Deliberately the same wording handleCompletions uses for the same
+      // situation, and a rejection rather than a 403: one row naming someone
+      // else's assignment must not wedge the batch behind it.
+      rejected.push({ id: row.id, error: 'Not found for this child.' });
+      continue;
+    }
+    queuedIds.push(row.id);
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO assignment_messages (id, child_id, assignment_id, body, created_at, created_by)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT (id) DO NOTHING`
+      ).bind(row.id, device.childId, row.assignmentId, row.body.trim(), row.createdAt || now, createdBy)
+    );
+  }
+
+  let applied = 0;
+  if (statements.length > 0) {
+    try {
+      await env.DB.batch(statements);
+      applied = statements.length;
+    } catch (err) {
+      const error = dbFaultMessage(err);
+      for (const id of queuedIds) deferred.push({ id, error });
+    }
+  }
+
+  if (deferred.length > 0 && !understandsDeferred(request)) return deferralUnsupportedResponse(deferred);
+  return json({ applied, rejected, deferred });
+}
+
+async function handleMessagesQuery(url, env) {
+  const childId = url.searchParams.get('childId');
+  const unreadOnly = ['1', 'true'].includes(url.searchParams.get('unreadOnly'));
+  const since = url.searchParams.get('since');
+
+  // The assignment join is what makes a message identifiable in the inbox —
+  // a body with no title beside it is not actionable (Module 13 FR-1). LEFT,
+  // because FR-6 keeps a message readable after its assignment is rescinded,
+  // and a plain join would silently drop exactly those rows.
+  let sql = `SELECT m.*, a.title AS assignment_title, a.date AS assignment_date,
+                    a.course_name AS assignment_course, a.rescinded_at AS assignment_rescinded_at
+             FROM assignment_messages m
+             LEFT JOIN assignments a ON a.id = m.assignment_id
+             WHERE 1=1`;
+  const params = [];
+  let i = 1;
+  if (childId) { sql += ` AND m.child_id = ?${i}`; params.push(childId); i++; }
+  if (unreadOnly) sql += ` AND m.read_at IS NULL`;
+  if (since !== null && since !== '') {
+    const sinceMs = Number(since);
+    if (!Number.isSafeInteger(sinceMs) || sinceMs < 0) {
+      return json({ error: 'since must be a millisecond timestamp.' }, 400);
+    }
+    sql += ` AND m.created_at > ?${i}`; params.push(sinceMs); i++;
+  }
+  // One over the cap, so a truncated answer can say so — same convention
+  // handleAssignmentsQuery uses.
+  sql += ` ORDER BY m.created_at DESC LIMIT ${MAX_QUERY_ROWS + 1}`;
+
+  const { results } = await env.DB.prepare(sql).bind(...params).all();
+  const body = capRows(results || [], 'messages');
+
+  // The badge's number (Module 13 FR-3). Counted rather than derived from the
+  // page above, which is capped and may be filtered to one child.
+  const unread = await env.DB.prepare(
+    childId
+      ? `SELECT COUNT(*) AS n FROM assignment_messages WHERE read_at IS NULL AND child_id = ?1`
+      : `SELECT COUNT(*) AS n FROM assignment_messages WHERE read_at IS NULL`
+  ).bind(...(childId ? [childId] : [])).first();
+
+  return json({ ...body, unread: (unread && unread.n) || 0 });
+}
+
+async function handleMessagesRead(request, env) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Body must be JSON.' }, 400);
+  }
+  const ids = body && body.ids;
+  if (!Array.isArray(ids) || ids.length === 0) return json({ error: 'Body must include a non-empty "ids" array.' }, 400);
+  if (ids.length > MAX_BATCH) return json({ error: `At most ${MAX_BATCH} ids per request.` }, 413);
+
+  // `read_at IS NULL` in the WHERE, so a message already read keeps its
+  // original timestamp rather than having it bumped by a second click. There
+  // is no route that clears it: Module 13 FR-4 has no mark-unread in v1, and
+  // omitting the path is how that stays true.
+  const now = Date.now();
+  const result = await env.DB.prepare(
+    `UPDATE assignment_messages SET read_at = ?1
+     WHERE read_at IS NULL AND id IN (${ids.map((_, i) => `?${i + 2}`).join(',')})`
+  ).bind(now, ...ids).run();
+
+  return json({ read: (result.meta && result.meta.changes) || 0, readAt: now });
+}
+
+// ============================================================================
 // Response helpers — the only things left here that touch neither D1 nor a
 // route. Everything else pure now lives in validation.js.
 // ============================================================================
+
+// Child Feedback Loop §11.7 — does this client know what `deferred` means?
+//
+// It is a new third answer on a route that already had two, and the difference
+// between them is what the client does with the queue rows behind it: a
+// `rejected` row is deleted, a `deferred` row is kept. A shell that predates
+// this change reads only `rejected`, so it deletes everything a 2xx covered —
+// including rows the server just said it did not write. That is silent data
+// loss, and it would land in exactly the situation this feature exists for.
+//
+// So the new shape is opt-in. A client announces it by sending the header;
+// anything that does not is answered the way it was before — a 5xx, which it
+// reads as retryable and responds to by keeping the whole batch. Both ends
+// upgrade independently, and neither ordering loses a row.
+const OUTBOX_PROTOCOL_HEADER = 'X-Outbox-Protocol';
+
+function understandsDeferred(request) {
+  return Number(request.headers.get(OUTBOX_PROTOCOL_HEADER) || 0) >= 2;
+}
+
+// The pre-§11.7 answer, for a client that cannot read the new one. 503 rather
+// than the 500 this replaced: same retryable class to every existing client,
+// but honest about the fault being transient.
+function deferralUnsupportedResponse(deferred) {
+  return json({
+    error: 'Some rows could not be written and were not applied. Retry.',
+    deferred: deferred.length,
+    detail: deferred[0] ? deferred[0].error : undefined,
+  }, 503);
+}
+
+// The text put on a `deferred` row (Child Feedback Loop §11.7). D1's own
+// message is the useful half — "no such column: completion_note" tells a
+// parent exactly which migration is missing, which is the failure this
+// containment was built for — so it is passed through rather than flattened
+// into "database error". Bounded because it crosses the wire to a device that
+// logs it; a deferral is not written to the rejection store, which records what
+// was *refused*, and a row that will be retried was not.
+function dbFaultMessage(err) {
+  const detail = err && err.message ? String(err.message) : String(err);
+  const trimmed = detail.length > 300 ? `${detail.slice(0, 300)}…` : detail;
+  return `Database error, not applied — will retry: ${trimmed}`;
+}
 
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), {

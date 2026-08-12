@@ -113,6 +113,49 @@
     return out;
   }
 
+  // Child Feedback Loop §4.3, decided — may the child hand-reorder this row?
+  //
+  // No, if it carries a `sequence_no`. That is parent-authored curriculum order
+  // (Lesson 1, 2, 3…), and a child arrow fighting it is the wrong shape of
+  // control. It is also the case where the arrow does not work: byCourseThenLesson
+  // sorts a fully-sequenced course group with bySequenceNo, which ignores
+  // child_sort_order outright — so before this rule the arrow wrote a value,
+  // queued an outbox op, re-rendered, and moved nothing.
+  //
+  // Course-less and sequence_no-less rows keep their arrows: nothing
+  // authoritative is being overridden, and their group still sorts by position.
+  function canReorder(row) {
+    return typeof row.sequence_no !== "number";
+  }
+
+  // Child Feedback Loop §4.3, decided — the rows a reorder may move `row` among.
+  //
+  // Before §4.2 the arrows ranged over whatever list the view had rendered:
+  // a whole block+category group on Today, and every block at once in the
+  // filter views. Course grouping made that actively wrong — an interpolated
+  // key computed against a neighbour in a *different* course cannot move the
+  // row there, because byCourseThenLesson groups before it sorts, so the write
+  // either did nothing or landed the row somewhere unrelated inside its own
+  // course.
+  //
+  // Peers are therefore the rows sharing this row's block *and* course, which
+  // is exactly the set byCourseThenLesson sorts as a unit. Chores have no
+  // course concept (§4.4), so for them it narrows to the block only — which
+  // still fixes the cross-block reach the filter views always had.
+  //
+  // Returns { peers, index }; index is -1 if `row` is not in `list`.
+  function reorderPeers(list, row) {
+    var block = effectiveBlock(row);
+    var byCourse = row.kind !== "chore";
+    var course = row.course_name || null;
+    var peers = (list || []).filter(function (r) {
+      if (r.kind !== row.kind) return false;
+      if (effectiveBlock(r) !== block) return false;
+      return byCourse ? (r.course_name || null) === course : true;
+    });
+    return { peers: peers, index: peers.indexOf(row) };
+  }
+
   // Is this actionable row on the Today list for `today`?
   //  - due today (effective date == today), or
   //  - overdue: still-pending, required, effective date before today (roll-forward).
@@ -246,6 +289,8 @@
     assembleToday: assembleToday,
     filterView: filterView,
     eventsView: eventsView,
-    subjectsView: subjectsView
+    subjectsView: subjectsView,
+    canReorder: canReorder,
+    reorderPeers: reorderPeers
   };
 })(typeof window !== "undefined" ? window : globalThis);

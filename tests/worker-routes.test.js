@@ -28,17 +28,20 @@ async function sha256Hex(text) {
 
 // `respond(sql, args)` returns whatever that statement should produce:
 //   { first }  for .first()      { results } for .all()      { meta } for .run()
+//   { throws } to make the statement reject, the way D1 does against a schema
+//              that has not caught up yet — what §11.7's containment is for.
 // Anything not answered falls back to a benign empty result.
 function makeEnv(respond = () => ({})) {
   const statements = [];
   const record = (sql, args) => {
     statements.push({ sql: sql.replace(/\s+/g, ' ').trim(), args });
     const answer = respond(sql, args) || {};
+    const fail = async () => { throw answer.throws; };
     return {
       sql, args,
-      first: async () => (answer.first === undefined ? null : answer.first),
-      all: async () => ({ results: answer.results || [] }),
-      run: async () => ({ meta: answer.meta || { changes: 1 } }),
+      first: answer.throws ? fail : async () => (answer.first === undefined ? null : answer.first),
+      all: answer.throws ? fail : async () => ({ results: answer.results || [] }),
+      run: answer.throws ? fail : async () => ({ meta: answer.meta || { changes: 1 } }),
     };
   };
 
@@ -49,7 +52,12 @@ function makeEnv(respond = () => ({})) {
       all: async () => record(sql, []).all(),
       run: async () => record(sql, []).run(),
     }),
-    batch: async (list) => { DB.batched.push(list); return list.map(() => ({ meta: { changes: 1 } })); },
+    batch: async (list) => {
+      DB.batched.push(list);
+      if (DB.batchError) throw DB.batchError;
+      return list.map(() => ({ meta: { changes: 1 } }));
+    },
+    batchError: null,
     exec: async () => ({}),
     batched: [],
   };
@@ -59,10 +67,11 @@ function makeEnv(respond = () => ({})) {
 
 const ctx = { waitUntil() {} };
 
-function call(env, path, { method = 'GET', token, body } = {}) {
+function call(env, path, { method = 'GET', token, body, outboxProtocol } = {}) {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body) headers['Content-Type'] = 'application/json';
+  if (outboxProtocol) headers['X-Outbox-Protocol'] = String(outboxProtocol);
   const request = new Request(`https://example.test${path}`, {
     method, headers, body: body ? JSON.stringify(body) : undefined,
   });
@@ -301,6 +310,113 @@ test('§13.20: one bad reward entry does not take the batch with it', async () =
   assert.equal(DB.batched[0].length, 1);
 });
 
+// ====================================  §11.7: deferral, not rejection
+
+test('§11.7: a D1 throw defers that row and leaves the rest of the batch applied', async () => {
+  // The failure §5.5 describes: the Worker writes a column the migration has
+  // not added yet. Only the rows carrying that column throw.
+  const { env } = makeEnv(deviceResolver((sql) => (
+    sql.includes('completion_note =') ? { throws: new Error('D1_ERROR: no such column: completion_note') } : {}
+  )));
+  const res = await call(env, '/api/completions', {
+    method: 'POST', token: DEVICE_TOKEN, outboxProtocol: 2,
+    body: {
+      completions: [
+        { id: 'plain', status: 'complete' },
+        { id: 'with-note', status: 'complete', completionNote: 'skipped #11' },
+      ],
+    },
+  });
+  const out = await res.json();
+  assert.equal(res.status, 200, 'a 500 here would halt the device\'s whole drain');
+  assert.equal(out.applied, 1, 'the row that could be written still was');
+  assert.deepEqual(out.rejected, [], 'a missing column is not the row\'s fault');
+  assert.deepEqual(out.deferred.map((r) => r.id), ['with-note']);
+  assert.match(out.deferred[0].error, /no such column: completion_note/,
+    'the parent needs to see which migration is missing');
+});
+
+test('§11.7: a deferral is reported separately from a rejection in one batch', async () => {
+  const { env } = makeEnv(deviceResolver((sql, args) => {
+    if (sql.includes('UPDATE assignments') && args.includes('doomed')) {
+      return { throws: new Error('D1_ERROR: database is locked') };
+    }
+    return {};
+  }));
+  const res = await call(env, '/api/completions', {
+    method: 'POST', token: DEVICE_TOKEN, outboxProtocol: 2,
+    body: {
+      completions: [
+        { id: 'fine', status: 'complete' },
+        { id: 'doomed', status: 'complete' },
+        { id: 'malformed', status: 'banana' },
+      ],
+    },
+  });
+  const out = await res.json();
+  assert.equal(out.applied, 1);
+  assert.deepEqual(out.rejected.map((r) => r.id), ['malformed'], 'a bad value is still permanent');
+  assert.deepEqual(out.deferred.map((r) => r.id), ['doomed'], 'a database fault is not');
+});
+
+test('§11.7: a failed reward batch defers every queued entry instead of 500ing', async () => {
+  const { env, DB } = makeEnv(deviceResolver());
+  DB.batchError = new Error('D1_ERROR: no such table: reward_entries');
+  const res = await call(env, '/api/rewards/entries', {
+    method: 'POST', token: DEVICE_TOKEN, outboxProtocol: 2,
+    body: {
+      entries: [
+        { id: 'r1', category: 'RC-1', amount: 1 },
+        { id: 'r2', category: 'RC-1', amount: -1, reason: 'adjustment' },
+        { id: 'bad', amount: 1 },
+      ],
+    },
+  });
+  const out = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(out.applied, 0, 'nothing landed, so nothing may be reported as applied');
+  assert.deepEqual(out.rejected.map((r) => r.id), ['bad'], 'the malformed entry is still permanent');
+  assert.deepEqual(out.deferred.map((r) => r.id), ['r1', 'r2'],
+    'an append-only ledger must never have rows discarded by a transient fault');
+});
+
+test('a clean batch reports an empty deferred array, not an absent one', async () => {
+  const { env } = makeEnv(deviceResolver());
+  const res = await call(env, '/api/completions', {
+    method: 'POST', token: DEVICE_TOKEN, outboxProtocol: 2,
+    body: { completions: [{ id: 'a1', status: 'complete' }] },
+  });
+  const out = await res.json();
+  assert.deepEqual(out.deferred, []);
+});
+
+test('§11.7: a client that does not announce protocol 2 gets a retryable 5xx', async () => {
+  // The compatibility half. A shell predating this change reads only
+  // `rejected`, so handing it a 200 carrying `deferred` would make it delete
+  // the very rows the server just declined to write. It gets the old answer.
+  const { env } = makeEnv(deviceResolver((sql) => (
+    sql.includes('completion_note =') ? { throws: new Error('D1_ERROR: no such column: completion_note') } : {}
+  )));
+  const res = await call(env, '/api/completions', {
+    method: 'POST', token: DEVICE_TOKEN,   // no X-Outbox-Protocol
+    body: { completions: [{ id: 'with-note', status: 'complete', completionNote: 'hi' }] },
+  });
+  assert.equal(res.status, 503, 'retryable, so an old client keeps its queue rows');
+  const out = await res.json();
+  assert.equal(out.deferred, 1);
+  assert.match(out.detail, /no such column/);
+});
+
+test('§11.7: the rewards route gates the new shape the same way', async () => {
+  const { env, DB } = makeEnv(deviceResolver());
+  DB.batchError = new Error('D1_ERROR: no such table: reward_entries');
+  const res = await call(env, '/api/rewards/entries', {
+    method: 'POST', token: DEVICE_TOKEN,   // no X-Outbox-Protocol
+    body: { entries: [{ id: 'r1', category: 'RC-1', amount: 1 }] },
+  });
+  assert.equal(res.status, 503);
+});
+
 test('a reward append is idempotent on the client-minted id', async () => {
   const { env, DB } = makeEnv(deviceResolver());
   await call(env, '/api/rewards/entries', {
@@ -434,4 +550,195 @@ test('/admin/migrations renders a no-JS form and refuses a wrong token', async (
     new Request('https://example.test/admin/migrations', { method: 'POST', body: form }), env, ctx
   );
   assert.equal(rejected.status, 401);
+});
+
+// ==========================  assignment messages (§6.2, SRS Module 13)
+
+// Resolves the ownership lookup: CH-1 owns a1 and a2, nothing else.
+function messageEnv(extra = () => ({})) {
+  return makeEnv(deviceResolver((sql, args) => {
+    if (sql.includes('SELECT id FROM assignments')) {
+      const owned = ['a1', 'a2'].filter((id) => args.includes(id));
+      return { results: owned.map((id) => ({ id })) };
+    }
+    return extra(sql, args);
+  }));
+}
+
+test('a message batch inserts idempotently and takes child_id from the token', async () => {
+  const { env, DB } = messageEnv();
+  const res = await call(env, '/api/messages', {
+    method: 'POST', token: DEVICE_TOKEN, outboxProtocol: 2,
+    body: {
+      childId: 'CH-SOMEONE-ELSE',
+      messages: [{ id: 'm1', assignmentId: 'a1', body: 'why is problem 7 like that?' }],
+    },
+  });
+  const out = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(out.applied, 1);
+  assert.deepEqual(out.rejected, []);
+
+  const insert = DB.batched[0][0];
+  assert.match(insert.sql.replace(/\s+/g, ' '), /ON CONFLICT \(id\) DO NOTHING/);
+  assert.ok(insert.args.includes('CH-1'), "the token's child is what is bound");
+  assert.ok(!insert.args.includes('CH-SOMEONE-ELSE'), 'the body value must be ignored');
+});
+
+test('a message naming another child\'s assignment is rejected, not written', async () => {
+  // §6.2's extra check: without it a device could staple a message onto any
+  // assignment id it could guess.
+  const { env, DB } = messageEnv();
+  const res = await call(env, '/api/messages', {
+    method: 'POST', token: DEVICE_TOKEN, outboxProtocol: 2,
+    body: {
+      messages: [
+        { id: 'm1', assignmentId: 'a1', body: 'mine' },
+        { id: 'm2', assignmentId: 'not-mine', body: 'someone else\'s' },
+      ],
+    },
+  });
+  const out = await res.json();
+  assert.equal(out.applied, 1);
+  assert.deepEqual(out.rejected.map((r) => r.id), ['m2']);
+  assert.match(out.rejected[0].error, /Not found for this child/);
+  assert.equal(DB.batched[0].length, 1, 'only the owned message may be inserted');
+});
+
+test('a malformed message is rejected per row and never reaches the batch', async () => {
+  const { env, DB } = messageEnv();
+  const res = await call(env, '/api/messages', {
+    method: 'POST', token: DEVICE_TOKEN, outboxProtocol: 2,
+    body: {
+      messages: [
+        { id: 'm1', assignmentId: 'a1', body: 'fine' },
+        { id: 'm2', assignmentId: 'a1', body: '   ' },
+        { id: 'm3', assignmentId: 'a1', body: 'x'.repeat(501) },
+        { assignmentId: 'a1', body: 'no id' },
+      ],
+    },
+  });
+  const out = await res.json();
+  assert.equal(res.status, 200, 'one bad row must not take the batch with it');
+  assert.equal(out.applied, 1);
+  assert.equal(out.rejected.length, 3);
+  assert.equal(DB.batched[0].length, 1);
+});
+
+test('a message body is stored trimmed', async () => {
+  const { env, DB } = messageEnv();
+  await call(env, '/api/messages', {
+    method: 'POST', token: DEVICE_TOKEN, outboxProtocol: 2,
+    body: { messages: [{ id: 'm1', assignmentId: 'a1', body: '  why?  ' }] },
+  });
+  assert.ok(DB.batched[0][0].args.includes('why?'));
+});
+
+test('§11.7: a failed message batch defers rather than dropping the questions', async () => {
+  const { env, DB } = messageEnv();
+  DB.batchError = new Error('D1_ERROR: no such table: assignment_messages');
+  const res = await call(env, '/api/messages', {
+    method: 'POST', token: DEVICE_TOKEN, outboxProtocol: 2,
+    body: { messages: [{ id: 'm1', assignmentId: 'a1', body: 'why?' }] },
+  });
+  const out = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(out.applied, 0);
+  assert.deepEqual(out.deferred.map((r) => r.id), ['m1']);
+});
+
+test('§11.7: a failed ownership lookup defers instead of guessing at ownership', async () => {
+  // Unknown ownership is not "not owned" — rejecting here would discard a
+  // child's question because the database blinked.
+  const { env } = makeEnv(deviceResolver((sql) => (
+    sql.includes('SELECT id FROM assignments') ? { throws: new Error('D1_ERROR: database is locked') } : {}
+  )));
+  const res = await call(env, '/api/messages', {
+    method: 'POST', token: DEVICE_TOKEN, outboxProtocol: 2,
+    body: { messages: [{ id: 'm1', assignmentId: 'a1', body: 'why?' }] },
+  });
+  const out = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(out.applied, 0);
+  assert.deepEqual(out.rejected, []);
+  assert.deepEqual(out.deferred.map((r) => r.id), ['m1']);
+});
+
+test('an empty message batch is a no-op, not an error', async () => {
+  const { env, DB } = messageEnv();
+  const res = await call(env, '/api/messages', {
+    method: 'POST', token: DEVICE_TOKEN, body: { messages: [] },
+  });
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).applied, 0);
+  assert.equal(DB.batched.length, 0);
+});
+
+test('the message routes split by credential the way §6.2 says', async () => {
+  const { env } = messageEnv();
+  // Parent token cannot append.
+  assert.equal((await call(env, '/api/messages', {
+    method: 'POST', token: PARENT_TOKEN, body: { messages: [] },
+  })).status, 401);
+  // Device token cannot read the inbox or mark anything read.
+  assert.equal((await call(env, '/api/messages?childId=CH-1', { token: DEVICE_TOKEN })).status, 401);
+  assert.equal((await call(env, '/api/messages/read', {
+    method: 'POST', token: DEVICE_TOKEN, body: { ids: ['m1'] },
+  })).status, 401);
+});
+
+test('the inbox query left-joins the assignment so a rescinded one still shows', async () => {
+  // FR-6: the question was still asked. A plain join would drop exactly the
+  // rows a parent most needs to see.
+  const { env, statements } = makeEnv(() => ({ results: [], first: { n: 0 } }));
+  const res = await call(env, '/api/messages?childId=CH-1&unreadOnly=1', { token: PARENT_TOKEN });
+  assert.equal(res.status, 200);
+  const query = statements.find((s) => s.sql.includes('FROM assignment_messages m'));
+  assert.match(query.sql, /LEFT JOIN assignments/);
+  assert.match(query.sql, /read_at IS NULL/);
+  assert.match(query.sql, /ORDER BY m\.created_at DESC/);
+});
+
+test('the inbox reports an unread count independent of the page it returned', async () => {
+  const { env } = makeEnv((sql) => (
+    sql.includes('COUNT(*)') ? { first: { n: 7 } } : { results: [{ id: 'm1' }] }
+  ));
+  const out = await (await call(env, '/api/messages?childId=CH-1', { token: PARENT_TOKEN })).json();
+  assert.equal(out.unread, 7);
+  assert.equal(out.messages.length, 1);
+});
+
+test('the inbox rejects a malformed since rather than ignoring it', async () => {
+  const { env } = makeEnv(() => ({ results: [], first: { n: 0 } }));
+  assert.equal((await call(env, '/api/messages?since=yesterday', { token: PARENT_TOKEN })).status, 400);
+  assert.equal((await call(env, '/api/messages?since=1754870400000', { token: PARENT_TOKEN })).status, 200);
+});
+
+test('mark-read only touches unread rows, so a timestamp is never bumped', async () => {
+  const { env, statements } = makeEnv(() => ({ meta: { changes: 2 } }));
+  const res = await call(env, '/api/messages/read', {
+    method: 'POST', token: PARENT_TOKEN, body: { ids: ['m1', 'm2'] },
+  });
+  const out = await res.json();
+  assert.equal(out.read, 2);
+  const update = statements.find((s) => s.sql.startsWith('UPDATE assignment_messages'));
+  assert.match(update.sql, /read_at IS NULL/);
+});
+
+test('mark-read needs a non-empty ids array and caps the batch', async () => {
+  const { env } = makeEnv();
+  assert.equal((await call(env, '/api/messages/read', {
+    method: 'POST', token: PARENT_TOKEN, body: { ids: [] },
+  })).status, 400);
+  assert.equal((await call(env, '/api/messages/read', {
+    method: 'POST', token: PARENT_TOKEN, body: { ids: Array(501).fill('m1') },
+  })).status, 413);
+});
+
+test('there is no route that clears read_at — FR-4 has no mark-unread in v1', async () => {
+  const { env } = makeEnv();
+  for (const path of ['/api/messages/unread', '/api/messages/read/undo']) {
+    const res = await call(env, path, { method: 'POST', token: PARENT_TOKEN, body: { ids: ['m1'] } });
+    assert.equal(res.status, 404, `${path} must not exist`);
+  }
 });

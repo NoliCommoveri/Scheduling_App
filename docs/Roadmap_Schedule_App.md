@@ -34,6 +34,52 @@
 
 ---
 
+## 0. Post-revamp milestones (2026-08-11 onward)
+
+§5's M1–M10 describe the build up to the architectural reversal. Work since then is sequenced by
+TDS slice rather than by milestone number, and is recorded here so the two schemes do not have to
+be reconciled.
+
+**`TDS_Slice_Online_Revamp.md`** — phases 1–5, the reversal itself, plus the §8.2 shim collapse
+(phases 1–3), the §12 live-days repeal, the §14 `plannerMeta` fold, and the §8.1 ledger collapse.
+**Landed.**
+
+**`TDS_Slice_Child_Feedback_Loop.md`** — five features, phased per its §10. Status as of
+2026-08-12:
+
+| Feature | Slice § | Status |
+|---|---|---|
+| **E** — Date header + the device-local date basis | §7 | ✅ Landed |
+| **B** — Course-ordered filtering | §4 | ✅ Landed |
+| **A** — Completed view + Undo, incl. the streak reversal | §3 | ✅ Landed (SRS Module 07 gained FR-8/FR-9) |
+| **C** — Completion notes | §5 | ✅ Landed, in the two releases §5.5 requires |
+| **D** — Assignment messages (one-way) | §6 | 🟡 Backend landed (migration 0005 + three routes); both UIs deferred |
+
+Two of the slice's §11 open items were closed on 2026-08-12, before Feature D began, because both
+touch the ground D would build on:
+
+- **§11.4 — manual reorder vs `sequence_no`.** Decided per §4.3's recommendation: the up/down
+  arrows are suppressed for any row carrying a parent-authored `sequence_no`, and otherwise scoped
+  to block+course peers. Feature B's grouping had made the un-narrowed arrows write a sort key the
+  new sort then ignored.
+- **§11.7 — per-row containment of D1 errors.** Closed. A database fault inside a device batch
+  route is now a per-row `deferred` (keep and retry) rather than a request-level 500 (halt the
+  whole drain), distinct from `rejected` (discard). Gated on an `X-Outbox-Protocol: 2` header so an
+  older Child App shell still gets the retryable 5xx it knows how to handle.
+
+**Feature D's three decisions** (Module 13 §7, settled in-session 2026-08-12): the body cap is 500
+characters, there is no mark-unread in v1, and the build is phased backend-first. Migration 0005
+and the three routes have landed; the Child App composer and the Management App inbox are each
+their own later release, unsequenced. What remains open is what the child sees after sending
+(slice §6.3's "📨 sent" marker), to be confirmed when the composer is built.
+
+Still open and *not* blocking Feature D: §11.1 (subject as a grouping level), §11.2 (two-way
+messaging), §11.3 (Undo's PIN gate), §11.5 (retiring the Subjects tab), §11.6 (historical
+Completed browsing), §11.8 (verifying the device timezone), §11.9 (midnight rollover while the app
+is open).
+
+---
+
 ## 1. Recommended documentation order
 
 **A note on the Vision Document:** a standalone Vision Document has never existed apart from this list — its content lives inside the Architecture Evaluation (§2 there). This list drops it from the numbered order below rather than carrying a step that isn't going to be produced separately. The Architecture Evaluation's §2 is the vision statement of record. If a standalone Vision Document is wanted later, that's a fresh decision to make deliberately, not a default to keep deferring.
@@ -75,6 +121,7 @@ Write one module at a time. **✅ = written.**
 - ✅ **Completion Import** — deferred build (Phase 4); CSV contract, incl. reserved `waived`, fixed now. Results land in an Imported Completion Record entity (Domain Model §2.12); row-level partial commit (one bad row doesn't reject the file) and idempotent re-import by `activityId` are both specified now, ahead of the Phase 4 build.
 - ✅ **Master Reporting** — six CSV report types split across planning data (Curriculum Progress, Activity/Chore Roster) and actual-data (Activity/Chore History, Grades, Attendance, Instructional Hours); the latter four report a genuine zero-row result until the first Completion Import runs.
 - ✅ **Settings & Backup** — full JSON backup/restore of the Curriculum/Course library, instances, and pacing (scoped structurally, not as a hardcoded entity list); owns the Management App's `launchPin` set/change flow (Domain Model §2.11).
+- 🟡 **Assignment Messages** (Module 13) — *stub only.* The parent-facing inbox for one-way child → parent questions about an assignment: unread-first list, unread badge, explicit mark-read, nothing ever deleted. Added post-revamp by `TDS_Slice_Child_Feedback_Loop.md` §6; see `SRS_Management_Module_13_Assignment_Messages.md` for the contract and its five open items. Not yet built.
 
 **Child App**
 - ✅ **Startup Wizard** — child/semester config; theme confirm; PIN setup (`pin` on Child, Domain Model §3.2).
