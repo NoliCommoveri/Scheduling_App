@@ -74,7 +74,16 @@
   //   - rescinded + complete → the work was genuinely done. It stays off the
   //     plan (it is resolved) and its reward stands, per §6.3.
   //   - complete/waived      → resolved; the planner drops resolved items anyway.
-  function isPlannable(row) {
+  //
+  // Shared Chores §6.3 adds one clause: a row a sibling has claimed is not
+  // this device's to plan. Comparing against `selfChildId` rather than
+  // testing `claimed_by != null` is deliberate — a winner's own row also
+  // carries `claimed_by`, and the row-only rule would wrongly drop it. It
+  // also covers the §5.4 window where a claim is held but the completion
+  // has not landed yet: `status` is still `pending` there, so the identity
+  // test is what keeps a held claim on the winner's own plan.
+  function isPlannable(row, selfChildId) {
+    if (row.claimed_by != null && row.claimed_by !== selfChildId) return false;
     return (row.status || "pending") === "pending" && row.rescinded_at == null;
   }
 
@@ -133,12 +142,14 @@
   }
 
   // rows: assignment rows as `/api/plan` returns them (snake_case, §3.3).
+  // selfChildId: this device's own child id (Shared Chores §6.3), threaded
+  // into isPlannable so a sibling's claimed row never reaches the planner.
   // Returns { rows } — the decorated, plannable set the planner works from.
-  function toState(rows) {
+  function toState(rows, selfChildId) {
     var out = [];
 
     (rows || []).forEach(function (row) {
-      if (!row || !row.id || !isPlannable(row)) return;
+      if (!row || !row.id || !isPlannable(row, selfChildId)) return;
       // An unknown kind is a newer parent build; ignore it rather than crash.
       if (row.kind !== "activity" && row.kind !== "chore" && row.kind !== "event") return;
 

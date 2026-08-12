@@ -217,6 +217,32 @@ test('§6.4: a rescinded row the child completed stays off the plan', () => {
   assert.equal(AssignmentCore.isPlannable(row({ rescinded_at: 123, status: 'complete' })), false);
 });
 
+// Shared Chores §6.3 — a claim_group row is planned or dropped by identity
+// against selfChildId, not by mere presence of claimed_by.
+test('Shared Chores §6.3: a row claimed by self stays plannable', () => {
+  const claimed = row({ claim_group: 'GRP-1', claimed_by: 'CH-1' });
+  assert.equal(AssignmentCore.isPlannable(claimed, 'CH-1'), true);
+});
+
+test('Shared Chores §6.3: a row claimed by a sibling is dropped', () => {
+  const claimed = row({ claim_group: 'GRP-1', claimed_by: 'CH-2' });
+  assert.equal(AssignmentCore.isPlannable(claimed, 'CH-1'), false);
+});
+
+test('Shared Chores §6.3/§5.4: a held claim still pending stays on the holder\'s plan', () => {
+  // The §5.4 window: claimed_by is set but the completion hasn't landed yet
+  // (status is still 'pending'). A row-only rule ("claimed_by != null") would
+  // wrongly drop this from the winner's own plan; the identity test does not.
+  const held = row({ claim_group: 'GRP-1', claimed_by: 'CH-1', status: 'pending' });
+  assert.equal(AssignmentCore.isPlannable(held, 'CH-1'), true);
+});
+
+test('Shared Chores §6.3: an unclaimed shared row is plannable for every participant', () => {
+  const unclaimed = row({ claim_group: 'GRP-1', claimed_by: null });
+  assert.equal(AssignmentCore.isPlannable(unclaimed, 'CH-1'), true);
+  assert.equal(AssignmentCore.isPlannable(unclaimed, 'CH-2'), true);
+});
+
 test('toState returns only the decorated rows', () => {
   // §14 phase 3: the pre-revamp activities/chores/events/meta keys are gone —
   // `rows` is the only thing any consumer has read since phase 2.
@@ -227,6 +253,15 @@ test('toState returns only the decorated rows', () => {
   ]);
   assert.deepEqual(Object.keys(state), ['rows']);
   assert.equal(state.rows.length, 3);
+});
+
+test('Shared Chores §6.3: toState drops a sibling-claimed row but keeps a self-held one', () => {
+  const state = AssignmentCore.toState([
+    row({ id: 'a1', claim_group: 'GRP-1', claimed_by: 'CH-2' }), // sibling won
+    row({ id: 'a2', claim_group: 'GRP-1', claimed_by: 'CH-1' }), // self holds it, still pending
+    row({ id: 'a3' }), // ordinary row, unaffected
+  ], 'CH-1');
+  assert.deepEqual(state.rows.map((r) => r.id).sort(), ['a2', 'a3']);
 });
 
 test('decorateById indexes rows toState drops, which is the whole point of it', () => {

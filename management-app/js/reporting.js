@@ -74,16 +74,27 @@ const Reporting = (() => {
     return row.kind !== 'event';
   }
 
+  // Shared Chores §9 — a `claim` row a sibling won. `/api/assignments` hands
+  // back every row with its own `child_id` (§5.2's `SELECT *`), so the row
+  // answers the question itself with no child id passed in: `claimed_by` is
+  // set, and it isn't this row's own child. A losing row stays `pending`
+  // forever (§5.4 never writes it), so without this it would count against
+  // the loser's completion rate as work they never had a chance to do.
+  function isClaimedElsewhere(row) {
+    return row.claimed_by != null && row.claimed_by !== row.child_id;
+  }
+
   function summarize(rows) {
     const totals = {
       assigned: 0, complete: 0, waived: 0, pending: 0, rescinded: 0,
-      events: 0, graded: 0, gradeSum: 0, deferred: 0,
+      events: 0, graded: 0, gradeSum: 0, deferred: 0, claimedBySibling: 0,
     };
 
     for (const row of rows) {
       if (isRescinded(row)) { totals.rescinded++; continue; }
       totals.assigned++;
       if (!isScorable(row)) { totals.events++; continue; }
+      if (isClaimedElsewhere(row)) { totals.claimedBySibling++; continue; }
       const status = row.status || 'pending';
       if (status === 'complete') totals.complete++;
       else if (status === 'waived') totals.waived++;
@@ -92,7 +103,7 @@ const Reporting = (() => {
       if (row.deferred_to) totals.deferred++;
     }
 
-    const scorable = totals.assigned - totals.events;
+    const scorable = totals.assigned - totals.events - totals.claimedBySibling;
     totals.scorable = scorable;
     totals.completionRate = scorable === 0 ? null : totals.complete / scorable;
     totals.averageGrade = totals.graded === 0 ? null : totals.gradeSum / totals.graded;
@@ -111,13 +122,14 @@ const Reporting = (() => {
       if (!groups.has(key)) {
           groups.set(key, {
           name: key, assigned: 0, complete: 0, waived: 0, pending: 0,
-          graded: 0, gradeSum: 0, scorable: true,
+          graded: 0, gradeSum: 0, scorable: true, claimedBySibling: 0,
         });
       }
       const g = groups.get(key);
       g.assigned++;
       g.scorable = isScorable(row);
       if (!isScorable(row)) continue;
+      if (isClaimedElsewhere(row)) { g.claimedBySibling++; continue; }
       const status = row.status || 'pending';
       if (status === 'complete') g.complete++;
       else if (status === 'waived') g.waived++;
@@ -128,7 +140,8 @@ const Reporting = (() => {
       .map((g) => ({
         ...g,
         averageGrade: g.graded === 0 ? null : g.gradeSum / g.graded,
-        completionRate: !g.scorable || g.assigned === 0 ? null : g.complete / g.assigned,
+        completionRate: !g.scorable || g.assigned - g.claimedBySibling === 0
+          ? null : g.complete / (g.assigned - g.claimedBySibling),
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }
@@ -158,7 +171,7 @@ const Reporting = (() => {
     for (const row of rows) {
       lines.push([
         row.date, row.kind, row.title, row.course_name, row.activity_type,
-        isRescinded(row) ? 'rescinded' : (row.status || 'pending'),
+        isRescinded(row) ? 'rescinded' : isClaimedElsewhere(row) ? 'claimed-by-sibling' : (row.status || 'pending'),
         formatTimestamp(row.completed_at), row.grade, row.completion_note, row.deferred_to,
         formatTimestamp(row.rescinded_at), row.reward_category, row.id,
       ].map(csvCell).join(','));
@@ -426,5 +439,5 @@ const Reporting = (() => {
     return section;
   }
 
-  return { render, summarize, byCourse, toCsv };
+  return { render, summarize, byCourse, toCsv, isClaimedElsewhere };
 })();

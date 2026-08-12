@@ -228,11 +228,16 @@
   }
 
   // What Settings shows about the link. Derived, never stored as prose.
+  //
+  // `childId` rides along for Shared Chores §6.3: planner-ui's load fan-out
+  // already calls this once per render, so this is where `state.selfChildId`
+  // comes from rather than a second singleton read in that fan-out.
   function status() {
     return g.DB.getSingleton("syncMeta").then(function (meta) {
       if (!meta || !meta.deviceToken) return { paired: false };
       return {
         paired: true,
+        childId: meta.childId || null,
         childName: meta.childName || null,
         lastSyncedAt: meta.lastSyncedAt || null,
         error: meta.lastError || null
