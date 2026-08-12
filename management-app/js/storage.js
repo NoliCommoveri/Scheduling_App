@@ -52,7 +52,7 @@ const Storage = (() => {
   ];
 
   // The D1 mirror's outbox (TDS_Slice_D1_Sync §2). Deliberately NOT in
-  // STORE_NAMES: that list drives dev-tools' clear buttons, and clearing the
+  // STORE_NAMES: that list drives restoreFromCloud/factoryReset's target set, and clearing the
   // outbox would silently drop changes that have not reached D1 yet.
   const OUTBOX_STORE = 'syncOutbox';
 
@@ -221,24 +221,6 @@ const Storage = (() => {
     });
   }
 
-  // Dev/testing only — not part of any spec'd module. Empties one store
-  // completely; does not re-seed it (seeding only ever runs in
-  // onupgradeneeded, once, at v1).
-  //
-  // Deliberately NOT mirrored: it writes through the raw transaction, so a
-  // dev clear is local-only and D1 still holds the records. That is the
-  // wanted behaviour for a testing tool — clearing a store to exercise
-  // empty-state UI must not destroy the durable copy. Use the Sync panel's
-  // restore to pull the data back.
-  async function clearStore(storeName) {
-    const db = await openDB();
-    return new Promise((resolve, reject) => {
-      const req = db.transaction(storeName, 'readwrite').objectStore(storeName).clear();
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error);
-    });
-  }
-
   // ---- D1 mirror write capture (TDS_Slice_D1_Sync §1.4–§1.6, §3) ----
 
   // Derives the record's IndexedDB key from the live store's own keyPath, so
@@ -388,7 +370,7 @@ const Storage = (() => {
   }
 
   return {
-    openDB, get, getAll, getAllByIndex, put, del, runTransaction, clearStore,
+    openDB, get, getAll, getAllByIndex, put, del, runTransaction,
     onCommit, STORE_NAMES, OUTBOX_STORE, SYNC_EXCLUDED,
   };
 })();

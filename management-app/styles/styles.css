@@ -203,18 +203,6 @@ fieldset legend {
   color: #555;
 }
 
-.dev-tools-list li {
-  justify-content: space-between;
-}
-
-.dev-tools-list .store-name {
-  font-family: monospace;
-}
-
-.dev-tools-list button {
-  background: var(--color-error);
-}
-
 code {
   font-family: ui-monospace, monospace;
   font-size: 0.78rem;

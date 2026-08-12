@@ -83,8 +83,7 @@ const Settings = (() => {
     root.appendChild(form);
   }
 
-  // Settings view (#/settings): FR-2 change-PIN form, plus the dev-only
-  // clear-a-store tool (not part of any spec'd FR — see dev-tools.js).
+  // Settings view (#/settings): FR-2 change-PIN form.
   function renderSettingsPage(root) {
     clear(root);
     renderChangePinForm(root);
@@ -102,10 +101,6 @@ const Settings = (() => {
     const devicesSection = document.createElement('section');
     root.appendChild(devicesSection);
     Devices.render(devicesSection);
-
-    const devToolsSection = document.createElement('section');
-    root.appendChild(devToolsSection);
-    DevTools.render(devToolsSection);
   }
 
   // Cloud backup panel — TDS_Slice_D1_Sync_Management_App.md §6/§1.9.
@@ -131,6 +126,16 @@ const Settings = (() => {
         <label>Type <code>RESTORE</code> to confirm<input type="text" name="confirm" autocomplete="off"></label>
         <button type="submit">Restore from cloud</button>
       </form>
+
+      <h3>Reset everything</h3>
+      <p class="warning">This <strong>permanently empties</strong> the cloud database and this
+         browser's local data — every child, curriculum item, assignment, and reward entry.
+         Paired child devices will be logged out and need to be re-paired. Your launch PIN
+         and this device's sync token are not affected. There is no undo.</p>
+      <form class="sync-reset-form">
+        <label>Type <code>RESET</code> to confirm<input type="text" name="confirm" autocomplete="off"></label>
+        <button type="submit">Reset to empty</button>
+      </form>
     `;
 
     const statusEl = root.querySelector('.sync-status');
@@ -138,6 +143,7 @@ const Settings = (() => {
     const successEl = root.querySelector('.sync-success');
     const tokenForm = root.querySelector('.sync-token-form');
     const restoreForm = root.querySelector('.sync-restore-form');
+    const resetForm = root.querySelector('.sync-reset-form');
 
     Sync.subscribe((state) => {
       if (!state.enabled) {
@@ -196,6 +202,25 @@ const Settings = (() => {
         setTimeout(() => window.location.reload(), 1200);
       } catch (err) {
         showError(errorEl, `Restore failed, nothing was changed: ${err.message}`);
+      }
+    });
+
+    resetForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errorEl.hidden = true;
+      successEl.hidden = true;
+      if (resetForm.confirm.value !== 'RESET') {
+        showError(errorEl, 'Type RESET exactly to confirm.');
+        return;
+      }
+      try {
+        await Sync.factoryReset();
+        resetForm.reset();
+        successEl.hidden = false;
+        successEl.textContent = 'Everything reset to empty. Reloading…';
+        setTimeout(() => window.location.reload(), 1200);
+      } catch (err) {
+        showError(errorEl, `Reset failed: ${err.message}`);
       }
     });
   }
