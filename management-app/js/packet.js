@@ -102,14 +102,6 @@ const Packet = (() => {
   // Assignments view, where it is a PATCH of the row that exists rather than a
   // second copy of it.
 
-  // Shared Chores §2.3/§2.4 — a chore with no `instances` is one unlabeled
-  // occurrence a day, whose id is the empty string. That is also
-  // instance_key's schema default (§3.1), so every call site downstream of
-  // this shares one code path with no separate no-instances branch.
-  function instancesOf(chore) {
-    return chore.instances || [{ id: '' }];
-  }
-
   // Matches the Worker's natural key (worker/index.js `naturalKey`). Both ends
   // have to agree on what "the same thing on the same day" means, so if one
   // changes the other has to move with it.
@@ -285,12 +277,16 @@ const Packet = (() => {
       pendingByInstance.set(instance.id, pending.slice(idx)); // remainder available for Pull-forward
     }
 
-    // Step 4 — Chores (FR-3): occurrences with no prior decision.
-    for (const chore of allChores.filter((c) => c.childId === childId)) {
+    // Step 4 — Chores (FR-3): occurrences with no prior decision. Shared
+    // Chores §4.1 — participation-and-days test in place of the old flat
+    // childId match, so a chore whose days are split (§4.3) yields no
+    // occurrence on the other participant's days.
+    for (const chore of allChores.filter((c) => Chores.participantsOf(c).includes(childId))) {
       const token = chore.id.slice(4);
+      const days = Chores.daysFor(chore, childId) || [];
       for (const d of rangeDates) {
-        if (!(chore.daysOfWeek || []).includes(weekday(d))) continue;
-        for (const inst of instancesOf(chore)) {
+        if (!days.includes(weekday(d))) continue;
+        for (const inst of Chores.instancesOf(chore)) {
           // Suffix omitted for a chore with no `instances` (§2.4) — inst.id is
           // '' in that case, matching instance_key's schema default (§3.1).
           const occId = inst.id ? `CHR-${token}-${d.replace(/-/g, '')}-${inst.id}` : `CHR-${token}-${d.replace(/-/g, '')}`;
