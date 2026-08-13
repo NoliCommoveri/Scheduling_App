@@ -508,15 +508,26 @@ const Chores = (() => {
       ? (allocationOf(chore) === 'claim' ? 'Either can claim' : 'Each own')
       : '';
     const item = document.createElement('li');
+    // The four descriptive spans read as one wrapping line of detail under the
+    // title, so Edit/Delete keep the same position on every Chore.
+    item.className = 'list-row';
+    const detail = [
+      `<span class="chore-child">${escapeHtml(participantNames || '(no participants)')}</span>`,
+      `<span class="chore-type">${escapeHtml(chore.choreType)}</span>`,
+      `<span class="chore-days">${chore.daysOfWeek.join(', ')}</span>`,
+      chore.instances && chore.instances.length > 1
+        ? `<span class="chore-instance-count">${chore.instances.length}×/day</span>` : '',
+      arrangementLabel ? `<span class="chore-arrangement-label">${arrangementLabel}</span>` : '',
+    ].filter(Boolean).join('');
     item.innerHTML = `
-      <span class="chore-title">${escapeHtml(chore.title)}</span>
-      <span class="chore-child">${escapeHtml(participantNames || '(no participants)')}</span>
-      <span class="chore-type">${escapeHtml(chore.choreType)}</span>
-      <span class="chore-days">${chore.daysOfWeek.join(', ')}</span>
-      ${chore.instances && chore.instances.length > 1 ? `<span class="chore-instance-count">${chore.instances.length}×/day</span>` : ''}
-      ${arrangementLabel ? `<span class="chore-arrangement-label">${arrangementLabel}</span>` : ''}
-      <button data-action="edit">Edit</button>
-      <button data-action="delete">Delete</button>
+      <div class="row-text">
+        <span class="row-title chore-title">${escapeHtml(chore.title)}</span>
+        <span class="row-meta row-meta-inline">${detail}</span>
+      </div>
+      <div class="row-actions">
+        <button data-action="edit">Edit</button>
+        <button data-action="delete">Delete</button>
+      </div>
     `;
     item.querySelector('[data-action="edit"]').addEventListener('click', () => {
       editingId = chore.id;

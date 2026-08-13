@@ -1301,18 +1301,20 @@ const Courses = (() => {
       // move; Edit/Delete sit on a second row so all four never wrap apart.
       item.className = 'list-row has-reorder';
       item.innerHTML = `
-        <div class="row-text">
-          <span class="row-title activity-title">${escapeHtml(a.title)}</span>
-          <span class="row-meta activity-type">${escapeHtml(typeLabel)}</span>
-          <span class="row-id activity-id">${a.id}</span>
+        <div class="row-main">
+          <div class="row-text">
+            <span class="row-title activity-title">${escapeHtml(a.title)}</span>
+            <span class="row-meta activity-type">${escapeHtml(typeLabel)}</span>
+            <span class="row-id activity-id">${a.id}</span>
+          </div>
+          <div class="row-actions">
+            <button data-action="edit">Edit</button>
+            <button data-action="delete">Delete</button>
+          </div>
         </div>
         <div class="row-reorder">
           <button data-action="up" aria-label="Move up" ${index === 0 ? 'disabled' : ''}>&uarr;</button>
           <button data-action="down" aria-label="Move down" ${index === activities.length - 1 ? 'disabled' : ''}>&darr;</button>
-        </div>
-        <div class="row-actions">
-          <button data-action="edit">Edit</button>
-          <button data-action="delete">Delete</button>
         </div>
       `;
       item.querySelector('[data-action="up"]').addEventListener('click', async () => {

@@ -221,8 +221,11 @@ li {
 .list-row .row-text {
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   gap: 0.1rem;
   min-width: 0;
+  /* Bounded by the track, so an ellipsised or wrapping child still fits. */
+  max-width: 100%;
 }
 
 .list-row .row-title {
@@ -236,6 +239,18 @@ li {
   overflow-wrap: anywhere;
 }
 
+/* Several facts about the row on one wrapping line, middot-separated. */
+.row-meta-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.1rem 0.4rem;
+}
+
+.row-meta-inline > span:not(:last-child)::after {
+  content: " ·";
+  color: #bbb;
+}
+
 /* A server-minted UUID is unreadable and endlessly long; it stays in the row
    (and selectable) but is held to one quiet line instead of wrapping into
    three and setting the row's height. */
@@ -246,36 +261,68 @@ li {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* A nowrap string's min-content size is the whole string, so without an
+     explicit stretch it sizes past the column and slides under the arrows
+     instead of ellipsising. */
+  align-self: stretch;
+  max-width: 100%;
 }
 
 .list-row .row-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.4rem;
   justify-self: end;
 }
 
+/* A per-row message (a blocked delete, say) gets the full width beneath. */
+.list-row .row-error {
+  grid-column: 1 / -1;
+  font-size: 0.85rem;
+  color: var(--color-error);
+}
+
+.list-row .row-error[hidden] {
+  display: none;
+}
+
 /* Up/down live in the right-hand track, vertically centred against the item
-   they move, with the row's other buttons tucked underneath the text. */
+   they move, with everything else stacked in the main column beside them. */
 .list-row .row-reorder {
   display: flex;
   gap: 0.4rem;
 }
 
-.list-row.has-reorder .row-text {
-  grid-column: 1;
-  grid-row: 1;
+/* `nowrap` is load-bearing: the generic `li` rule wraps, which would drop the
+   arrows onto a line of their own — the exact thing this layout exists to
+   prevent. .row-main shrinks instead (min-width: 0). */
+.list-row.has-reorder {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.list-row.has-reorder .row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
 }
 
 .list-row.has-reorder .row-reorder {
-  grid-column: 2;
-  grid-row: 1 / span 2;
-  align-self: center;
+  flex: none;
 }
 
-.list-row.has-reorder .row-actions {
-  grid-column: 1;
-  grid-row: 2;
-  justify-self: start;
+/* An inline control that belongs to the row rather than to its buttons. */
+.list-row .row-extra {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: #555;
 }
 
 /* Square arrows: the glyph is one character, the target is still 44px. */
@@ -294,6 +341,14 @@ li {
   .list-row:not(.has-reorder) .row-actions {
     justify-self: start;
   }
+}
+
+/* An inline edit form replacing a row (Chores, Family Events) takes the whole
+   width rather than being squeezed into a flex track. */
+li > form {
+  flex: 1 1 100%;
+  min-width: 0;
+  margin-bottom: 0;
 }
 
 .tier-id, .curriculum-type {
@@ -677,31 +732,15 @@ button.secondary {
   margin: 0.25rem 0 1rem;
 }
 
-.batch-list li {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.35rem 0.75rem;
-  padding: 0.5rem 0.6rem;
+/* Each batch is a card; the row layout itself comes from .list-row, so the
+   Rescind button sits in the same column on every batch. The UUID is a
+   .row-id — long, meaningless to read, and never allowed to set the width. */
+.batch-list .list-row {
+  padding: 0.6rem;
   border: 1px solid var(--color-border);
   border-radius: 4px;
   margin-bottom: 0.5rem;
   background: #fff;
-}
-
-/* A UUID is long, meaningless to read, and must not push the counts and the
-   Rescind button off a narrow screen. */
-.batch-id {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.8rem;
-  color: #555;
-  overflow-wrap: anywhere;
-  flex: 1 1 12rem;
-}
-
-.batch-when, .batch-counts {
-  font-size: 0.85rem;
-  color: #555;
 }
 
 .assign-row {

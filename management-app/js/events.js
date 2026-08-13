@@ -174,12 +174,19 @@ const Events = (() => {
       .map((id) => (children.find((c) => c.id === id) || {}).name || '(unresolved child)')
       .join(', ');
     const item = document.createElement('li');
+    item.className = 'list-row';
     item.innerHTML = `
-      <span class="event-title">${escapeHtml(ev.title)}</span>
-      <span class="event-dates">${ev.startDate} – ${ev.endDate}</span>
-      <span class="event-children">${escapeHtml(names)}</span>
-      <button data-action="edit">Edit</button>
-      <button data-action="delete">Delete</button>
+      <div class="row-text">
+        <span class="row-title event-title">${escapeHtml(ev.title)}</span>
+        <span class="row-meta row-meta-inline">
+          <span class="event-dates">${ev.startDate} – ${ev.endDate}</span>
+          <span class="event-children">${escapeHtml(names)}</span>
+        </span>
+      </div>
+      <div class="row-actions">
+        <button data-action="edit">Edit</button>
+        <button data-action="delete">Delete</button>
+      </div>
     `;
     item.querySelector('[data-action="edit"]').addEventListener('click', () => {
       editingId = ev.id;

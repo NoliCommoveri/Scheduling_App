@@ -486,14 +486,19 @@ const Children = (() => {
 
     for (const child of ordered) {
       const item = document.createElement('li');
+      item.className = 'list-row';
       if (!isActive(child)) item.classList.add('child-archived');
       item.innerHTML = `
-        <span class="child-name">${escapeHtml(child.name)}</span>
-        ${isActive(child) ? '' : '<span class="child-archived-tag">archived</span>'}
-        <button data-action="open">Open</button>
-        <button data-action="archive">${isActive(child) ? 'Archive' : 'Restore'}</button>
-        <button data-action="delete">Delete</button>
-        <span class="child-error" hidden></span>
+        <div class="row-text">
+          <span class="row-title child-name">${escapeHtml(child.name)}</span>
+          ${isActive(child) ? '' : '<span class="child-archived-tag">archived</span>'}
+        </div>
+        <div class="row-actions">
+          <button data-action="open">Open</button>
+          <button data-action="archive">${isActive(child) ? 'Archive' : 'Restore'}</button>
+          <button data-action="delete">Delete</button>
+        </div>
+        <span class="row-error child-error" hidden></span>
       `;
       item.querySelector('[data-action="open"]').addEventListener('click', () => {
         viewChildId = child.id;
@@ -625,11 +630,16 @@ const Children = (() => {
     for (const inst of instances) {
       const template = inst.sourceTemplateId ? await Storage.get('courses', inst.sourceTemplateId) : null;
       const item = document.createElement('li');
+      item.className = 'list-row';
       item.innerHTML = `
-        <span class="instance-name">${escapeHtml(inst.name)}</span>
-        <span class="instance-source">${template ? escapeHtml(template.name) : 'template no longer available'}</span>
-        <button data-action="open">Open</button>
-        <button data-action="delete">Un-assign</button>
+        <div class="row-text">
+          <span class="row-title instance-name">${escapeHtml(inst.name)}</span>
+          <span class="row-meta instance-source">${template ? escapeHtml(template.name) : 'template no longer available'}</span>
+        </div>
+        <div class="row-actions">
+          <button data-action="open">Open</button>
+          <button data-action="delete">Un-assign</button>
+        </div>
       `;
       item.querySelector('[data-action="open"]').addEventListener('click', () => {
         viewInstanceId = inst.id;
@@ -751,11 +761,16 @@ const Children = (() => {
     list.className = 'lesson-list';
     lessons.forEach((l) => {
       const item = document.createElement('li');
+      item.className = 'list-row';
       item.innerHTML = `
-        <span class="lesson-title">${escapeHtml(l.title)}</span>
-        <span class="lesson-code">${escapeHtml(l.lessonCode)}</span>
-        <button data-action="open">Open</button>
-        <button data-action="delete">Delete</button>
+        <div class="row-text">
+          <span class="row-title lesson-title">${escapeHtml(l.title)}</span>
+          <span class="row-meta lesson-code">${escapeHtml(l.lessonCode)}</span>
+        </div>
+        <div class="row-actions">
+          <button data-action="open">Open</button>
+          <button data-action="delete">Delete</button>
+        </div>
       `;
       item.querySelector('[data-action="open"]').addEventListener('click', () => {
         viewLessonId = l.id;
@@ -835,17 +850,26 @@ const Children = (() => {
     activities.forEach((a, index) => {
       const typeLabel = (activityTypes.find((t) => t.activityTypeKey === a.activityType) || {}).label || a.activityType;
       const item = document.createElement('li');
+      item.className = 'list-row has-reorder';
       item.innerHTML = `
-        <span class="activity-title">${escapeHtml(a.title)}</span>
-        <span class="activity-type">${escapeHtml(typeLabel)}</span>
-        <span class="activity-id">${a.id}</span>
-        <label class="exclude-toggle">
-          <input type="checkbox" data-action="exclude" ${a.excludeFromGeneration ? 'checked' : ''}> Exclude from generation
-        </label>
-        <button data-action="up" ${index === 0 ? 'disabled' : ''}>&uarr;</button>
-        <button data-action="down" ${index === activities.length - 1 ? 'disabled' : ''}>&darr;</button>
-        <button data-action="edit">Edit</button>
-        <button data-action="delete">Delete</button>
+        <div class="row-main">
+          <div class="row-text">
+            <span class="row-title activity-title">${escapeHtml(a.title)}</span>
+            <span class="row-meta activity-type">${escapeHtml(typeLabel)}</span>
+            <span class="row-id activity-id">${a.id}</span>
+          </div>
+          <label class="row-extra exclude-toggle">
+            <input type="checkbox" data-action="exclude" ${a.excludeFromGeneration ? 'checked' : ''}> Exclude from generation
+          </label>
+          <div class="row-actions">
+            <button data-action="edit">Edit</button>
+            <button data-action="delete">Delete</button>
+          </div>
+        </div>
+        <div class="row-reorder">
+          <button data-action="up" aria-label="Move up" ${index === 0 ? 'disabled' : ''}>&uarr;</button>
+          <button data-action="down" aria-label="Move down" ${index === activities.length - 1 ? 'disabled' : ''}>&darr;</button>
+        </div>
       `;
       item.querySelector('[data-action="up"]').addEventListener('click', async () => {
         await Courses.moveActivity(lesson.id, a.id, 'up');
