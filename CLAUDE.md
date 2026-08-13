@@ -1,8 +1,8 @@
 # CLAUDE.md – Build Session Guardrails
 
-**Version:** 2.1  
+**Version:** 2.2  
 **Project:** Homeschool Curriculum & Chore Scheduling System  
-**Last Updated:** 2026-08-12  
+**Last Updated:** 2026-08-13  
 
 ---
 
@@ -22,8 +22,8 @@ This document defines hard constraints, verification rituals, and decision gates
 |---|---|
 | **Ray has no CLI.** | No step — deploy, schema, backup, recovery — may require a terminal. Anything that would be a `wrangler` command must be a button in a browser. See TDS_Online_Revamp §3.7. |
 | **D1 is the system of record.** | IndexedDB on both devices is a cache plus an outbox. Never the truth. |
-| **The parent token never goes on a child device.** | It grants a whole-database snapshot. Child devices use scoped, revocable device tokens. |
-| **Column-level ownership is enforced server-side.** | Parent-owned and child-owned columns are disjoint. This is what makes the design conflict-free. Never let a client decide what it may write. |
+| **The parent token never goes on a child device.** | It grants a whole-database snapshot. Child devices use scoped, revocable device tokens; the wall tablet uses a household-scoped **wall token** restricted to `/api/wall/*`. A tablet on the kitchen wall is a child device for this purpose. |
+| **Column-level ownership is enforced server-side.** | Parent-owned and child-owned columns are disjoint. This is what makes the design conflict-free. Never let a client decide what it may write. **No credential class widens this** — the wall token names *which child* it acts for, never *what may be written*. |
 | **Vanilla JS, no build step — in the two browser apps.** | The Worker is bundled by Wrangler and always has been. That is not a violation. |
 | **Free tier only.** | Cloudflare Workers + D1 free tier. No paid services, no billing surprises. |
 
@@ -33,20 +33,26 @@ This document defines hard constraints, verification rituals, and decision gates
 
 ### A. App-Level Isolation (MANDATORY)
 
-Two applications, one shared database, no shared runtime code:
+Three applications, one shared database, no shared runtime code:
 
-| Aspect | Child App | Management App |
-|--------|-----------|-----------------|
-| **Folder** | `child-app/` | `management-app/` |
-| **Scope** | Child UI: plan, complete, rewards, streak | Parent/admin UI: curriculum, pacing, assignment, reporting |
-| **Runtime Code Sharing** | **FORBIDDEN** | **FORBIDDEN** |
-| **Data Flow** | ← `GET /api/plan` · `POST /api/completions` → | → `POST /api/assignments` · `GET /api/assignments` ← |
-| **Credential** | Scoped device token (per child) | `SYNC_TOKEN` (parent) |
+| Aspect | Child App | Management App | Wall Display App |
+|--------|-----------|-----------------|------------------|
+| **Folder** | `child-app/` | `management-app/` | `wall-app/` |
+| **Scope** | Child UI: plan, complete, rewards, streak | Parent/admin UI: curriculum, pacing, assignment, reporting | Ambient family display: events, per-child chore counts, Done Today; PIN-gated chore completion |
+| **Runtime Code Sharing** | **FORBIDDEN** | **FORBIDDEN** | **FORBIDDEN** |
+| **Data Flow** | ← `GET /api/plan` · `POST /api/completions` → | → `POST /api/assignments` · `GET /api/assignments` ← | ← `GET /api/wall/children` · `GET /api/wall/plan` · `POST /api/wall/completions` → |
+| **Credential** | Scoped device token (per child) | `SYNC_TOKEN` (parent) | Household-scoped **wall token** (`devices.scope = 'wall'`) |
+
+The Wall App **reads** the active-child roster, chores and events; **writes** completions, their
+earn entries, and shared-chore claims. Nothing else — no activities, no waives, no deferments, no
+grades, no messages, no streaks (`TDS_Slice_Wall_Display_App.md` §6.6). It mirrors several rules
+from the Child App's pure layer (day membership, the event key, the plannability rule); mirroring
+is **not** sharing, and each mirrored file must name what it mirrors in a comment.
 
 **Enforcement:**
 - A session **must declare which app it is building** at the start. Worker changes are their own scope.
 - File edits outside the declared scope are an error; halt and escalate to Ray.
-- The two apps may share a *schema* and an *API*. They may never share a JS file.
+- The three apps may share a *schema* and an *API*. They may never share a JS file.
 
 ### B. Repository Structure
 
@@ -60,6 +66,7 @@ Two applications, one shared database, no shared runtime code:
 ├── tests/                  (node --test; `npm test`. No runtime dependency of either app)
 │
 ├── child-app/              (PWA: index.html, js/, css/, icons/, manifest.json, sw.js)
+├── wall-app/               (PWA: index.html, js/, css/, icons/, manifest.json, sw.js)
 ├── management-app/
 │   ├── index.html, js/, styles/
 │   └── worker/             (index.js, migrations.js, validation.js — the API;
@@ -68,11 +75,15 @@ Two applications, one shared database, no shared runtime code:
 └── docs/                   (TDS slices, SRS modules, roadmap)
 ```
 
-`tests/` covers the pure layers only — `worker/validation.js` and the Child App's
-`*-core.js` files. Those were written DOM-free and IO-free precisely so they could be
-exercised directly; everything above them still needs the manual §13 acceptance checks.
-Adding a directory of anything non-public also means adding it to `.assetsignore` in the
-same commit — the assets directory is the repo root.
+`tests/` covers the pure layers only — `worker/validation.js` and the `*-core.js` files in
+the Child App and the Wall App. Those were written DOM-free and IO-free precisely so they
+could be exercised directly; everything above them still needs the manual §13 acceptance
+checks. Adding a directory of anything non-public also means adding it to `.assetsignore` in
+the same commit — the assets directory is the repo root.
+
+**`wall-app/` is public static assets, exactly like `child-app/`, and needs NO `.assetsignore`
+entry.** Stated explicitly so the next reader does not "fix" its absence: the wall app ships
+no secret, and its credential is minted at runtime and lives in the tablet's `localStorage`.
 
 `Interchange_Contract.md` is **legacy** — an artifact of the packet/CSV era, kept as a historical record of a contract nothing implements any more. Do not build against it. `fixtures/` was deleted in Phase 5, along with `management-app/worker/schema.sql`, whose header still told an operator to run `wrangler d1 execute` or paste DDL into the D1 console — the one thing §III.D says is never acceptable.
 
@@ -105,7 +116,8 @@ same commit — the assets directory is the repo root.
 - **Network is the normal path.** Both apps make API calls during ordinary operation.
 - **Offline is tolerated, not guaranteed.** The Child App opens from cache, renders the last known plan, and queues completions. It does **not** need to function indefinitely without a network, and no design may be contorted to make it.
 - **Local writes never block on the network.** A completion commits locally and drains later.
-- **Narrowed exception: `claim_group` rows.** Per `TDS_Slice_Shared_Chores.md` §0.8/§5.7, a row with `claim_group IS NOT NULL` requires a live connection to complete — the claim is the write, and it is synchronous, because only the server knows whether a sibling got there first. This applies to that row class only. Every other row — activities, events, private chores, `each` chores including multi-child, and deferment/waive/note/message writes even on a claim row — keeps the local-first path above, unchanged.
+- **Narrowed exception 1: `claim_group` rows.** Per `TDS_Slice_Shared_Chores.md` §0.8/§5.7, a row with `claim_group IS NOT NULL` requires a live connection to complete — the claim is the write, and it is synchronous, because only the server knows whether a sibling got there first. This applies to that row class only. Every other row — activities, events, private chores, `each` chores including multi-child, and deferment/waive/note/message writes even on a claim row — keeps the local-first path above, unchanged.
+- **Narrowed exception 2: the Wall Display App.** Per `TDS_Slice_Wall_Display_App.md` §6.4, **every** wall write is synchronous and online-required. A failure leaves the chore un-ticked, shows a message, and the child taps again. The wall has no IndexedDB, no outbox, and no drain. Rationale: the local-first guarantee was built for a tablet carried around a house on patchy wifi; the wall is a fixed, mains-powered device metres from the access point, and an outbox on it would buy a rare edge case at the cost of a window in which a chore ticked at 4pm lands at 4:10pm — after the sibling standing at the same tablet has been told it is theirs to do. **Scoped to `wall-app/` only. The Child App's guarantee above is untouched.** Authorized by Ray in-session, 2026-08-13.
 
 ### B. The Shared Assignment Table
 
@@ -129,10 +141,30 @@ same commit — the assets directory is the repo root.
 
 ### E. Authorization
 
+Three credential classes, all hashed at rest, all revocable:
+
 - `SYNC_TOKEN` — parent, Worker secret, full scope.
-- Device tokens — per child, hashed at rest in `devices`, revocable, scoped to one `child_id`.
-- The Worker derives `child_id` **from the token**, never from the request body.
-- `/api/pair` is the only unauthenticated route.
+- **Device tokens** (`devices.scope = 'child'`) — per child, revocable, scoped to one `child_id`.
+- **The wall token** (`devices.scope = 'wall'`) — one per wall display, household-scoped, minted by
+  a pair code like a device token and revoked from the same Devices UI. Restricted by the Worker to
+  the `/api/wall/*` routes and nothing else.
+
+The rules that hold across all three:
+
+- The Worker derives `child_id` **from the token**, never from the request body. **One exception,
+  authorized by Ray in-session 2026-08-13:** on `/api/wall/*` the child is named in the request,
+  because a household-scoped credential cannot name one by itself. See
+  `TDS_Slice_Wall_Display_App.md` §8.3. That exception is bounded by four things, and a wall route
+  that drops any of them is a bug:
+  1. the named `childId` is validated against `children WHERE active = 1` before any
+     `assignments` access;
+  2. every statement keeps its existing `AND child_id = ?` clause, with the resolved id
+     substituted for the token-derived one;
+  3. the routes reuse `ASSIGNMENT_COMPLETION_FIELDS` verbatim — **column ownership is not
+     narrowed**, only child selection;
+  4. a wall token is 401 on the device routes, and a device token is 401 on the wall routes.
+- A credential may widen *which child* it acts for. **None may widen what may be written.**
+- `/api/pair` and `/api/wall/pair` are the only unauthenticated routes.
 
 ---
 
@@ -164,6 +196,8 @@ git status --short
 | Migration written | Registered in `worker/migrations.js`; applies cleanly on an empty DB |
 | Worker route added | Rejects the wrong credential type; rejects writes to columns it does not own |
 | Child App data change | `DB.loadState()` returns `{ rows }` (see revamp §8.2 — the §14 shim collapse's phase 3 dropped the four legacy keys this row used to pin) |
+| Wall App route added | All four §III.E bounds present: active-child check, `AND child_id = ?` retained, existing field map reused, cross-credential 401 both ways |
+| Wall App day logic touched | Mirrors `planner-core.js` `effectiveDueDate` **and** `onToday` — deferment and overdue roll-forward both, or the wall and the child's tablet disagree about what is due today |
 | Any schema change | Applied via the browser, never the console |
 
 ### C. Post-Build Reconciliation (before handoff)
@@ -240,6 +274,9 @@ Ask explicitly, list the candidate readings, state which you are proceeding with
 | Google Drive integration | **ABANDONED** | Solved a problem that no longer exists. |
 | Module 10 (Theming) | **DEFERRED** | Wizard choice → CSS integration. |
 | Shared chore claims | **LOCKED** | Server-arbitrated, online-required, `each`/`claim` allocation and per-day instances on a single Chore record. See `TDS_Slice_Shared_Chores.md`. |
+| Wall Display App | **LOCKED** | Third app, `wall-app/`. One household-scoped wall token, no per-child pairing; roster read live from `children WHERE active = 1`; PINs local to the tablet; complete-only writes; online-required. See `TDS_Slice_Wall_Display_App.md`. |
+| `child_id` from the request on `/api/wall/*` | **LOCKED** | The one exception to §III.E's derive-from-token rule, bounded by four checks. Column ownership unchanged. |
+| Per-child pairing on the wall | **REPEALED** | Was the 2026-08-13 draft of the wall slice. The wall pulls all active children from D1 instead. |
 
 ---
 
@@ -248,6 +285,7 @@ Ask explicitly, list the candidate readings, state which you are proceeding with
 | Document | Purpose |
 |---|---|
 | `docs/TDS_Slice_Online_Revamp.md` | **Controlling design.** Schema, API, auth, migrations, phasing. |
+| `docs/TDS_Slice_Wall_Display_App.md` | The Wall Display App: credential, roster, PIN gate, read/write paths, Worker routes, phasing. |
 | `migrations/*.sql` | Schema history. Forward-only. |
 | `management-app/worker/index.js` | The API. |
 | `management-app/worker/migrations.js` | Migration registry. |
@@ -260,8 +298,8 @@ Ask explicitly, list the candidate readings, state which you are proceeding with
 
 ## IX. Version & Amendments
 
-**Current Version:** 2.1  
-**Date:** 2026-08-12
+**Current Version:** 2.2  
+**Date:** 2026-08-13
 
 | Version | Date | Change |
 |---------|------|--------|
@@ -270,6 +308,7 @@ Ask explicitly, list the candidate readings, state which you are proceeding with
 | 1.2 | 2026-07-13 | Corrected `plannerMeta` shape. |
 | 2.0 | 2026-08-10 | **Architectural reversal.** Offline-first repealed; D1 becomes the system of record; packet and CSV interchange replaced by a shared `assignments` table and an HTTP API; per-occurrence chore IDs, reserved prefixes, and the N=100 ledger fold repealed; no-CLI added as a hard constraint with browser-applied migrations. Authorized by Ray in-session. See `docs/TDS_Slice_Online_Revamp.md`. |
 | 2.1 | 2026-08-12 | §III.A gains the `claim_group` narrowing (online-required for shared-chore claims only; every other row keeps the local-first path). §VII gains the "Shared chore claims" locked-decision row. Closes the §14 amendment gap left open by `TDS_Slice_Shared_Chores.md` — the SRS modules were updated in commit `9715b50`, this file was not. Authorized by Ray in-session. See `docs/TDS_Slice_Shared_Chores.md` §0.8/§5.7/§14. |
+| 2.2 | 2026-08-13 | **Third app.** §I.A's isolation table becomes three columns and §I.B's tree gains `wall-app/` (public assets, no `.assetsignore` entry — stated so nobody "fixes" it). §0 records the wall token and that no credential widens column ownership. §III.A gains a second narrowing: all Wall App writes are online-required, scoped to that app. §III.E is restructured around three credential classes and records the one exception to derive-`child_id`-from-token — `/api/wall/*` names the child in the request — with the four bounds that contain it. §IV.B gains two Wall App checks. §VII gains three rows; per-child pairing on the wall is repealed. Authorized by Ray in-session, all three narrowings signed off individually. See `docs/TDS_Slice_Wall_Display_App.md` §6.4, §8.3, §16. |
 
 ---
 
