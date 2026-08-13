@@ -123,6 +123,39 @@ const Pacing = (() => {
     return { record };
   }
 
+  function todayISO() {
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  }
+
+  // FR-1's companion: the Profile a freshly-stamped Instance starts with,
+  // derived from the source Course's `defaultPacingHint` (PacingCore) with
+  // defaults for whatever the hint does not state. Called by children.js at
+  // stamp time — the write still happens here, so pacing.js remains the sole
+  // writer of `pacingProfiles`. Never overwrites an existing Profile, and a
+  // failure here leaves the Instance profile-less, which §2.6 already treats
+  // as a valid state.
+  async function ensureDefaultProfile(instanceId, options = {}) {
+    const existing = await getProfile(instanceId);
+    if (existing) return { record: existing, created: false };
+
+    const instance = await Storage.get('courses', instanceId);
+    if (!instance || instance.state !== 'instance') {
+      return { error: 'Pacing applies to a Course Instance only.' };
+    }
+    const hint = options.hint !== undefined ? options.hint : instance.defaultPacingHint;
+    const { fields, source } = PacingCore.defaultProfileFields(hint, options.startDate || todayISO());
+    const result = await saveProfile(instanceId, fields);
+    if (result.error) return result;
+    return {
+      record: result.record,
+      created: true,
+      source,
+      summary: PacingCore.describe(fields),
+    };
+  }
+
   // ---- Rendering ----
 
   async function listInstances(childId) {
@@ -287,5 +320,12 @@ const Pacing = (() => {
       .filter((s) => s.length > 0);
   }
 
-  return { render, saveProfile, getProfile, progressFor, instanceActivitiesInWalkOrder };
+  return {
+    render,
+    saveProfile,
+    getProfile,
+    ensureDefaultProfile,
+    progressFor,
+    instanceActivitiesInWalkOrder,
+  };
 })();

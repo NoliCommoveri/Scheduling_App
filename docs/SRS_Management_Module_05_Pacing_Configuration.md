@@ -26,6 +26,18 @@ Lets the parent configure how one Child Course Instance's Activities get distrib
 
 **2.6 — Pacing Profile setup is the natural companion step to Module 4's stamping action.** Domain Model §2.9 states a Pacing Profile is "set at instance creation" — meaning a freshly-stamped Instance (Module 4 FR-4) isn't really usable by generation until this module's setup also runs. Module 4's FR-4 flags pacing setup as the required next step. This module treats "Instance exists with no Pacing Profile yet" as a valid, expected transient state (not an error) — the parent completes pacing setup as the very next step in the same flow, but nothing here assumes it happens atomically.
 
+**2.6a — A stamped Instance now arrives with a starting Pacing Profile, derived from the Course's pacing hint.** §2.6's transient "Instance with no Profile" state stays *valid* — nothing here treats it as an error, and Instances stamped before this change still have none — but it is no longer the *normal* outcome of stamping. Module 4 FR-4 step 6 calls this module's `ensureDefaultProfile`, so the write still happens here and `pacingProfiles` still has exactly one writer.
+
+The source is `defaultPacingHint` (Mgmt SRS 03 §4), a free-text field that until now nothing read. Its documented form is one or more labelled clauses — `Activities Per Day - 2`, `Minutes Per Day - 60`, `Days - Mon/Wed/Fri` — separated by `;` or a newline, with commas free for use inside a day list. Looser phrasings already typed into the field are read too (`45 min a day, Mon-Thu`; `three lessons per day`; `MWF`), and a per-*week* figure is deliberately not read as a per-day budget.
+
+Three rules keep the derivation honest:
+
+- **The hint never decides anything the parent can't see.** The stamp confirmation states the resulting pace and which half of it came from the hint; the Profile is then editable exactly as any other (FR-2).
+- **Silence takes a default, not a guess.** A hint stating no days gets Mon–Fri; a hint stating no budget gets `activityCount` with `activitiesPerDay: 1` — the conservative direction, since under-pacing shows up as a thin packet at Review while over-pacing shows up as an overwhelmed child. A hint naming both a count and a minutes figure is read as a count with commentary attached.
+- **Nothing is ever overwritten.** `ensureDefaultProfile` is a no-op when a Profile already exists, and a failure leaves the Instance profile-less (§2.6) rather than half-paced.
+
+`startDate` cannot come from a hint; the seed uses the date the Course was stamped.
+
 **2.7 — Deleting an Instance (Module 4 FR-6) implicitly deletes its Pacing Profile too.** A Pacing Profile is 1:1 with its Instance and has no independent existence; this module offers no separate "delete Pacing Profile" action. Module 4's FR-6 and §7 Outputs state the cascade explicitly.
 
 **2.8 — This module owns the standing pacing rules; it does not own per-item, per-run decisions.** Excluding a specific Activity from ever being generated (`excludeFromGeneration`, Domain Model §2.5) is set directly on the Activity (Mgmt SRS 04 FR-14) or from within Packet Generation's Review stage (Mgmt SRS 08, before Commit) — never here. Likewise, every per-run adjustment — relocating a proposed item's date (including onto a day outside `daysOfWeek[]`), deferring an Activity out of one run, pulling one forward, dropping a single Chore occurrence — happens inside that same Review stage (Mgmt SRS 08 FR-7) and never edits a Pacing Profile record. This module's fields describe the standing pattern a generation run *starts* from; they are never the place a one-off, per-run adjustment gets made.
@@ -40,6 +52,8 @@ Lets the parent configure how one Child Course Instance's Activities get distrib
 ## 4. Functional requirements
 
 **FR-1 — Create Pacing Profile.** Set up immediately after (or as part of the same flow as) stamping a Course to a Child (Module 4 FR-4, §2.6). Required: `daysOfWeek[]` (§2.2a — a non-empty subset of Sun–Sat, same shape as Chore's field), `pacingMode` (§2.2) with its corresponding budget value (`activitiesPerDay` if `activityCount`, `minutesPerDay` if `minutesBudget`), `startDate`.
+
+**FR-1a — Seed a Pacing Profile at stamp time (§2.6a).** When Module 4 stamps a Course to a Child, this module creates that Instance's starting Profile from the Course's `defaultPacingHint`: `daysOfWeek[]` and the mode's budget from whatever the hint states, the defaults in §2.6a for whatever it does not, and `startDate` = the stamp date. The result is an ordinary Profile — it passes the same FR-6 validation, and FR-2 edits it like any other. No-op if the Instance already has one.
 
 **FR-2 — Edit Pacing Profile.** Any field can be changed at any time through the semester. Per Domain Model §2.9's own rule, an edit affects only *future* generation — it re-shapes how the pending remainder (§2.1) is distributed; anything already recorded `sent` in the Generation Log is untouched. This module does not retroactively re-pace or recall anything already generated.
 
@@ -87,6 +101,7 @@ No *additional* per-action PIN. The Management App's `launchPin` (Domain Model �
 2. Creating a Pacing Profile with `pacingMode: minutesBudget` succeeds when `minutesPerDay`, `daysOfWeek[]`, and `startDate` are all provided; omitting `activitiesPerDay` in this mode is not an error.
 3. Editing any Pacing Profile field never alters a Generation Log decision or anything already sent by a prior Commit.
 4. Adding a date to `skipDates[]` excludes that date from future generation without changing `daysOfWeek[]` or any other field.
-5. An Instance with no Pacing Profile yet is not treated as an error state by this module — it's a valid, expected step between stamping (Module 4) and pacing setup (this module).
+5. An Instance with no Pacing Profile yet is not treated as an error state by this module — a valid state for anything stamped before §2.6a, and for a stamp whose seed failed.
+5a. Stamping a Course whose `defaultPacingHint` reads `Activities Per Day - 2; Days - Mon/Wed/Fri` yields a Profile of exactly those values, `startDate` = the stamp date, and no `minutesPerDay` key; stamping one with no hint yields Mon–Fri, `activityCount`, `activitiesPerDay: 1` (§2.6a). Both are then editable under FR-2, and neither writes anything to the Generation Log.
 6. The progress display (FR-8) reflects the Generation Log accurately and is never editable from this module's UI.
 7. No mechanism anywhere in this module allows deleting a Pacing Profile independent of deleting its Instance.
