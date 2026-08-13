@@ -431,6 +431,62 @@ const Courses = (() => {
     return { id: mintedId };
   }
 
+  // §6.2 — the recipe's one-time write. Mirrors createActivity's shape but
+  // batches N rows under one seq/order walk and one nextActivitySeq bump.
+  // `finalizedRows` is RecipeCore.finalizeProposal's output: already
+  // reordered, already carrying contiguous `order` and non-blank titles.
+  // `budgetOverride` carries the Lesson's page-range budget when the parent
+  // set or changed it inline on the recipe form (§5.2) — written onto the
+  // Lesson in the same transaction as the nextActivitySeq bump.
+  // D10: one transaction, ids minted from the counter and never `max+1`, the
+  // Lesson read once *inside* the transaction — createActivity's read of
+  // `lesson` outside it is a seam this batched writer must not inherit.
+  async function expandLessonRecipe(lessonId, finalizedRows, tier, budgetOverride) {
+    if (!tier) return { error: 'Difficulty Tier must resolve to an existing Tier.' };
+    if (!finalizedRows || finalizedRows.length === 0) return { error: 'The recipe generates no Activities.' };
+    if (await hasActivitiesUnderLesson(lessonId)) {
+      return { error: 'This Lesson already has Activities; the recipe is only offered while it has none (D4).' };
+    }
+    const course = await Storage.get('courses', (await Storage.get('lessons', lessonId)).courseId);
+
+    const mintedIds = [];
+    await Storage.runTransaction(['lessons', 'activities'], 'readwrite', (t) => {
+      const lessonsStore = t.objectStore('lessons');
+      const getReq = lessonsStore.get(lessonId);
+      getReq.onsuccess = () => {
+        const lesson = getReq.result;
+        const seq0 = lesson.nextActivitySeq;
+        const activitiesStore = t.objectStore('activities');
+        finalizedRows.forEach((row, i) => {
+          const seq = seq0 + i;
+          const id = `${course.courseCode}-TPL-${lesson.lessonCode}-${pad2(seq)}`;
+          const record = {
+            id,
+            lessonId,
+            activityType: row.activityTypeKey,
+            title: row.title,
+            required: true,
+            difficultyTier: tier.tierId,
+            order: row.order,
+          };
+          if (row.pageRangeStart !== undefined) {
+            record.pageRangeStart = row.pageRangeStart;
+            record.pageRangeEnd = row.pageRangeEnd;
+          }
+          activitiesStore.put(record);
+          mintedIds.push(id);
+        });
+        const updatedLesson = { ...lesson, nextActivitySeq: seq0 + finalizedRows.length };
+        if (budgetOverride) {
+          updatedLesson.pageRangeStart = budgetOverride.start;
+          updatedLesson.pageRangeEnd = budgetOverride.end;
+        }
+        lessonsStore.put(updatedLesson);
+      };
+    });
+    return { ids: mintedIds };
+  }
+
   async function editActivity(id, fields, tier) {
     const existing = await Storage.get('activities', id);
     if (!fields.title || !fields.title.trim()) return { error: 'Title is required.' };
@@ -1135,6 +1191,13 @@ const Courses = (() => {
     });
     root.appendChild(editLessonForm);
 
+    // §5.1 — offered only while the Lesson has zero Activities (D4); deleting
+    // every Activity reopens it, since this is the same `activities` read
+    // hasActivitiesUnderLesson makes.
+    if (activities.length === 0) {
+      root.appendChild(buildRecipeSection(root, lesson, activityTypes, tiers));
+    }
+
     if (editActivityId) {
       const activity = activities.find((a) => a.id === editActivityId);
       if (!activity) {
@@ -1180,6 +1243,274 @@ const Courses = (() => {
     root.appendChild(list);
 
     root.appendChild(buildActivityForm(root, lesson, activityTypes, tiers));
+  }
+
+  // §5 — the Lesson Recipe. Two stages, both form state until Generate: Stage
+  // 1 (§5.2) collects an optional page-range split plus a set of count-type
+  // rows and turns it into a live-priced proposal; Stage 2 (§5.5) is the
+  // reordered, title-editable review. "Copy from lesson" (§5.4) and "Copy
+  // settings from" (§5.7) are a later phase.
+  function buildRecipeSection(root, lesson, activityTypes, tiers) {
+    const countTypes = activityTypes.filter((t) => t.structurePattern === 'count');
+    const pageRangeTypes = activityTypes.filter((t) => t.structurePattern === 'page-range');
+    const typesByKey = new Map(activityTypes.map((t) => [t.activityTypeKey, t]));
+
+    const section = document.createElement('section');
+    section.className = 'lesson-recipe';
+
+    let proposalRows = null; // set on entering Stage 2
+
+    function typeLabel(key) {
+      return (typesByKey.get(key) || {}).label || key;
+    }
+
+    function renderStage1() {
+      section.innerHTML = '<h3>Recipe</h3>';
+
+      const pageRangeFieldset = document.createElement('fieldset');
+      const pageRangeOptions = ['', ...pageRangeTypes.map((t) => t.activityTypeKey)]
+        .map((key) => `<option value="${key}">${escapeHtml(key ? typeLabel(key) : '(none)')}</option>`)
+        .join('');
+      pageRangeFieldset.innerHTML = `
+        <legend>Pages (optional)</legend>
+        <label>Type<select name="pageRangeType">${pageRangeOptions}</select></label>
+        <label>Budget start<input type="number" name="budgetStart" min="1" step="1" value="${lesson.pageRangeStart ?? ''}"></label>
+        <label>Budget end<input type="number" name="budgetEnd" min="1" step="1" value="${lesson.pageRangeEnd ?? ''}"></label>
+        <label>Split at (comma-separated)<input type="text" name="splitNumbers" placeholder="10, 14"></label>
+        <label><input type="radio" name="splitMode" value="first" checked> first page of each chunk</label>
+        <label><input type="radio" name="splitMode" value="last"> last page of each chunk</label>
+      `;
+      section.appendChild(pageRangeFieldset);
+
+      const tierSelect = document.createElement('select');
+      tierSelect.name = 'difficultyTier';
+      tierSelect.innerHTML =
+        '<option value="">Difficulty Tier (select)</option>' +
+        tiers.map((t) => `<option value="${t.tierId}">${escapeHtml(t.label)}</option>`).join('');
+      section.appendChild(tierSelect);
+
+      const countRowsEl = document.createElement('div');
+      countRowsEl.className = 'recipe-count-rows';
+      section.appendChild(countRowsEl);
+
+      const addTypeSelect = document.createElement('select');
+      addTypeSelect.innerHTML =
+        '<option value="">+ add type</option>' +
+        countTypes.map((t) => `<option value="${t.activityTypeKey}">${escapeHtml(t.label)}</option>`).join('');
+      section.appendChild(addTypeSelect);
+
+      function refreshAddOptions() {
+        const used = new Set(Array.from(countRowsEl.children).map((r) => r.dataset.activityTypeKey));
+        Array.from(addTypeSelect.options).forEach((opt) => {
+          if (opt.value) opt.hidden = used.has(opt.value);
+        });
+      }
+
+      function addCountRow(activityTypeKey) {
+        const row = document.createElement('div');
+        row.className = 'recipe-count-row';
+        row.dataset.activityTypeKey = activityTypeKey;
+        row.innerHTML = `
+          <span>${escapeHtml(typeLabel(activityTypeKey))}</span>
+          <input type="number" name="count" min="0" step="1" value="1">
+          <button type="button" data-action="remove">Remove</button>
+        `;
+        row.querySelector('input').addEventListener('input', updateTotal);
+        row.querySelector('[data-action="remove"]').addEventListener('click', () => {
+          row.remove();
+          refreshAddOptions();
+          updateTotal();
+        });
+        countRowsEl.appendChild(row);
+      }
+
+      addTypeSelect.addEventListener('change', () => {
+        if (!addTypeSelect.value) return;
+        addCountRow(addTypeSelect.value);
+        refreshAddOptions();
+        addTypeSelect.value = '';
+        updateTotal();
+      });
+
+      const splitNumbersInput = pageRangeFieldset.querySelector('[name="splitNumbers"]');
+      const pageRangeTypeSelect = pageRangeFieldset.querySelector('[name="pageRangeType"]');
+      const budgetStartInput = pageRangeFieldset.querySelector('[name="budgetStart"]');
+      const budgetEndInput = pageRangeFieldset.querySelector('[name="budgetEnd"]');
+
+      function parseSplitNumbers() {
+        return splitNumbersInput.value
+          .split(/[,\s]+/)
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .map(Number);
+      }
+
+      function currentEntries() {
+        const entries = [];
+        if (pageRangeTypeSelect.value) {
+          entries.push({
+            activityTypeKey: pageRangeTypeSelect.value,
+            pageRange: {
+              numbers: parseSplitNumbers(),
+              mode: pageRangeFieldset.querySelector('[name="splitMode"]:checked').value,
+            },
+          });
+        }
+        Array.from(countRowsEl.children).forEach((row) => {
+          entries.push({
+            activityTypeKey: row.dataset.activityTypeKey,
+            count: Number(row.querySelector('input').value),
+          });
+        });
+        return entries;
+      }
+
+      function buildLivePreview() {
+        return RecipeCore.buildProposalRows(
+          { entries: currentEntries() },
+          {
+            lessonTitle: lesson.title,
+            budgetStart: budgetStartInput.value === '' ? undefined : Number(budgetStartInput.value),
+            budgetEnd: budgetEndInput.value === '' ? undefined : Number(budgetEndInput.value),
+            activityTypesByKey: typesByKey,
+            titlePatterns: undefined, // count only — real patterns are resolved at Propose time
+          },
+        );
+      }
+
+      const errorEl = document.createElement('p');
+      errorEl.className = 'error';
+      errorEl.hidden = true;
+
+      const proposeBtn = document.createElement('button');
+      proposeBtn.type = 'button';
+      proposeBtn.textContent = 'Propose activities';
+
+      // §5.2 — "the live total, recomputed on every input event."
+      function updateTotal() {
+        const preview = buildLivePreview();
+        proposeBtn.textContent = preview.error ? 'Propose activities' : `Propose ${preview.rows.length} activities`;
+      }
+
+      [pageRangeTypeSelect, splitNumbersInput, budgetStartInput, budgetEndInput].forEach((el) =>
+        el.addEventListener('input', updateTotal)
+      );
+      pageRangeFieldset.querySelectorAll('[name="splitMode"]').forEach((r) => r.addEventListener('change', updateTotal));
+
+      proposeBtn.addEventListener('click', async () => {
+        const tier = tiers.find((t) => t.tierId === tierSelect.value);
+        if (!tier) {
+          errorEl.hidden = false;
+          errorEl.textContent = 'Difficulty Tier must resolve to an existing Tier.';
+          return;
+        }
+        const course = await Storage.get('courses', lesson.courseId);
+        const budgetStart = budgetStartInput.value === '' ? undefined : Number(budgetStartInput.value);
+        const budgetEnd = budgetEndInput.value === '' ? undefined : Number(budgetEndInput.value);
+        const result = RecipeCore.buildProposalRows(
+          { entries: currentEntries() },
+          {
+            lessonTitle: lesson.title,
+            budgetStart,
+            budgetEnd,
+            activityTypesByKey: typesByKey,
+            titlePatterns: course.titlePatterns,
+          },
+        );
+        if (result.error) {
+          errorEl.hidden = false;
+          errorEl.textContent = result.error;
+          return;
+        }
+        errorEl.hidden = true;
+        proposalRows = result.rows;
+        const budgetChanged = budgetStart !== lesson.pageRangeStart || budgetEnd !== lesson.pageRangeEnd;
+        renderStage2(tier, budgetChanged && budgetStart !== undefined ? { start: budgetStart, end: budgetEnd } : null);
+      });
+
+      section.appendChild(errorEl);
+      section.appendChild(proposeBtn);
+      updateTotal();
+    }
+
+    // §5.5/§6.2 — N rows, titles editable, reorderable; nothing written until
+    // Generate. `tier` and `budgetOverride` were fixed at Propose time — going
+    // Back to Stage 1 re-asks both, since D6/D7 only promise the *reorder*
+    // survives a round trip, not the whole form.
+    function renderStage2(tier, budgetOverride) {
+      section.innerHTML = '<h3>Review</h3>';
+
+      const rowsEl = document.createElement('div');
+      rowsEl.className = 'recipe-proposal-rows';
+      section.appendChild(rowsEl);
+
+      function renderRows() {
+        rowsEl.innerHTML = '';
+        proposalRows.forEach((row, index) => {
+          const rowEl = document.createElement('div');
+          rowEl.className = 'recipe-proposal-row';
+          const pageRangeText =
+            row.pageRangeStart !== undefined ? `<span class="recipe-row-pages">${row.pageRangeStart}–${row.pageRangeEnd}</span>` : '';
+          rowEl.innerHTML = `
+            <span class="recipe-row-type">${escapeHtml(typeLabel(row.activityTypeKey))}</span>
+            <input type="text" name="title" value="${escapeHtml(row.title)}">
+            ${pageRangeText}
+            <button type="button" data-action="up" ${index === 0 ? 'disabled' : ''}>&uarr;</button>
+            <button type="button" data-action="down" ${index === proposalRows.length - 1 ? 'disabled' : ''}>&darr;</button>
+          `;
+          rowEl.querySelector('[name="title"]').addEventListener('input', (e) => {
+            proposalRows[index] = { ...proposalRows[index], title: e.target.value };
+          });
+          rowEl.querySelector('[data-action="up"]').addEventListener('click', () => {
+            [proposalRows[index - 1], proposalRows[index]] = [proposalRows[index], proposalRows[index - 1]];
+            renderRows();
+          });
+          rowEl.querySelector('[data-action="down"]').addEventListener('click', () => {
+            [proposalRows[index + 1], proposalRows[index]] = [proposalRows[index], proposalRows[index + 1]];
+            renderRows();
+          });
+          rowsEl.appendChild(rowEl);
+        });
+      }
+      renderRows();
+
+      const errorEl = document.createElement('p');
+      errorEl.className = 'error';
+      errorEl.hidden = true;
+      section.appendChild(errorEl);
+
+      const backBtn = document.createElement('button');
+      backBtn.type = 'button';
+      backBtn.textContent = 'Back';
+      backBtn.addEventListener('click', () => {
+        proposalRows = null;
+        renderStage1();
+      });
+      section.appendChild(backBtn);
+
+      const generateBtn = document.createElement('button');
+      generateBtn.type = 'button';
+      generateBtn.textContent = `Generate ${proposalRows.length} activities`;
+      generateBtn.addEventListener('click', async () => {
+        const finalized = RecipeCore.finalizeProposal(proposalRows);
+        if (finalized.error) {
+          errorEl.hidden = false;
+          errorEl.textContent = finalized.error;
+          return;
+        }
+        const result = await expandLessonRecipe(lesson.id, finalized.rows, tier, budgetOverride);
+        if (result.error) {
+          errorEl.hidden = false;
+          errorEl.textContent = result.error;
+          return;
+        }
+        render(root);
+      });
+      section.appendChild(generateBtn);
+    }
+
+    renderStage1();
+    return section;
   }
 
   function buildActivityForm(root, lesson, activityTypes, tiers) {
@@ -1354,6 +1685,7 @@ const Courses = (() => {
     editActivity,
     deleteActivity,
     moveActivity,
+    expandLessonRecipe,
     listCourseTemplates,
     hasActivitiesBeneathCourse,
     hasActivitiesUnderLesson,
