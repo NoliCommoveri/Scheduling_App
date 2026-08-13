@@ -11,9 +11,16 @@
   box-sizing: border-box;
 }
 
+html {
+  /* A phone in landscape must not inflate the type on its own. */
+  -webkit-text-size-adjust: 100%;
+}
+
 body {
   margin: 0;
   font-family: system-ui, sans-serif;
+  font-size: 1rem;
+  line-height: 1.45;
   background: var(--color-bg);
   color: var(--color-text);
 }
@@ -33,9 +40,19 @@ body {
 }
 
 #app-root {
-  max-width: 640px;
+  max-width: 720px;
   margin: 0 auto;
   padding: 1.5rem 1rem;
+}
+
+/* Nothing in a view may make the page itself scroll sideways: a control that
+   cannot shrink pushes every other control off-screen (that is what put the
+   "Remove" buttons out of reach on a phone). Wide *content* — report tables,
+   the migration list — still scrolls inside its own box. */
+@media (max-width: 40rem) {
+  #app-root {
+    padding: 1rem 0.75rem;
+  }
 }
 
 /* Pending-migration banner (Revamp §3.7.5). Full-bleed under the nav rather
@@ -63,7 +80,8 @@ body {
 }
 
 #app-banner button {
-  padding: 0.3rem 0.7rem;
+  padding: 0.35rem 0.7rem;
+  min-height: 2.25rem;
   font-size: 0.85rem;
 }
 
@@ -90,24 +108,59 @@ label {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-  font-size: 0.9rem;
+  font-size: 0.95rem;
+  min-width: 0;
 }
 
-input, select {
-  padding: 0.5rem;
+/* A checkbox or radio belongs beside its text, not stacked above it. */
+label:has(> input[type="checkbox"]),
+label:has(> input[type="radio"]) {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+input, select, textarea {
+  padding: 0.55rem 0.6rem;
   border: 1px solid var(--color-border);
-  border-radius: 4px;
+  border-radius: 6px;
+  font-family: inherit;
+  /* 16px keeps iOS from zooming the whole page on focus. */
   font-size: 1rem;
+  /* Form controls default to an intrinsic width (`size`) and refuse to shrink
+     below it inside a flex/grid track. Both halves of this matter. */
+  min-width: 0;
+  max-width: 100%;
+}
+
+input:not([type="checkbox"]):not([type="radio"]),
+select,
+textarea {
+  width: 100%;
+}
+
+input[type="checkbox"], input[type="radio"] {
+  width: 1.15rem;
+  height: 1.15rem;
+  flex: none;
+  padding: 0;
 }
 
 button {
-  padding: 0.5rem 0.9rem;
+  padding: 0.55rem 0.9rem;
+  /* ~44px: a comfortable touch target, and it makes every button in a row the
+     same height so they line up across list items. */
+  min-height: 2.75rem;
   border: none;
-  border-radius: 4px;
+  border-radius: 6px;
   background: var(--color-accent);
   color: #fff;
   cursor: pointer;
-  font-size: 0.9rem;
+  font-family: inherit;
+  font-size: 0.95rem;
+  line-height: 1.2;
+  white-space: nowrap;
+  max-width: 100%;
 }
 
 button:disabled {
@@ -150,6 +203,99 @@ li {
   flex: 1;
 }
 
+/* ---- Shared list row (Courses, Lessons, Activities) ----
+   Two fixed grid tracks — text, then controls — so the buttons sit in exactly
+   the same place on every row regardless of how long the title is. A wrapping
+   flex row put them somewhere different on each item, which is what made the
+   list hard to scan and hard to hit. */
+.list-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 0.75rem;
+  row-gap: 0.5rem;
+  padding: 0.65rem 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.list-row .row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.list-row .row-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.list-row .row-meta {
+  font-size: 0.8rem;
+  color: #666;
+  overflow-wrap: anywhere;
+}
+
+/* A server-minted UUID is unreadable and endlessly long; it stays in the row
+   (and selectable) but is held to one quiet line instead of wrapping into
+   three and setting the row's height. */
+.list-row .row-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.7rem;
+  color: #9a9a9a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.list-row .row-actions {
+  display: flex;
+  gap: 0.4rem;
+  justify-self: end;
+}
+
+/* Up/down live in the right-hand track, vertically centred against the item
+   they move, with the row's other buttons tucked underneath the text. */
+.list-row .row-reorder {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.list-row.has-reorder .row-text {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.list-row.has-reorder .row-reorder {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+}
+
+.list-row.has-reorder .row-actions {
+  grid-column: 1;
+  grid-row: 2;
+  justify-self: start;
+}
+
+/* Square arrows: the glyph is one character, the target is still 44px. */
+.row-reorder button {
+  width: 2.75rem;
+  padding: 0;
+  font-size: 1.05rem;
+}
+
+/* Under ~26rem even two words plus buttons cannot share a line honestly. */
+@media (max-width: 26rem) {
+  .list-row:not(.has-reorder) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .list-row:not(.has-reorder) .row-actions {
+    justify-self: start;
+  }
+}
+
 .tier-id, .curriculum-type {
   font-size: 0.8rem;
   color: #666;
@@ -167,13 +313,27 @@ fieldset {
   gap: 0.4rem;
 }
 
-/* Lay a fieldset's option labels out in a wrapping row, legend on its own line. */
+/* Lay a fieldset's option labels out in a wrapping row, legend on its own line.
+   `min-width: 0` overrides the UA's `min-width: min-content` — without it a
+   fieldset refuses to shrink and drags the page wider than the viewport. */
 fieldset {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem 1rem;
+  gap: 0.5rem 1rem;
   align-items: center;
-  padding: 0.5rem 0.75rem;
+  padding: 0.6rem 0.75rem;
+  min-width: 0;
+}
+
+/* Its labels share the row and shrink with it rather than overflowing. */
+fieldset > label {
+  flex: 1 1 8rem;
+  min-width: 0;
+}
+
+fieldset > label:has(> input[type="checkbox"]),
+fieldset > label:has(> input[type="radio"]) {
+  flex: 0 1 auto;
 }
 
 fieldset legend {
@@ -351,17 +511,43 @@ button.secondary {
   font-size: 0.85rem;
 }
 
+/* Dense per-day lists: compact buttons, still a fingertip tall. */
 .day-section li button, .pending-box button {
-  padding: 0.25rem 0.55rem;
+  padding: 0.35rem 0.6rem;
+  min-height: 2.25rem;
   font-size: 0.8rem;
 }
 
 /* ---- Bulk CSV Import & Lesson Content Planning (M8) ---- */
-.count-target-row {
-  display: flex;
+
+/* The rows own the fieldset's full width; the "Add target" button follows. */
+.count-targets > .count-target-rows {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+/* Type · count · Remove, on one line that always fits: the type select takes
+   the slack, the count is a fixed narrow track, and Remove keeps its natural
+   width so it can never be pushed off the side of the screen. */
+.count-target-row,
+.recipe-count-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 4.5rem auto;
   gap: 0.4rem;
   align-items: center;
-  flex-basis: 100%;
+  margin-bottom: 0.4rem;
+}
+
+.recipe-count-row > span {
+  min-width: 0;
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.count-target-row button,
+.recipe-count-row button {
+  padding: 0.55rem 0.6rem;
+  font-size: 0.85rem;
 }
 
 .bulk-import {
@@ -596,6 +782,79 @@ button.secondary {
 
 .child-archived {
   opacity: 0.6;
+}
+
+/* ---- Lesson Recipe (§5) ----
+   Stage 1's controls are bare children of the section rather than form labels,
+   so they need their own block rhythm; Stage 2's review rows use the same
+   text-track/controls-track split as .list-row, so a row's arrows stay beside
+   the row they move instead of wrapping onto a line of their own. */
+.lesson-recipe {
+  margin: 1.5rem 0;
+  padding: 0.85rem;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.lesson-recipe h3 {
+  margin: 0 0 0.6rem;
+  font-size: 1.05rem;
+}
+
+.lesson-recipe > select {
+  display: block;
+  margin-bottom: 0.6rem;
+}
+
+.lesson-recipe > fieldset {
+  margin: 0 0 0.75rem;
+}
+
+.lesson-recipe > button {
+  margin: 0.5rem 0.5rem 0 0;
+}
+
+.recipe-count-rows:not(:empty) {
+  margin-bottom: 0.6rem;
+}
+
+.recipe-proposal-rows {
+  margin-bottom: 0.5rem;
+}
+
+.recipe-proposal-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 0.6rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.recipe-proposal-row .row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.recipe-proposal-row .row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: #666;
+}
+
+.recipe-row-type {
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-weight: 600;
+}
+
+.recipe-row-pages {
+  font-variant-numeric: tabular-nums;
 }
 
 .child-archived-tag {
