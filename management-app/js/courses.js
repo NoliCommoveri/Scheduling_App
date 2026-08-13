@@ -106,7 +106,17 @@ const Courses = (() => {
     if (fields.subject) record.subject = fields.subject.trim();
     if (fields.description) record.description = fields.description.trim();
     if (fields.defaultPacingHint) record.defaultPacingHint = fields.defaultPacingHint.trim();
+    if (fields.titlePatterns) record.titlePatterns = fields.titlePatterns;
     return record;
+  }
+
+  // §5.6.1's four save-time checks live in RecipeCore; this just supplies the
+  // activityTypes lookup. `raw` is the disclosure block's whole map each save
+  // (not a patch), so an empty result means "no overrides", not "no change".
+  async function resolveTitlePatternsInput(raw) {
+    const activityTypes = await Storage.getAll('activityTypes');
+    const byKey = new Map(activityTypes.map((t) => [t.activityTypeKey, t]));
+    return RecipeCore.sanitizeTitlePatterns(raw || {}, byKey);
   }
 
   async function createCourse(fields) {
@@ -116,7 +126,14 @@ const Courses = (() => {
     const codeResult = await validateCourseCode(fields.courseCode, fields.name, undefined);
     if (codeResult.error) return { error: codeResult.error };
 
-    const record = buildCourseRecord('COU-' + randomToken(), fields, codeResult.code);
+    const patternsResult = await resolveTitlePatternsInput(fields.titlePatterns);
+    if (patternsResult.error) return { error: patternsResult.error };
+
+    const record = buildCourseRecord(
+      'COU-' + randomToken(),
+      { ...fields, titlePatterns: patternsResult.titlePatterns },
+      codeResult.code,
+    );
     await Storage.put('courses', record);
     return { record };
   }
@@ -136,10 +153,15 @@ const Courses = (() => {
       courseCode = codeResult.code;
     }
 
+    const patternsResult = await resolveTitlePatternsInput(fields.titlePatterns);
+    if (patternsResult.error) return { error: patternsResult.error };
+
     // Preserve every field the edit form doesn't manage (curriculumId,
-    // subject, description, coreElective, defaultPacingHint) — only name
-    // and courseCode are ever overwritten here.
+    // subject, description, coreElective, defaultPacingHint) — only name,
+    // courseCode, and titlePatterns are ever overwritten here.
     const record = { ...existing, name: fields.name.trim(), courseCode };
+    if (patternsResult.titlePatterns) record.titlePatterns = patternsResult.titlePatterns;
+    else delete record.titlePatterns;
     await Storage.put('courses', record);
     return { record };
   }
@@ -407,6 +429,62 @@ const Courses = (() => {
     });
 
     return { id: mintedId };
+  }
+
+  // §6.2 — the recipe's one-time write. Mirrors createActivity's shape but
+  // batches N rows under one seq/order walk and one nextActivitySeq bump.
+  // `finalizedRows` is RecipeCore.finalizeProposal's output: already
+  // reordered, already carrying contiguous `order` and non-blank titles.
+  // `budgetOverride` carries the Lesson's page-range budget when the parent
+  // set or changed it inline on the recipe form (§5.2) — written onto the
+  // Lesson in the same transaction as the nextActivitySeq bump.
+  // D10: one transaction, ids minted from the counter and never `max+1`, the
+  // Lesson read once *inside* the transaction — createActivity's read of
+  // `lesson` outside it is a seam this batched writer must not inherit.
+  async function expandLessonRecipe(lessonId, finalizedRows, tier, budgetOverride) {
+    if (!tier) return { error: 'Difficulty Tier must resolve to an existing Tier.' };
+    if (!finalizedRows || finalizedRows.length === 0) return { error: 'The recipe generates no Activities.' };
+    if (await hasActivitiesUnderLesson(lessonId)) {
+      return { error: 'This Lesson already has Activities; the recipe is only offered while it has none (D4).' };
+    }
+    const course = await Storage.get('courses', (await Storage.get('lessons', lessonId)).courseId);
+
+    const mintedIds = [];
+    await Storage.runTransaction(['lessons', 'activities'], 'readwrite', (t) => {
+      const lessonsStore = t.objectStore('lessons');
+      const getReq = lessonsStore.get(lessonId);
+      getReq.onsuccess = () => {
+        const lesson = getReq.result;
+        const seq0 = lesson.nextActivitySeq;
+        const activitiesStore = t.objectStore('activities');
+        finalizedRows.forEach((row, i) => {
+          const seq = seq0 + i;
+          const id = `${course.courseCode}-TPL-${lesson.lessonCode}-${pad2(seq)}`;
+          const record = {
+            id,
+            lessonId,
+            activityType: row.activityTypeKey,
+            title: row.title,
+            required: true,
+            difficultyTier: tier.tierId,
+            order: row.order,
+          };
+          if (row.pageRangeStart !== undefined) {
+            record.pageRangeStart = row.pageRangeStart;
+            record.pageRangeEnd = row.pageRangeEnd;
+          }
+          activitiesStore.put(record);
+          mintedIds.push(id);
+        });
+        const updatedLesson = { ...lesson, nextActivitySeq: seq0 + finalizedRows.length };
+        if (budgetOverride) {
+          updatedLesson.pageRangeStart = budgetOverride.start;
+          updatedLesson.pageRangeEnd = budgetOverride.end;
+        }
+        lessonsStore.put(updatedLesson);
+      };
+    });
+    return { ids: mintedIds };
   }
 
   async function editActivity(id, fields, tier) {
@@ -763,6 +841,36 @@ const Courses = (() => {
     return fieldset;
   }
 
+  // §5.6.1's disclosure block: one row per Activity Type, placeholder showing
+  // the built-in default so the parent sees what they'd get before typing.
+  // Video's placeholder shows the multi-count form — the count-1 collapse
+  // isn't representable as a static placeholder, and overriding always opts
+  // out of the collapse anyway (§5.6.1).
+  function buildTitlePatternsFieldset(activityTypes, existingPatterns) {
+    const details = document.createElement('details');
+    details.className = 'title-patterns';
+    const rows = activityTypes
+      .map((t) => {
+        const placeholder = RecipeCore.builtInPattern(t.activityTypeKey, 2);
+        const current = (existingPatterns && existingPatterns[t.activityTypeKey]) || '';
+        return `
+          <label>${escapeHtml(t.label)}
+            <input type="text" name="titlePattern:${t.activityTypeKey}" value="${escapeHtml(current)}" placeholder="${escapeHtml(placeholder)}">
+          </label>
+        `;
+      })
+      .join('');
+    details.innerHTML = `<summary>Title patterns (optional)</summary>${rows}`;
+    details.collect = () => {
+      const out = {};
+      activityTypes.forEach((t) => {
+        out[t.activityTypeKey] = details.querySelector(`[name="titlePattern:${t.activityTypeKey}"]`).value;
+      });
+      return out;
+    };
+    return details;
+  }
+
   function buildBulkImportSection(root) {
     const section = document.createElement('section');
     section.className = 'bulk-import';
@@ -807,7 +915,11 @@ const Courses = (() => {
 
   async function renderCourseList(root) {
     root.innerHTML = '';
-    const [courses, curricula] = await Promise.all([listCourseTemplates(), Storage.getAll('curricula')]);
+    const [courses, curricula, activityTypes] = await Promise.all([
+      listCourseTemplates(),
+      Storage.getAll('curricula'),
+      Storage.getAll('activityTypes'),
+    ]);
 
     const heading = document.createElement('h1');
     heading.textContent = 'Course Template Library';
@@ -837,21 +949,55 @@ const Courses = (() => {
 
     const form = document.createElement('form');
     const curriculumOptions = curricula.map((c) => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+    const copySourceOptions = courses.map((c) => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
     form.innerHTML = `
       <h2>Add Course</h2>
+      <label>Copy settings from<select name="copySettingsFrom"><option value="">(none)</option>${copySourceOptions}</select></label>
       <label>Name<input type="text" name="name" required></label>
       <label>Curriculum<select name="curriculumId"><option value="">(select)</option>${curriculumOptions}</select></label>
       <label>Course code (blank = auto)<input type="text" name="courseCode"></label>
+      <label>Subject<input type="text" name="subject"></label>
+      <label>Core / Elective<select name="coreElective"><option value="">(none)</option><option value="core">Core</option><option value="elective">Elective</option></select></label>
+      <label>Description<input type="text" name="description"></label>
+      <label>Default pacing hint<input type="text" name="defaultPacingHint"></label>
       <p class="error" hidden></p>
       <button type="submit">Add Course</button>
     `;
+    const titlePatternsFieldset = buildTitlePatternsFieldset(activityTypes, null);
+    form.querySelector('.error').before(titlePatternsFieldset);
     const errorEl = form.querySelector('.error');
+
+    // §5.7 — a form pre-fill, not a link: every value stays editable, and
+    // nothing here is re-read once the Course is saved. Never copies name,
+    // courseCode, or anything instance-related (RecipeCore.pickCourseSettingsToCopy).
+    form.querySelector('[name="copySettingsFrom"]').addEventListener('change', async (e) => {
+      if (!e.target.value) return;
+      const source = await Storage.get('courses', e.target.value);
+      const picked = RecipeCore.pickCourseSettingsToCopy(source);
+      if (picked.curriculumId) form.curriculumId.value = picked.curriculumId;
+      if (picked.subject) form.subject.value = picked.subject;
+      if (picked.coreElective) form.coreElective.value = picked.coreElective;
+      if (picked.description) form.description.value = picked.description;
+      if (picked.defaultPacingHint) form.defaultPacingHint.value = picked.defaultPacingHint;
+      if (picked.titlePatterns) {
+        activityTypes.forEach((t) => {
+          const input = titlePatternsFieldset.querySelector(`[name="titlePattern:${t.activityTypeKey}"]`);
+          if (input) input.value = picked.titlePatterns[t.activityTypeKey] || '';
+        });
+      }
+    });
+
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const result = await createCourse({
         name: form.name.value,
         curriculumId: form.curriculumId.value,
         courseCode: form.courseCode.value,
+        subject: form.subject.value,
+        coreElective: form.coreElective.value,
+        description: form.description.value,
+        defaultPacingHint: form.defaultPacingHint.value,
+        titlePatterns: titlePatternsFieldset.collect(),
       });
       if (result.error) {
         errorEl.hidden = false;
@@ -902,6 +1048,8 @@ const Courses = (() => {
       <p class="success" hidden></p>
       <button type="submit">Save</button>
     `;
+    const titlePatternsFieldset = buildTitlePatternsFieldset(activityTypes, course.titlePatterns);
+    editForm.querySelector('.error').before(titlePatternsFieldset);
     const editErr = editForm.querySelector('.error');
     const editOk = editForm.querySelector('.success');
     editForm.addEventListener('submit', async (e) => {
@@ -909,6 +1057,7 @@ const Courses = (() => {
       const result = await editCourse(course.id, {
         name: editForm.name.value,
         courseCode: frozen ? course.courseCode : editForm.courseCode.value,
+        titlePatterns: titlePatternsFieldset.collect(),
       });
       if (result.error) {
         editErr.hidden = false;
@@ -1073,6 +1222,21 @@ const Courses = (() => {
     });
     root.appendChild(editLessonForm);
 
+    // §5.1 — offered only while the Lesson has zero Activities (D4); deleting
+    // every Activity reopens it, since this is the same `activities` read
+    // hasActivitiesUnderLesson makes.
+    if (activities.length === 0) {
+      // §5.4 — "Copy from lesson" candidates: other Lessons in this Course
+      // that already have Activities to copy from.
+      const siblingLessons = await Storage.getAllByIndex('lessons', 'by_courseId', lesson.courseId);
+      const copyFromCandidates = [];
+      for (const l of siblingLessons) {
+        if (l.id === lesson.id) continue;
+        if (await hasActivitiesUnderLesson(l.id)) copyFromCandidates.push(l);
+      }
+      root.appendChild(buildRecipeSection(root, lesson, activityTypes, tiers, copyFromCandidates));
+    }
+
     if (editActivityId) {
       const activity = activities.find((a) => a.id === editActivityId);
       if (!activity) {
@@ -1118,6 +1282,314 @@ const Courses = (() => {
     root.appendChild(list);
 
     root.appendChild(buildActivityForm(root, lesson, activityTypes, tiers));
+  }
+
+  // §5 — the Lesson Recipe. Two stages, both form state until Generate: Stage
+  // 1 (§5.2) collects an optional page-range split plus a set of count-type
+  // rows and turns it into a live-priced proposal; Stage 2 (§5.5) is the
+  // reordered, title-editable review. "Copy from lesson" (§5.4) and "Copy
+  // settings from" (§5.7) are a later phase.
+  function buildRecipeSection(root, lesson, activityTypes, tiers, copyFromCandidates) {
+    const countTypes = activityTypes.filter((t) => t.structurePattern === 'count');
+    const pageRangeTypes = activityTypes.filter((t) => t.structurePattern === 'page-range');
+    const typesByKey = new Map(activityTypes.map((t) => [t.activityTypeKey, t]));
+
+    const section = document.createElement('section');
+    section.className = 'lesson-recipe';
+
+    let proposalRows = null; // set on entering Stage 2
+
+    function typeLabel(key) {
+      return (typesByKey.get(key) || {}).label || key;
+    }
+
+    function renderStage1() {
+      section.innerHTML = '<h3>Recipe</h3>';
+
+      // §5.4 — hand-typed page-range chunk titles copied from a source
+      // Lesson, applied positionally in buildProposalRows only if the new
+      // split ends up with the same chunk count. Cleared whenever the page-
+      // range type selection changes away from what was copied.
+      let copiedPageRangeTitles = null;
+
+      if (copyFromCandidates && copyFromCandidates.length) {
+        const copyFromFieldset = document.createElement('fieldset');
+        const options = ['', ...copyFromCandidates.map((l) => l.id)]
+          .map((id) => `<option value="${id}">${id ? escapeHtml(copyFromCandidates.find((l) => l.id === id).title) : '(none)'}</option>`)
+          .join('');
+        copyFromFieldset.innerHTML = `<label>Copy from lesson<select name="copyFromLesson">${options}</select></label>`;
+        section.appendChild(copyFromFieldset);
+        copyFromFieldset.querySelector('select').addEventListener('change', async (e) => {
+          if (!e.target.value) return;
+          const sourceActivities = (await Storage.getAllByIndex('activities', 'by_lessonId', e.target.value)).sort(
+            (a, b) => a.order - b.order,
+          );
+          const seed = RecipeCore.buildCopyFromLessonSeed(sourceActivities);
+          pageRangeTypeSelect.value = seed.pageRangeTypeKey || '';
+          copiedPageRangeTitles = seed.pageRangeTypeKey ? seed.pageRangeTitles : null;
+          countRowsEl.innerHTML = '';
+          seed.entries
+            .filter((entry) => !entry.pageRange)
+            .forEach((entry) => {
+              addCountRow(entry.activityTypeKey);
+              countRowsEl.lastElementChild.querySelector('input').value = entry.count;
+            });
+          refreshAddOptions();
+          updateTotal();
+        });
+      }
+
+      const pageRangeFieldset = document.createElement('fieldset');
+      const pageRangeOptions = ['', ...pageRangeTypes.map((t) => t.activityTypeKey)]
+        .map((key) => `<option value="${key}">${escapeHtml(key ? typeLabel(key) : '(none)')}</option>`)
+        .join('');
+      pageRangeFieldset.innerHTML = `
+        <legend>Pages (optional)</legend>
+        <label>Type<select name="pageRangeType">${pageRangeOptions}</select></label>
+        <label>Budget start<input type="number" name="budgetStart" min="1" step="1" value="${lesson.pageRangeStart ?? ''}"></label>
+        <label>Budget end<input type="number" name="budgetEnd" min="1" step="1" value="${lesson.pageRangeEnd ?? ''}"></label>
+        <label>Split at (comma-separated)<input type="text" name="splitNumbers" placeholder="10, 14"></label>
+        <label><input type="radio" name="splitMode" value="first" checked> first page of each chunk</label>
+        <label><input type="radio" name="splitMode" value="last"> last page of each chunk</label>
+      `;
+      section.appendChild(pageRangeFieldset);
+
+      const tierSelect = document.createElement('select');
+      tierSelect.name = 'difficultyTier';
+      tierSelect.innerHTML =
+        '<option value="">Difficulty Tier (select)</option>' +
+        tiers.map((t) => `<option value="${t.tierId}">${escapeHtml(t.label)}</option>`).join('');
+      section.appendChild(tierSelect);
+
+      const countRowsEl = document.createElement('div');
+      countRowsEl.className = 'recipe-count-rows';
+      section.appendChild(countRowsEl);
+
+      const addTypeSelect = document.createElement('select');
+      addTypeSelect.innerHTML =
+        '<option value="">+ add type</option>' +
+        countTypes.map((t) => `<option value="${t.activityTypeKey}">${escapeHtml(t.label)}</option>`).join('');
+      section.appendChild(addTypeSelect);
+
+      function refreshAddOptions() {
+        const used = new Set(Array.from(countRowsEl.children).map((r) => r.dataset.activityTypeKey));
+        Array.from(addTypeSelect.options).forEach((opt) => {
+          if (opt.value) opt.hidden = used.has(opt.value);
+        });
+      }
+
+      function addCountRow(activityTypeKey) {
+        const row = document.createElement('div');
+        row.className = 'recipe-count-row';
+        row.dataset.activityTypeKey = activityTypeKey;
+        row.innerHTML = `
+          <span>${escapeHtml(typeLabel(activityTypeKey))}</span>
+          <input type="number" name="count" min="0" step="1" value="1">
+          <button type="button" data-action="remove">Remove</button>
+        `;
+        row.querySelector('input').addEventListener('input', updateTotal);
+        row.querySelector('[data-action="remove"]').addEventListener('click', () => {
+          row.remove();
+          refreshAddOptions();
+          updateTotal();
+        });
+        countRowsEl.appendChild(row);
+      }
+
+      addTypeSelect.addEventListener('change', () => {
+        if (!addTypeSelect.value) return;
+        addCountRow(addTypeSelect.value);
+        refreshAddOptions();
+        addTypeSelect.value = '';
+        updateTotal();
+      });
+
+      const splitNumbersInput = pageRangeFieldset.querySelector('[name="splitNumbers"]');
+      const pageRangeTypeSelect = pageRangeFieldset.querySelector('[name="pageRangeType"]');
+      const budgetStartInput = pageRangeFieldset.querySelector('[name="budgetStart"]');
+      const budgetEndInput = pageRangeFieldset.querySelector('[name="budgetEnd"]');
+
+      // A user-driven re-pick invalidates whatever was copied in — programmatic
+      // assignment (the copy handler above) never fires 'change' on a <select>.
+      pageRangeTypeSelect.addEventListener('change', () => {
+        copiedPageRangeTitles = null;
+      });
+
+      function parseSplitNumbers() {
+        return splitNumbersInput.value
+          .split(/[,\s]+/)
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .map(Number);
+      }
+
+      function currentEntries() {
+        const entries = [];
+        if (pageRangeTypeSelect.value) {
+          entries.push({
+            activityTypeKey: pageRangeTypeSelect.value,
+            pageRange: {
+              numbers: parseSplitNumbers(),
+              mode: pageRangeFieldset.querySelector('[name="splitMode"]:checked').value,
+              titleOverrides: copiedPageRangeTitles || undefined,
+            },
+          });
+        }
+        Array.from(countRowsEl.children).forEach((row) => {
+          entries.push({
+            activityTypeKey: row.dataset.activityTypeKey,
+            count: Number(row.querySelector('input').value),
+          });
+        });
+        return entries;
+      }
+
+      function buildLivePreview() {
+        return RecipeCore.buildProposalRows(
+          { entries: currentEntries() },
+          {
+            lessonTitle: lesson.title,
+            budgetStart: budgetStartInput.value === '' ? undefined : Number(budgetStartInput.value),
+            budgetEnd: budgetEndInput.value === '' ? undefined : Number(budgetEndInput.value),
+            activityTypesByKey: typesByKey,
+            titlePatterns: undefined, // count only — real patterns are resolved at Propose time
+          },
+        );
+      }
+
+      const errorEl = document.createElement('p');
+      errorEl.className = 'error';
+      errorEl.hidden = true;
+
+      const proposeBtn = document.createElement('button');
+      proposeBtn.type = 'button';
+      proposeBtn.textContent = 'Propose activities';
+
+      // §5.2 — "the live total, recomputed on every input event."
+      function updateTotal() {
+        const preview = buildLivePreview();
+        proposeBtn.textContent = preview.error ? 'Propose activities' : `Propose ${preview.rows.length} activities`;
+      }
+
+      [pageRangeTypeSelect, splitNumbersInput, budgetStartInput, budgetEndInput].forEach((el) =>
+        el.addEventListener('input', updateTotal)
+      );
+      pageRangeFieldset.querySelectorAll('[name="splitMode"]').forEach((r) => r.addEventListener('change', updateTotal));
+
+      proposeBtn.addEventListener('click', async () => {
+        const tier = tiers.find((t) => t.tierId === tierSelect.value);
+        if (!tier) {
+          errorEl.hidden = false;
+          errorEl.textContent = 'Difficulty Tier must resolve to an existing Tier.';
+          return;
+        }
+        const course = await Storage.get('courses', lesson.courseId);
+        const budgetStart = budgetStartInput.value === '' ? undefined : Number(budgetStartInput.value);
+        const budgetEnd = budgetEndInput.value === '' ? undefined : Number(budgetEndInput.value);
+        const result = RecipeCore.buildProposalRows(
+          { entries: currentEntries() },
+          {
+            lessonTitle: lesson.title,
+            budgetStart,
+            budgetEnd,
+            activityTypesByKey: typesByKey,
+            titlePatterns: course.titlePatterns,
+          },
+        );
+        if (result.error) {
+          errorEl.hidden = false;
+          errorEl.textContent = result.error;
+          return;
+        }
+        errorEl.hidden = true;
+        proposalRows = result.rows;
+        const budgetChanged = budgetStart !== lesson.pageRangeStart || budgetEnd !== lesson.pageRangeEnd;
+        renderStage2(tier, budgetChanged && budgetStart !== undefined ? { start: budgetStart, end: budgetEnd } : null);
+      });
+
+      section.appendChild(errorEl);
+      section.appendChild(proposeBtn);
+      updateTotal();
+    }
+
+    // §5.5/§6.2 — N rows, titles editable, reorderable; nothing written until
+    // Generate. `tier` and `budgetOverride` were fixed at Propose time — going
+    // Back to Stage 1 re-asks both, since D6/D7 only promise the *reorder*
+    // survives a round trip, not the whole form.
+    function renderStage2(tier, budgetOverride) {
+      section.innerHTML = '<h3>Review</h3>';
+
+      const rowsEl = document.createElement('div');
+      rowsEl.className = 'recipe-proposal-rows';
+      section.appendChild(rowsEl);
+
+      function renderRows() {
+        rowsEl.innerHTML = '';
+        proposalRows.forEach((row, index) => {
+          const rowEl = document.createElement('div');
+          rowEl.className = 'recipe-proposal-row';
+          const pageRangeText =
+            row.pageRangeStart !== undefined ? `<span class="recipe-row-pages">${row.pageRangeStart}–${row.pageRangeEnd}</span>` : '';
+          rowEl.innerHTML = `
+            <span class="recipe-row-type">${escapeHtml(typeLabel(row.activityTypeKey))}</span>
+            <input type="text" name="title" value="${escapeHtml(row.title)}">
+            ${pageRangeText}
+            <button type="button" data-action="up" ${index === 0 ? 'disabled' : ''}>&uarr;</button>
+            <button type="button" data-action="down" ${index === proposalRows.length - 1 ? 'disabled' : ''}>&darr;</button>
+          `;
+          rowEl.querySelector('[name="title"]').addEventListener('input', (e) => {
+            proposalRows[index] = { ...proposalRows[index], title: e.target.value };
+          });
+          rowEl.querySelector('[data-action="up"]').addEventListener('click', () => {
+            [proposalRows[index - 1], proposalRows[index]] = [proposalRows[index], proposalRows[index - 1]];
+            renderRows();
+          });
+          rowEl.querySelector('[data-action="down"]').addEventListener('click', () => {
+            [proposalRows[index + 1], proposalRows[index]] = [proposalRows[index], proposalRows[index + 1]];
+            renderRows();
+          });
+          rowsEl.appendChild(rowEl);
+        });
+      }
+      renderRows();
+
+      const errorEl = document.createElement('p');
+      errorEl.className = 'error';
+      errorEl.hidden = true;
+      section.appendChild(errorEl);
+
+      const backBtn = document.createElement('button');
+      backBtn.type = 'button';
+      backBtn.textContent = 'Back';
+      backBtn.addEventListener('click', () => {
+        proposalRows = null;
+        renderStage1();
+      });
+      section.appendChild(backBtn);
+
+      const generateBtn = document.createElement('button');
+      generateBtn.type = 'button';
+      generateBtn.textContent = `Generate ${proposalRows.length} activities`;
+      generateBtn.addEventListener('click', async () => {
+        const finalized = RecipeCore.finalizeProposal(proposalRows);
+        if (finalized.error) {
+          errorEl.hidden = false;
+          errorEl.textContent = finalized.error;
+          return;
+        }
+        const result = await expandLessonRecipe(lesson.id, finalized.rows, tier, budgetOverride);
+        if (result.error) {
+          errorEl.hidden = false;
+          errorEl.textContent = result.error;
+          return;
+        }
+        render(root);
+      });
+      section.appendChild(generateBtn);
+    }
+
+    renderStage1();
+    return section;
   }
 
   function buildActivityForm(root, lesson, activityTypes, tiers) {
@@ -1292,6 +1764,7 @@ const Courses = (() => {
     editActivity,
     deleteActivity,
     moveActivity,
+    expandLessonRecipe,
     listCourseTemplates,
     hasActivitiesBeneathCourse,
     hasActivitiesUnderLesson,

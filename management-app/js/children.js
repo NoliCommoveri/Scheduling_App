@@ -164,6 +164,8 @@ const Children = (() => {
     if (template.subject) newCourse.subject = template.subject;
     if (template.description) newCourse.description = template.description;
     if (template.defaultPacingHint) newCourse.defaultPacingHint = template.defaultPacingHint;
+    // template.titlePatterns is deliberately not copied here — the recipe is
+    // template-only (D4); an instance would carry a field nothing reads.
 
     const lessonIdMap = new Map(); // templateLessonId -> new instance lesson
     const newLessons = [];
