@@ -116,6 +116,13 @@ with nothing pending writes nothing and says so.
 > table, and as of this deploy nothing calls the routes that use it — the Child
 > App composer and the Management App inbox are both later releases. Apply it
 > whenever you next open this page; there is no window to get wrong.
+>
+> **`0009_wall_device_scope.sql` is another free one.** It adds a `scope` column
+> to `devices` that every existing row reads as `'child'` through its default, so
+> nothing changes for the tablets you already paired. It is what the Wall Display
+> App's credential needs (Wall TDS §8.1): until it is applied, pairing a wall
+> display fails and nothing else does. Child pairing deliberately does not name
+> the column, so it keeps working either way.
 
 > **The console path is retired.** The `records` table on the live database was created
 > by hand there before the runner existed, which is why `0001_online_revamp_init.sql`
