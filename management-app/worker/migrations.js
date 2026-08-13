@@ -11,6 +11,7 @@ import m0004 from '../../migrations/0004_completion_note.sql';
 import m0005 from '../../migrations/0005_assignment_messages.sql';
 import m0006 from '../../migrations/0006_chore_instances.sql';
 import m0007 from '../../migrations/0007_shared_chore_claims.sql';
+import m0008 from '../../migrations/0008_drop_sequence_no.sql';
 
 export const MIGRATIONS = [
   { name: '0001_online_revamp_init.sql', sql: m0001 },
@@ -20,4 +21,5 @@ export const MIGRATIONS = [
   { name: '0005_assignment_messages.sql', sql: m0005 },
   { name: '0006_chore_instances.sql', sql: m0006 },
   { name: '0007_shared_chore_claims.sql', sql: m0007 },
+  { name: '0008_drop_sequence_no.sql', sql: m0008 },
 ];

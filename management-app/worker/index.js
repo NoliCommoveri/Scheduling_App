@@ -54,7 +54,7 @@ const ALLOWED_SYNC_STORES = new Set([
 // ASSIGNMENT_PATCH_FIELDS, or ASSIGNMENT_COMPLETION_FIELDS.
 const ASSIGNMENT_CREATE_FIELDS = {
   date: 'date', kind: 'kind', sourceId: 'source_id', title: 'title',
-  courseName: 'course_name', activityType: 'activity_type', sequenceNo: 'sequence_no',
+  courseName: 'course_name', activityType: 'activity_type',
   payload: 'payload', expectedDurationMin: 'expected_duration_min',
   rewardAmount: 'reward_amount', rewardCategory: 'reward_category',
   blockHint: 'block_hint', sortOrder: 'sort_order',
@@ -70,7 +70,7 @@ const ASSIGNMENT_CREATE_FIELDS = {
 };
 const ASSIGNMENT_PATCH_FIELDS = {
   date: 'date', sourceId: 'source_id', title: 'title', courseName: 'course_name',
-  activityType: 'activity_type', sequenceNo: 'sequence_no', payload: 'payload',
+  activityType: 'activity_type', payload: 'payload',
   expectedDurationMin: 'expected_duration_min', rewardAmount: 'reward_amount',
   rewardCategory: 'reward_category', blockHint: 'block_hint', sortOrder: 'sort_order',
 };
@@ -747,26 +747,26 @@ async function handleAssignmentsCreate(request, env) {
         // the right answer for a row nothing can identify as a repeat.
         `INSERT INTO assignments (
            id, child_id, date, kind, batch_id,
-           source_id, title, course_name, activity_type, sequence_no,
+           source_id, title, course_name, activity_type,
            payload, expected_duration_min, reward_amount, reward_category,
            block_hint, sort_order, instance_key, claim_group,
            status, assigned_at, updated_at, updated_by
          )
          SELECT
            ?1, ?2, ?3, ?4, ?5,
-           ?6, ?7, ?8, ?9, ?10,
-           ?11, ?12, ?13, ?14,
-           ?15, ?16, ?17, ?18,
-           'pending', ?19, ?19, 'parent'
+           ?6, ?7, ?8, ?9,
+           ?10, ?11, ?12, ?13,
+           ?14, ?15, ?16, ?17,
+           'pending', ?18, ?18, 'parent'
          WHERE NOT EXISTS (
            SELECT 1 FROM assignments
             WHERE child_id = ?2 AND date = ?3 AND kind = ?4 AND source_id = ?6
-              AND instance_key = ?17
+              AND instance_key = ?16
               AND rescinded_at IS NULL
          )`
       ).bind(
         id, childId, row.date, row.kind, batchId,
-        row.sourceId ?? null, row.title, row.courseName ?? null, row.activityType ?? null, row.sequenceNo ?? null,
+        row.sourceId ?? null, row.title, row.courseName ?? null, row.activityType ?? null,
         row.payload ? JSON.stringify(row.payload) : null, row.expectedDurationMin ?? null,
         row.rewardAmount ?? null, row.rewardCategory ?? null,
         row.blockHint ?? null, row.sortOrder ?? null, row.instanceKey ?? '', claimGroup ?? null,
