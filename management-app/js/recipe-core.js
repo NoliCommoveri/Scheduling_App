@@ -169,14 +169,20 @@ const RecipeCore = (() => {
         warnings.push(...split.warnings);
 
         const count = split.chunks.length;
+        // §5.4 — a copy-from-lesson seed's hand-typed chunk titles apply only
+        // when the new split produces the same chunk count; otherwise there is
+        // no positional correspondence to carry, so it falls back to the
+        // pattern default like any other page-range chunk.
+        const titleOverrides = entry.pageRange.titleOverrides;
+        const useOverrides = Array.isArray(titleOverrides) && titleOverrides.length === count;
         split.chunks.forEach((chunk, idx) => {
           const n = idx + 1;
           const pattern = resolvePattern(entry.activityTypeKey, count, ctx.titlePatterns);
           rows.push({
             activityTypeKey: entry.activityTypeKey,
-            title: renderTitle(pattern, {
-              lesson: ctx.lessonTitle, n, type: type.label, start: chunk.start, end: chunk.end,
-            }),
+            title: useOverrides
+              ? titleOverrides[idx]
+              : renderTitle(pattern, { lesson: ctx.lessonTitle, n, type: type.label, start: chunk.start, end: chunk.end }),
             pageRangeStart: chunk.start,
             pageRangeEnd: chunk.end,
           });
@@ -218,6 +224,48 @@ const RecipeCore = (() => {
     return { rows: rows.map((row, i) => ({ ...row, title: String(row.title).trim(), order: i })) };
   }
 
+  // §5.4 — turn another Lesson's already-committed Activities into a Stage 1
+  // seed. `sourceActivities` must already be sorted by `order` — that order
+  // is "the point" (§5.4), carried through as the entries' add-order (§5.5).
+  // Copies types, counts, and the page-range type's chunk titles (D9 —
+  // hand-typed, no derivable pattern). Never copies page ranges or split
+  // numbers — the target Lesson has its own budget — and never copies a
+  // pattern-driven title, since buildProposalRows regenerates those fresh
+  // against the target Lesson's own title.
+  function buildCopyFromLessonSeed(sourceActivities) {
+    const order = [];
+    const counts = new Map();
+    let pageRangeTypeKey = null;
+    const pageRangeTitles = [];
+    for (const a of sourceActivities || []) {
+      if (!counts.has(a.activityType)) {
+        counts.set(a.activityType, 0);
+        order.push(a.activityType);
+      }
+      counts.set(a.activityType, counts.get(a.activityType) + 1);
+      if (a.pageRangeStart !== undefined && a.pageRangeStart !== null) {
+        pageRangeTypeKey = a.activityType;
+        pageRangeTitles.push(a.title);
+      }
+    }
+    const entries = order.map((key) =>
+      key === pageRangeTypeKey ? { activityTypeKey: key, pageRange: true } : { activityTypeKey: key, count: counts.get(key) },
+    );
+    return { entries, pageRangeTypeKey, pageRangeTitles };
+  }
+
+  // §5.7 — the fields "Copy settings from" pre-fills on the Course create
+  // form. Configuration only, never Lessons/Activities/id/state — a form
+  // pre-fill the parent can still edit before saving, not a link to the
+  // source (editing the source afterward changes nothing on the copy).
+  function pickCourseSettingsToCopy(course) {
+    const out = {};
+    for (const key of ['subject', 'coreElective', 'description', 'defaultPacingHint', 'curriculumId', 'titlePatterns']) {
+      if (course[key] !== undefined) out[key] = course[key];
+    }
+    return out;
+  }
+
   return {
     TOKENS,
     builtInPattern,
@@ -228,5 +276,7 @@ const RecipeCore = (() => {
     computeSplitChunks,
     buildProposalRows,
     finalizeProposal,
+    buildCopyFromLessonSeed,
+    pickCourseSettingsToCopy,
   };
 })();

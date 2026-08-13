@@ -274,6 +274,28 @@ test('buildProposalRows surfaces computeSplitChunks warnings on the whole-recipe
   assert.match(result.warnings.join(' '), /Front gap/);
 });
 
+test('buildProposalRows applies copied chunk titles positionally when the new split matches the copied count (§5.4)', () => {
+  const recipe = {
+    entries: [{
+      activityTypeKey: 'pdf',
+      pageRange: { numbers: [10, 14], mode: 'first', titleOverrides: ['Guided Notes', 'Fraction Detective'] },
+    }],
+  };
+  const result = RecipeCore.buildProposalRows(recipe, ctx());
+  assert.deepEqual(result.rows.map((r) => r.title), ['Guided Notes', 'Fraction Detective']);
+});
+
+test('buildProposalRows falls back to pattern titles when the copied chunk-title count does not match the new split', () => {
+  const recipe = {
+    entries: [{
+      activityTypeKey: 'pdf',
+      pageRange: { numbers: [10], mode: 'first', titleOverrides: ['Guided Notes', 'Fraction Detective'] },
+    }],
+  };
+  const result = RecipeCore.buildProposalRows(recipe, ctx());
+  assert.deepEqual(result.rows.map((r) => r.title), ['Pages 10–17']);
+});
+
 // --------------------------------------------------------- finalizeProposal
 
 test('finalizeProposal assigns contiguous order 0..N-1 in the given (post-reorder) array order', () => {
@@ -291,4 +313,73 @@ test('finalizeProposal rejects a title blanked out by a Stage 2 edit', () => {
 test('finalizeProposal rejects an empty row list', () => {
   const result = RecipeCore.finalizeProposal([]);
   assert.match(result.error, /generates no Activities/);
+});
+
+// ------------------------------------------------------ buildCopyFromLessonSeed
+
+function committed(overrides = {}) {
+  return { activityType: 'quiz', title: 'Assessment 1', ...overrides };
+}
+
+test('buildCopyFromLessonSeed derives entries in first-appearance order with per-type counts (§5.4 "types and counts", "the accepted order")', () => {
+  const source = [
+    committed({ activityType: 'pdf', title: 'Guided Notes', pageRangeStart: 10, pageRangeEnd: 13 }),
+    committed({ activityType: 'pdf', title: 'Fraction Detective', pageRangeStart: 14, pageRangeEnd: 17 }),
+    committed({ activityType: 'video', title: 'Adding Fractions' }),
+    committed({ activityType: 'practice-level', title: 'Level 1' }),
+    committed({ activityType: 'practice-level', title: 'Level 2' }),
+    committed({ activityType: 'quiz', title: 'Assessment 1' }),
+  ];
+  const seed = RecipeCore.buildCopyFromLessonSeed(source);
+  assert.deepEqual(seed.entries, [
+    { activityTypeKey: 'pdf', pageRange: true },
+    { activityTypeKey: 'video', count: 1 },
+    { activityTypeKey: 'practice-level', count: 2 },
+    { activityTypeKey: 'quiz', count: 1 },
+  ]);
+  assert.equal(seed.pageRangeTypeKey, 'pdf');
+  assert.deepEqual(seed.pageRangeTitles, ['Guided Notes', 'Fraction Detective']);
+});
+
+test('buildCopyFromLessonSeed reports no page-range type when the source Lesson has none', () => {
+  const source = [committed({ activityType: 'video', title: 'A' }), committed({ activityType: 'quiz', title: 'B' })];
+  const seed = RecipeCore.buildCopyFromLessonSeed(source);
+  assert.equal(seed.pageRangeTypeKey, null);
+  assert.deepEqual(seed.pageRangeTitles, []);
+});
+
+test('buildCopyFromLessonSeed counts a type once at its first appearance even if the source was reordered to interleave', () => {
+  const source = [
+    committed({ activityType: 'video', title: 'Video 1' }),
+    committed({ activityType: 'quiz', title: 'Assessment 1' }),
+    committed({ activityType: 'video', title: 'Video 2' }),
+  ];
+  const seed = RecipeCore.buildCopyFromLessonSeed(source);
+  assert.deepEqual(seed.entries, [
+    { activityTypeKey: 'video', count: 2 },
+    { activityTypeKey: 'quiz', count: 1 },
+  ]);
+});
+
+test('buildCopyFromLessonSeed on an empty source produces no entries', () => {
+  assert.deepEqual(RecipeCore.buildCopyFromLessonSeed([]), { entries: [], pageRangeTypeKey: null, pageRangeTitles: [] });
+});
+
+// ------------------------------------------------------ pickCourseSettingsToCopy
+
+test('pickCourseSettingsToCopy copies configuration fields but never name, courseCode, id, or state (§5.7)', () => {
+  const course = {
+    id: 'COU-1', name: 'Math 5', courseCode: 'MATH5', state: 'template',
+    curriculumId: 'CUR-1', subject: 'Math', coreElective: 'core', description: 'desc',
+    defaultPacingHint: 'hint', titlePatterns: { video: '{lesson}' },
+  };
+  assert.deepEqual(RecipeCore.pickCourseSettingsToCopy(course), {
+    curriculumId: 'CUR-1', subject: 'Math', coreElective: 'core', description: 'desc',
+    defaultPacingHint: 'hint', titlePatterns: { video: '{lesson}' },
+  });
+});
+
+test('pickCourseSettingsToCopy omits fields the source Course does not have, rather than copying undefined', () => {
+  const course = { id: 'COU-1', name: 'Math 5', courseCode: 'MATH5', state: 'template', curriculumId: 'CUR-1' };
+  assert.deepEqual(RecipeCore.pickCourseSettingsToCopy(course), { curriculumId: 'CUR-1' });
 });

@@ -949,23 +949,54 @@ const Courses = (() => {
 
     const form = document.createElement('form');
     const curriculumOptions = curricula.map((c) => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+    const copySourceOptions = courses.map((c) => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
     form.innerHTML = `
       <h2>Add Course</h2>
+      <label>Copy settings from<select name="copySettingsFrom"><option value="">(none)</option>${copySourceOptions}</select></label>
       <label>Name<input type="text" name="name" required></label>
       <label>Curriculum<select name="curriculumId"><option value="">(select)</option>${curriculumOptions}</select></label>
       <label>Course code (blank = auto)<input type="text" name="courseCode"></label>
+      <label>Subject<input type="text" name="subject"></label>
+      <label>Core / Elective<select name="coreElective"><option value="">(none)</option><option value="core">Core</option><option value="elective">Elective</option></select></label>
+      <label>Description<input type="text" name="description"></label>
+      <label>Default pacing hint<input type="text" name="defaultPacingHint"></label>
       <p class="error" hidden></p>
       <button type="submit">Add Course</button>
     `;
     const titlePatternsFieldset = buildTitlePatternsFieldset(activityTypes, null);
     form.querySelector('.error').before(titlePatternsFieldset);
     const errorEl = form.querySelector('.error');
+
+    // §5.7 — a form pre-fill, not a link: every value stays editable, and
+    // nothing here is re-read once the Course is saved. Never copies name,
+    // courseCode, or anything instance-related (RecipeCore.pickCourseSettingsToCopy).
+    form.querySelector('[name="copySettingsFrom"]').addEventListener('change', async (e) => {
+      if (!e.target.value) return;
+      const source = await Storage.get('courses', e.target.value);
+      const picked = RecipeCore.pickCourseSettingsToCopy(source);
+      if (picked.curriculumId) form.curriculumId.value = picked.curriculumId;
+      if (picked.subject) form.subject.value = picked.subject;
+      if (picked.coreElective) form.coreElective.value = picked.coreElective;
+      if (picked.description) form.description.value = picked.description;
+      if (picked.defaultPacingHint) form.defaultPacingHint.value = picked.defaultPacingHint;
+      if (picked.titlePatterns) {
+        activityTypes.forEach((t) => {
+          const input = titlePatternsFieldset.querySelector(`[name="titlePattern:${t.activityTypeKey}"]`);
+          if (input) input.value = picked.titlePatterns[t.activityTypeKey] || '';
+        });
+      }
+    });
+
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const result = await createCourse({
         name: form.name.value,
         curriculumId: form.curriculumId.value,
         courseCode: form.courseCode.value,
+        subject: form.subject.value,
+        coreElective: form.coreElective.value,
+        description: form.description.value,
+        defaultPacingHint: form.defaultPacingHint.value,
         titlePatterns: titlePatternsFieldset.collect(),
       });
       if (result.error) {
@@ -1195,7 +1226,15 @@ const Courses = (() => {
     // every Activity reopens it, since this is the same `activities` read
     // hasActivitiesUnderLesson makes.
     if (activities.length === 0) {
-      root.appendChild(buildRecipeSection(root, lesson, activityTypes, tiers));
+      // §5.4 — "Copy from lesson" candidates: other Lessons in this Course
+      // that already have Activities to copy from.
+      const siblingLessons = await Storage.getAllByIndex('lessons', 'by_courseId', lesson.courseId);
+      const copyFromCandidates = [];
+      for (const l of siblingLessons) {
+        if (l.id === lesson.id) continue;
+        if (await hasActivitiesUnderLesson(l.id)) copyFromCandidates.push(l);
+      }
+      root.appendChild(buildRecipeSection(root, lesson, activityTypes, tiers, copyFromCandidates));
     }
 
     if (editActivityId) {
@@ -1250,7 +1289,7 @@ const Courses = (() => {
   // rows and turns it into a live-priced proposal; Stage 2 (§5.5) is the
   // reordered, title-editable review. "Copy from lesson" (§5.4) and "Copy
   // settings from" (§5.7) are a later phase.
-  function buildRecipeSection(root, lesson, activityTypes, tiers) {
+  function buildRecipeSection(root, lesson, activityTypes, tiers, copyFromCandidates) {
     const countTypes = activityTypes.filter((t) => t.structurePattern === 'count');
     const pageRangeTypes = activityTypes.filter((t) => t.structurePattern === 'page-range');
     const typesByKey = new Map(activityTypes.map((t) => [t.activityTypeKey, t]));
@@ -1266,6 +1305,39 @@ const Courses = (() => {
 
     function renderStage1() {
       section.innerHTML = '<h3>Recipe</h3>';
+
+      // §5.4 — hand-typed page-range chunk titles copied from a source
+      // Lesson, applied positionally in buildProposalRows only if the new
+      // split ends up with the same chunk count. Cleared whenever the page-
+      // range type selection changes away from what was copied.
+      let copiedPageRangeTitles = null;
+
+      if (copyFromCandidates && copyFromCandidates.length) {
+        const copyFromFieldset = document.createElement('fieldset');
+        const options = ['', ...copyFromCandidates.map((l) => l.id)]
+          .map((id) => `<option value="${id}">${id ? escapeHtml(copyFromCandidates.find((l) => l.id === id).title) : '(none)'}</option>`)
+          .join('');
+        copyFromFieldset.innerHTML = `<label>Copy from lesson<select name="copyFromLesson">${options}</select></label>`;
+        section.appendChild(copyFromFieldset);
+        copyFromFieldset.querySelector('select').addEventListener('change', async (e) => {
+          if (!e.target.value) return;
+          const sourceActivities = (await Storage.getAllByIndex('activities', 'by_lessonId', e.target.value)).sort(
+            (a, b) => a.order - b.order,
+          );
+          const seed = RecipeCore.buildCopyFromLessonSeed(sourceActivities);
+          pageRangeTypeSelect.value = seed.pageRangeTypeKey || '';
+          copiedPageRangeTitles = seed.pageRangeTypeKey ? seed.pageRangeTitles : null;
+          countRowsEl.innerHTML = '';
+          seed.entries
+            .filter((entry) => !entry.pageRange)
+            .forEach((entry) => {
+              addCountRow(entry.activityTypeKey);
+              countRowsEl.lastElementChild.querySelector('input').value = entry.count;
+            });
+          refreshAddOptions();
+          updateTotal();
+        });
+      }
 
       const pageRangeFieldset = document.createElement('fieldset');
       const pageRangeOptions = ['', ...pageRangeTypes.map((t) => t.activityTypeKey)]
@@ -1337,6 +1409,12 @@ const Courses = (() => {
       const budgetStartInput = pageRangeFieldset.querySelector('[name="budgetStart"]');
       const budgetEndInput = pageRangeFieldset.querySelector('[name="budgetEnd"]');
 
+      // A user-driven re-pick invalidates whatever was copied in — programmatic
+      // assignment (the copy handler above) never fires 'change' on a <select>.
+      pageRangeTypeSelect.addEventListener('change', () => {
+        copiedPageRangeTitles = null;
+      });
+
       function parseSplitNumbers() {
         return splitNumbersInput.value
           .split(/[,\s]+/)
@@ -1353,6 +1431,7 @@ const Courses = (() => {
             pageRange: {
               numbers: parseSplitNumbers(),
               mode: pageRangeFieldset.querySelector('[name="splitMode"]:checked').value,
+              titleOverrides: copiedPageRangeTitles || undefined,
             },
           });
         }
