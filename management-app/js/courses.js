@@ -942,11 +942,18 @@ const Courses = (() => {
     list.className = 'course-list';
     courses.forEach((c) => {
       const item = document.createElement('li');
+      // .list-row keeps the text and the buttons in fixed grid tracks, so Open
+      // and Delete land in the same place whatever the name's length (§UI).
+      item.className = 'list-row';
       item.innerHTML = `
-        <span class="course-name">${escapeHtml(c.name)}</span>
-        <span class="course-code">${escapeHtml(c.courseCode)}</span>
-        <button data-action="open">Open</button>
-        <button data-action="delete">Delete</button>
+        <div class="row-text">
+          <span class="row-title course-name">${escapeHtml(c.name)}</span>
+          <span class="row-meta course-code">${escapeHtml(c.courseCode)}</span>
+        </div>
+        <div class="row-actions">
+          <button data-action="open">Open</button>
+          <button data-action="delete">Delete</button>
+        </div>
       `;
       item.querySelector('[data-action="open"]').addEventListener('click', () => {
         viewCourseId = c.id;
@@ -1099,11 +1106,16 @@ const Courses = (() => {
     list.className = 'lesson-list';
     lessons.forEach((l) => {
       const item = document.createElement('li');
+      item.className = 'list-row';
       item.innerHTML = `
-        <span class="lesson-title">${escapeHtml(l.title)}</span>
-        <span class="lesson-code">${escapeHtml(l.lessonCode)}</span>
-        <button data-action="open">Open</button>
-        <button data-action="delete">Delete</button>
+        <div class="row-text">
+          <span class="row-title lesson-title">${escapeHtml(l.title)}</span>
+          <span class="row-meta lesson-code">${escapeHtml(l.lessonCode)}</span>
+        </div>
+        <div class="row-actions">
+          <button data-action="open">Open</button>
+          <button data-action="delete">Delete</button>
+        </div>
       `;
       item.querySelector('[data-action="open"]').addEventListener('click', () => {
         viewLessonId = l.id;
@@ -1285,14 +1297,25 @@ const Courses = (() => {
     activities.forEach((a, index) => {
       const typeLabel = (activityTypes.find((t) => t.activityTypeKey === a.activityType) || {}).label || a.activityType;
       const item = document.createElement('li');
+      // Reorder arrows ride in their own grid track beside the Activity they
+      // move; Edit/Delete sit on a second row so all four never wrap apart.
+      item.className = 'list-row has-reorder';
       item.innerHTML = `
-        <span class="activity-title">${escapeHtml(a.title)}</span>
-        <span class="activity-type">${escapeHtml(typeLabel)}</span>
-        <span class="activity-id">${a.id}</span>
-        <button data-action="up" ${index === 0 ? 'disabled' : ''}>&uarr;</button>
-        <button data-action="down" ${index === activities.length - 1 ? 'disabled' : ''}>&darr;</button>
-        <button data-action="edit">Edit</button>
-        <button data-action="delete">Delete</button>
+        <div class="row-main">
+          <div class="row-text">
+            <span class="row-title activity-title">${escapeHtml(a.title)}</span>
+            <span class="row-meta activity-type">${escapeHtml(typeLabel)}</span>
+            <span class="row-id activity-id">${a.id}</span>
+          </div>
+          <div class="row-actions">
+            <button data-action="edit">Edit</button>
+            <button data-action="delete">Delete</button>
+          </div>
+        </div>
+        <div class="row-reorder">
+          <button data-action="up" aria-label="Move up" ${index === 0 ? 'disabled' : ''}>&uarr;</button>
+          <button data-action="down" aria-label="Move down" ${index === activities.length - 1 ? 'disabled' : ''}>&darr;</button>
+        </div>
       `;
       item.querySelector('[data-action="up"]').addEventListener('click', async () => {
         await moveActivity(lesson.id, a.id, 'up');
@@ -1587,11 +1610,17 @@ const Courses = (() => {
           const pageRangeText =
             row.pageRangeStart !== undefined ? `<span class="recipe-row-pages">${row.pageRangeStart}–${row.pageRangeEnd}</span>` : '';
           rowEl.innerHTML = `
-            <span class="recipe-row-type">${escapeHtml(typeLabel(row.activityTypeKey))}</span>
-            <input type="text" name="title" value="${escapeHtml(row.title)}">
-            ${pageRangeText}
-            <button type="button" data-action="up" ${index === 0 ? 'disabled' : ''}>&uarr;</button>
-            <button type="button" data-action="down" ${index === proposalRows.length - 1 ? 'disabled' : ''}>&darr;</button>
+            <div class="row-text">
+              <span class="row-meta">
+                <span class="recipe-row-type">${escapeHtml(typeLabel(row.activityTypeKey))}</span>
+                ${pageRangeText}
+              </span>
+              <input type="text" name="title" value="${escapeHtml(row.title)}">
+            </div>
+            <div class="row-reorder">
+              <button type="button" data-action="up" aria-label="Move up" ${index === 0 ? 'disabled' : ''}>&uarr;</button>
+              <button type="button" data-action="down" aria-label="Move down" ${index === proposalRows.length - 1 ? 'disabled' : ''}>&darr;</button>
+            </div>
           `;
           rowEl.querySelector('[name="title"]').addEventListener('input', (e) => {
             proposalRows[index] = { ...proposalRows[index], title: e.target.value };

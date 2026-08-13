@@ -331,15 +331,21 @@ const Assignments = (() => {
       const already = group.rows.filter(isRescinded);
 
       const item = document.createElement('li');
+      // When and what-it-holds lead; the opaque batch UUID is the last line and
+      // never gets to push Rescind out of its column.
+      item.className = 'list-row';
       item.innerHTML = `
-        <span class="batch-id">${group.batchId ? escapeHtml(group.batchId) : '(no batch)'}</span>
-        <span class="batch-when">${escapeHtml(formatTimestamp(group.assignedAt))}</span>
-        <span class="batch-counts">
-          ${plural(group.rows.length, 'row', 'rows')} ·
-          ${rescindable.length} outstanding ·
-          ${locked.length} locked ·
-          ${already.length} rescinded
-        </span>
+        <div class="row-text">
+          <span class="row-title batch-when">${escapeHtml(formatTimestamp(group.assignedAt))}</span>
+          <span class="row-meta batch-counts">
+            ${plural(group.rows.length, 'row', 'rows')} ·
+            ${rescindable.length} outstanding ·
+            ${locked.length} locked ·
+            ${already.length} rescinded
+          </span>
+          <span class="row-id batch-id">${group.batchId ? escapeHtml(group.batchId) : '(no batch)'}</span>
+        </div>
+        <div class="row-actions"></div>
       `;
 
       if (group.batchId && rescindable.length > 0) {
@@ -348,7 +354,7 @@ const Assignments = (() => {
         button.className = 'secondary';
         button.textContent = `Rescind ${plural(rescindable.length, 'row', 'rows')}`;
         button.addEventListener('click', () => rescindBatch(group, ctx));
-        item.appendChild(button);
+        item.querySelector('.row-actions').appendChild(button);
       }
 
       list.appendChild(item);
