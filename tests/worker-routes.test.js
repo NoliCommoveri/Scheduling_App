@@ -1198,3 +1198,366 @@ test('§5.3: a shared row with no sourceId is rejected — it has no identity to
   assert.equal(res.status, 400);
   assert.match((await res.json()).error, /needs a sourceId to group on/);
 });
+
+// ==========================================  Wall Display App §8 (Phase 1)
+//
+// Wall TDS §12.12-15. The wall's whole safety argument is that one credential
+// widens *which child* may be acted for and nothing else, so these check the
+// two directions of the credential wall and the three bounds that contain the
+// child-from-the-request narrowing (CLAUDE.md §III.E).
+
+const WALL_TOKEN = 'wall-bearer-token';
+const WALL_HASH = await sha256Hex(WALL_TOKEN);
+
+// Resolves WALL_TOKEN to a scope='wall' device and DEVICE_TOKEN to a child
+// one, so a single env can be pointed at either credential.
+function wallResolver(extra = () => ({})) {
+  return (sql, args) => {
+    if (sql.includes('FROM devices WHERE token_hash')) {
+      if (args[0] === WALL_HASH) return { first: { id: 'DEV-WALL', child_id: '', scope: 'wall' } };
+      if (args[0] === DEVICE_HASH) return { first: { id: 'DEV-1', child_id: 'CH-1', scope: 'child' } };
+      return { first: null };
+    }
+    // The roster check every wall route runs before it touches `assignments`.
+    if (sql.includes('FROM children WHERE id = ?1 AND active = 1')) {
+      return { first: args[0] === 'CH-1' ? { id: 'CH-1' } : null };
+    }
+    return extra(sql, args);
+  };
+}
+
+const WALL_DEVICE_ROUTES = [
+  ['/api/plan', 'GET', undefined],
+  ['/api/plan/version', 'GET', undefined],
+  ['/api/completions', 'POST', { completions: [] }],
+  ['/api/rewards/entries', 'POST', { entries: [] }],
+  ['/api/assignments/AS-1/claim', 'POST', {}],
+  ['/api/assignments/AS-1/claim', 'DELETE', undefined],
+  ['/api/streak', 'PUT', { currentStreak: 1 }],
+  ['/api/messages', 'POST', { messages: [] }],
+];
+
+test('§12.12: a wall token is 401 on every child-device route', async () => {
+  for (const [path, method, body] of WALL_DEVICE_ROUTES) {
+    const { env, DB } = makeEnv(wallResolver());
+    const res = await call(env, path, { method, token: WALL_TOKEN, body, outboxProtocol: 2 });
+    assert.equal(res.status, 401, `${method} ${path} must not accept a wall token`);
+    assert.equal(DB.batched.length, 0);
+  }
+});
+
+const WALL_ROUTES = [
+  ['/api/wall/children', 'GET', undefined],
+  ['/api/wall/plan?childId=CH-1', 'GET', undefined],
+  ['/api/wall/completions', 'POST', { childId: 'CH-1', completions: [] }],
+  ['/api/wall/rewards/entries', 'POST', { childId: 'CH-1', entries: [] }],
+  ['/api/wall/assignments/AS-1/claim', 'POST', { childId: 'CH-1' }],
+  ['/api/wall/assignments/AS-1/claim?childId=CH-1', 'DELETE', undefined],
+];
+
+test('§12.13: a child device token is 401 on every /api/wall/* route', async () => {
+  for (const [path, method, body] of WALL_ROUTES) {
+    const { env } = makeEnv(wallResolver());
+    const res = await call(env, path, { method, token: DEVICE_TOKEN, body, outboxProtocol: 2 });
+    assert.equal(res.status, 401, `${method} ${path} must not accept a child device token`);
+  }
+});
+
+test('a parent token is 401 on the wall routes too — the credential is minted, not the secret', async () => {
+  for (const [path, method, body] of WALL_ROUTES) {
+    const { env } = makeEnv(wallResolver());
+    const res = await call(env, path, { method, token: PARENT_TOKEN, body, outboxProtocol: 2 });
+    assert.equal(res.status, 401, `${method} ${path} must not accept SYNC_TOKEN`);
+  }
+});
+
+test('§8.2: a device row from before 0009 reads as a child token, not a wall one', async () => {
+  // The migration is applied in the browser and the code may land first
+  // (DEPLOY.md's ordering note). A row with no `scope` must keep working on
+  // the Child App's routes and must not become a household credential.
+  const { env } = makeEnv((sql, args) => {
+    if (sql.includes('FROM devices WHERE token_hash')) {
+      return { first: args[0] === DEVICE_HASH ? { id: 'DEV-1', child_id: 'CH-1' } : null };
+    }
+    return {};
+  });
+  assert.equal((await call(env, '/api/plan', { token: DEVICE_TOKEN })).status, 200);
+  assert.equal((await call(env, '/api/wall/children', { token: DEVICE_TOKEN })).status, 401);
+});
+
+test('§3.3: the roster is exactly the active children, by name', async () => {
+  const { env, statements } = makeEnv(wallResolver((sql) => (
+    sql.includes('SELECT id, name FROM children')
+      ? { results: [{ id: 'CH-2', name: 'Ellie' }, { id: 'CH-1', name: 'Talia' }] }
+      : {}
+  )));
+  const res = await call(env, '/api/wall/children', { token: WALL_TOKEN });
+  const out = await res.json();
+  assert.equal(res.status, 200);
+  assert.deepEqual(out.children.map((c) => c.name), ['Ellie', 'Talia']);
+
+  const roster = statements.find((s) => s.sql.includes('SELECT id, name FROM children'));
+  assert.ok(roster.sql.includes('active = 1'), 'archived children are not on the wall');
+  assert.ok(!roster.sql.includes('devices'), 'the roster is D1\'s answer, not a list of paired tablets');
+});
+
+// ---- §8.3 bound 1: the named child is validated against the roster --------
+
+test('§12.14: an unknown or archived childId writes nothing', async () => {
+  for (const childId of ['CH-ARCHIVED', 'CH-NOT-A-CHILD']) {
+    const { env, statements, DB } = makeEnv(wallResolver());
+    const res = await call(env, '/api/wall/completions', {
+      method: 'POST', token: WALL_TOKEN, outboxProtocol: 2,
+      body: { childId, completions: [{ id: 'AS-1', status: 'complete' }] },
+    });
+    assert.equal(res.status, 404);
+    assert.match((await res.json()).error, /active child/);
+    assert.equal(DB.batched.length, 0);
+    assert.equal(
+      statements.filter((s) => s.sql.includes('assignments')).length, 0,
+      'the roster check runs before anything touches assignments'
+    );
+  }
+});
+
+test('§12.14: a missing childId is a 400, not a write against an empty string', async () => {
+  const { env, statements } = makeEnv(wallResolver());
+  const res = await call(env, '/api/wall/completions', {
+    method: 'POST', token: WALL_TOKEN, outboxProtocol: 2,
+    body: { completions: [{ id: 'AS-1', status: 'complete' }] },
+  });
+  assert.equal(res.status, 400);
+  assert.equal(statements.filter((s) => s.sql.includes('assignments')).length, 0);
+});
+
+// ---- §8.3 bound 2: every statement keeps its own AND child_id = ? ---------
+
+test('§12.14: the resolved child is substituted into the existing child_id clause', async () => {
+  const { env, statements } = makeEnv(wallResolver((sql) => (
+    sql.startsWith('UPDATE assignments') ? { meta: { changes: 1 } } : {}
+  )));
+  const res = await call(env, '/api/wall/completions', {
+    method: 'POST', token: WALL_TOKEN, outboxProtocol: 2,
+    body: { childId: 'CH-1', completions: [{ id: 'AS-1', status: 'complete', completedAt: 1755100000000 }] },
+  });
+  assert.equal((await res.json()).applied, 1);
+
+  const update = statements.find((s) => s.sql.startsWith('UPDATE assignments'));
+  assert.ok(update.sql.includes('AND child_id = ?'), 'the clause is kept, not dropped');
+  assert.ok(update.args.includes('CH-1'), 'bound to the roster-resolved child');
+  assert.ok(update.sql.includes('claim_group IS NULL'), 'shared rows still go through the claim route');
+});
+
+test('a wall token cannot reach a row belonging to a child other than the one it named', async () => {
+  // The UPDATE matches nothing because the row is CH-2's; the wall gets the
+  // same "not found for this child" a device token would, not another child's row.
+  const { env } = makeEnv(wallResolver((sql) => {
+    if (sql.startsWith('UPDATE assignments')) return { meta: { changes: 0 } };
+    if (sql.includes('SELECT claim_group FROM assignments WHERE id')) return { first: null };
+    return {};
+  }));
+  const res = await call(env, '/api/wall/completions', {
+    method: 'POST', token: WALL_TOKEN, outboxProtocol: 2,
+    body: { childId: 'CH-1', completions: [{ id: 'AS-2-BELONGS-TO-CH-2', status: 'complete' }] },
+  });
+  const out = await res.json();
+  assert.equal(out.applied, 0);
+  assert.match(out.rejected[0].error, /Not found for this child/);
+});
+
+// ---- §8.3 bound 3: column ownership is not widened -----------------------
+
+test('§12.15: a parent-owned key in a wall completion is rejected per row', async () => {
+  const { env, statements } = makeEnv(wallResolver((sql) => (
+    sql.startsWith('UPDATE assignments') ? { meta: { changes: 1 } } : {}
+  )));
+  const res = await call(env, '/api/wall/completions', {
+    method: 'POST', token: WALL_TOKEN, outboxProtocol: 2,
+    body: {
+      childId: 'CH-1',
+      completions: [
+        { id: 'AS-1', title: 'Something else entirely' },
+        { id: 'AS-2', rewardAmount: 999 },
+        { id: 'AS-3', status: 'complete' },
+      ],
+    },
+  });
+  const out = await res.json();
+  assert.equal(out.applied, 1, 'the good row still lands — per row, not per request');
+  assert.equal(out.rejected.length, 2);
+  assert.match(out.rejected[0].error, /Not a child-writable column: title/);
+  assert.match(out.rejected[1].error, /Not a child-writable column: rewardAmount/);
+  assert.equal(
+    statements.filter((s) => s.sql.startsWith('UPDATE assignments')).length, 1,
+    'a rejected row never reaches a statement'
+  );
+});
+
+test('§12.15: a wall completion value is validated exactly as a device one is', async () => {
+  const { env } = makeEnv(wallResolver());
+  const res = await call(env, '/api/wall/completions', {
+    method: 'POST', token: WALL_TOKEN, outboxProtocol: 2,
+    body: { childId: 'CH-1', completions: [{ id: 'AS-1', status: 'deleted' }] },
+  });
+  assert.equal((await res.json()).rejected.length, 1);
+});
+
+test('§8.3: the wall claim route strips childId before the claim body check', async () => {
+  // CLAIM_BODY_KEYS is reused verbatim, so childId would otherwise be
+  // rejected as a key the caller may not set.
+  const { env, statements } = makeEnv(wallResolver((sql) => {
+    if (sql.includes('SELECT claim_group, rescinded_at FROM assignments')) {
+      return { first: { claim_group: 'GRP-1', rescinded_at: null } };
+    }
+    if (sql.includes('SET claimed_by = ?1, claimed_at = ?2')) return { meta: { changes: 2 } };
+    if (sql.startsWith('SELECT * FROM assignments WHERE id')) return { first: { id: 'AS-1' } };
+    return {};
+  }));
+  const res = await call(env, '/api/wall/assignments/AS-1/claim', {
+    method: 'POST', token: WALL_TOKEN, body: { childId: 'CH-1' },
+  });
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).claimed, true);
+
+  const arbitration = statements.find((s) => s.sql.includes('SET claimed_by = ?1'));
+  assert.equal(arbitration.args[0], 'CH-1', 'the group is claimed for the named child');
+});
+
+test('§8.3: the wall claim route still refuses a body key the caller may not set', async () => {
+  const { env } = makeEnv(wallResolver());
+  const res = await call(env, '/api/wall/assignments/AS-1/claim', {
+    method: 'POST', token: WALL_TOKEN, body: { childId: 'CH-1', status: 'complete' },
+  });
+  assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /may not set: status/);
+});
+
+test('§6.5: the wall release takes its child from the query string', async () => {
+  const { env, statements } = makeEnv(wallResolver((sql) => {
+    if (sql.includes('SELECT claim_group FROM assignments WHERE id')) return { first: { claim_group: 'GRP-1' } };
+    if (sql.includes('SET claimed_by = NULL')) return { meta: { changes: 2 } };
+    if (sql.startsWith('SELECT * FROM assignments WHERE id')) return { first: { id: 'AS-1' } };
+    return {};
+  }));
+  const res = await call(env, '/api/wall/assignments/AS-1/claim?childId=CH-1', {
+    method: 'DELETE', token: WALL_TOKEN,
+  });
+  assert.equal((await res.json()).released, true);
+  const release = statements.find((s) => s.sql.includes('SET claimed_by = NULL'));
+  assert.equal(release.args[2], 'CH-1', 'only the named child releases its own claim');
+});
+
+// ---- §8.4: provenance ----------------------------------------------------
+
+test('§8.4: a wall write is stamped wall:<deviceId>, not device:<deviceId>', async () => {
+  const { env, statements, DB } = makeEnv(wallResolver((sql) => (
+    sql.startsWith('UPDATE assignments') ? { meta: { changes: 1 } } : {}
+  )));
+  await call(env, '/api/wall/completions', {
+    method: 'POST', token: WALL_TOKEN, outboxProtocol: 2,
+    body: { childId: 'CH-1', completions: [{ id: 'AS-1', status: 'complete' }] },
+  });
+  const update = statements.find((s) => s.sql.startsWith('UPDATE assignments'));
+  assert.ok(update.args.includes('wall:DEV-WALL'), 'one wall device writes for every child');
+
+  await call(env, '/api/wall/rewards/entries', {
+    method: 'POST', token: WALL_TOKEN, outboxProtocol: 2,
+    body: { childId: 'CH-1', entries: [{ id: 'RE-1', category: 'screen-time', amount: 2 }] },
+  });
+  const insert = DB.batched.at(-1)[0];
+  assert.ok(insert.sql.includes('INSERT INTO reward_entries'));
+  assert.equal(insert.args[1], 'CH-1', 'the ledger row is the named child\'s');
+  assert.equal(insert.args.at(-1), 'wall:DEV-WALL');
+});
+
+test('a device write is still stamped device:<deviceId>', async () => {
+  const { env, statements } = makeEnv(deviceResolver((sql) => (
+    sql.startsWith('UPDATE assignments') ? { meta: { changes: 1 } } : {}
+  )));
+  await call(env, '/api/completions', {
+    method: 'POST', token: DEVICE_TOKEN, outboxProtocol: 2,
+    body: { completions: [{ id: 'AS-1', status: 'complete' }] },
+  });
+  const update = statements.find((s) => s.sql.startsWith('UPDATE assignments'));
+  assert.ok(update.args.includes('device:DEV-1'));
+});
+
+// ---- §3.2/§8.1: the two pair-code classes are not interchangeable ---------
+
+function pairEnv(codeChildId) {
+  return makeEnv((sql) => {
+    if (sql.includes('FROM pair_codes WHERE code')) {
+      return { first: { code: 'ABCDEFGH', child_id: codeChildId, expires_at: Date.now() + 60000, consumed_at: null, fail_count: 0 } };
+    }
+    if (sql.includes('SELECT name FROM children')) return { first: { name: 'Ellie' } };
+    return {};
+  });
+}
+
+test('§8.1: a child pair code cannot be redeemed into a household-scoped wall token', async () => {
+  const { env, DB } = pairEnv('CH-1');
+  const res = await call(env, '/api/wall/pair', { method: 'POST', body: { code: 'ABCDEFGH' } });
+  assert.equal(res.status, 409);
+  assert.match((await res.json()).error, /for a child device/);
+  assert.equal(DB.batched.length, 0, 'nothing is minted and the code is not consumed');
+});
+
+test('§8.1: a wall pair code cannot be redeemed as a child device token', async () => {
+  const { env, DB } = pairEnv('');
+  const res = await call(env, '/api/pair', { method: 'POST', body: { code: 'ABCDEFGH' } });
+  assert.equal(res.status, 409);
+  assert.match((await res.json()).error, /for a wall display/);
+  assert.equal(DB.batched.length, 0);
+});
+
+test('§3.2: redeeming a wall code mints one scope=\'wall\' device and returns a token', async () => {
+  const { env, DB } = pairEnv('');
+  const res = await call(env, '/api/wall/pair', {
+    method: 'POST', body: { code: 'ABCDEFGH', label: 'Wall display' },
+  });
+  const out = await res.json();
+  assert.equal(res.status, 200);
+  assert.ok(out.token, 'the credential is minted at runtime, never a Worker secret');
+  assert.equal(out.childId, undefined, 'a wall token names no child');
+
+  const insert = DB.batched[0].find((s) => s.sql.includes('INSERT INTO devices'));
+  assert.ok(insert.sql.includes("'wall'"), 'the row carries the scope that restricts it');
+  assert.equal(insert.args[1], '', '§8.1\'s sentinel, since devices.child_id is NOT NULL');
+  assert.equal(insert.args[2], 'Wall display', 'the label rides the pair request');
+});
+
+test('§3.2: a child pairing still mints without naming scope, so it survives a late 0009', async () => {
+  const { env, DB } = pairEnv('CH-1');
+  const res = await call(env, '/api/pair', { method: 'POST', body: { code: 'ABCDEFGH' } });
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).childId, 'CH-1');
+  const insert = DB.batched[0].find((s) => s.sql.includes('INSERT INTO devices'));
+  assert.ok(!insert.sql.includes('scope'), 'the column default is what makes it a child token');
+});
+
+test('§3.2: minting a wall pair code needs no childId and stores the sentinel', async () => {
+  const { env, statements } = makeEnv();
+  const res = await call(env, '/api/devices/pair-code', {
+    method: 'POST', token: PARENT_TOKEN, body: { scope: 'wall' },
+  });
+  const out = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(out.scope, 'wall');
+  const insert = statements.find((s) => s.sql.includes('INSERT INTO pair_codes'));
+  assert.equal(insert.args[1], '');
+});
+
+test('a child pair code still requires a childId', async () => {
+  const { env } = makeEnv();
+  const res = await call(env, '/api/devices/pair-code', { method: 'POST', token: PARENT_TOKEN, body: {} });
+  assert.equal(res.status, 400);
+});
+
+// ---- §8.5: the short URL --------------------------------------------------
+
+test('§8.5: /wall redirects to /wall-app/, alongside /kid', async () => {
+  const { env } = makeEnv();
+  const res = await call(env, '/wall');
+  assert.equal(res.status, 302);
+  assert.equal(new URL(res.headers.get('location')).pathname, '/wall-app/');
+});

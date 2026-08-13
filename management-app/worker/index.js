@@ -31,6 +31,15 @@ const MAX_SNAPSHOT_LIMIT = 5000;
 const PAIR_CODE_TTL_MS = 15 * 60 * 1000;
 const PAIR_CODE_MAX_FAILS = 10;
 
+// Wall Display App §8.1. `devices.child_id` and `pair_codes.child_id` are both
+// NOT NULL (0001:96, 0001:110) and SQLite cannot drop that in place, so a wall
+// row — which is household-scoped and names no child — stores this sentinel.
+// It is never a real id: those are server-minted UUIDs. `devices.scope` is
+// what actually distinguishes a wall credential; on `pair_codes` the sentinel
+// is the whole distinction, and it is what stops a child's pair code from
+// redeeming into a household-scoped token at /api/wall/pair.
+const WALL_SENTINEL_CHILD_ID = '';
+
 // records§3.1: only these stores are mirrored from the Management App's
 // curriculum-authoring IndexedDB. Child-side stores never land in `records`
 // — they belong to the relational tables in §3.3-§3.6. `appSettings` and
@@ -122,6 +131,8 @@ function staticRedirect(url) {
   const path = url.pathname.replace(/\/+$/, '');
   if (path === '') return redirect(url, '/management-app/');
   if (path === '/kid') return redirect(url, '/child-app/');
+  // Wall Display App §8.5 — what goes in the wall tablet's kiosk browser.
+  if (path === '/wall') return redirect(url, '/wall-app/');
   return null;
 }
 
@@ -214,28 +225,77 @@ async function routeApi(request, env, ctx, url) {
     return withDevice(request, env, ctx, (device) => handlePlanVersion(env, device));
   }
   if (pathname === '/api/plan' && method === 'GET') {
-    return withDevice(request, env, ctx, (device) => handlePlan(url, env, device));
+    return withDevice(request, env, ctx, (device) => handlePlan(url, env, deviceActor(device)));
   }
   if (pathname === '/api/completions' && method === 'POST') {
-    return withDevice(request, env, ctx, (device) => handleCompletions(request, env, device));
+    return withDevice(request, env, ctx, (device) => withJsonBody(request, (body) =>
+      handleCompletions(request, env, deviceActor(device), body)));
   }
   // Shared Chores §5.4/§5.5 — the one synchronous, arbitrated write in the
   // API (§5.6 says why this is not folded into /api/completions).
   const claimMatch = /^\/api\/assignments\/([^/]+)\/claim$/.exec(pathname);
   if (claimMatch && method === 'POST') {
-    return withDevice(request, env, ctx, (device) => handleAssignmentClaim(request, env, device, claimMatch[1]));
+    return withDevice(request, env, ctx, (device) => withJsonBody(request, (body) =>
+      handleAssignmentClaim(env, deviceActor(device), claimMatch[1], body)));
   }
   if (claimMatch && method === 'DELETE') {
-    return withDevice(request, env, ctx, (device) => handleAssignmentClaimRelease(env, device, claimMatch[1]));
+    return withDevice(request, env, ctx, (device) => handleAssignmentClaimRelease(env, deviceActor(device), claimMatch[1]));
   }
   if (pathname === '/api/rewards/entries' && method === 'POST') {
-    return withDevice(request, env, ctx, (device) => handleRewardEntries(request, env, device));
+    return withDevice(request, env, ctx, (device) => withJsonBody(request, (body) =>
+      handleRewardEntries(request, env, deviceActor(device), body)));
   }
   if (pathname === '/api/streak' && method === 'PUT') {
     return withDevice(request, env, ctx, (device) => handleStreakUpsert(request, env, device));
   }
   if (pathname === '/api/messages' && method === 'POST') {
     return withDevice(request, env, ctx, (device) => handleMessages(request, env, device));
+  }
+
+  // ---- Wall Display App (Wall §8.3) — wall credential ----
+  //
+  // Every route here is one of the device handlers above with `child_id`
+  // resolved from a validated request parameter instead of from the token. The
+  // handlers, the field maps, and the SQL are the same objects, not copies:
+  // that is what keeps column ownership from widening along with child
+  // selection (§8.3, CLAUDE.md §III.E bound 3).
+  if (pathname === '/api/wall/pair' && method === 'POST') {
+    return await handleWallPair(request, env);
+  }
+  if (pathname === '/api/wall/children' && method === 'GET') {
+    return withWall(request, env, ctx, () => handleWallChildren(env));
+  }
+  if (pathname === '/api/wall/plan' && method === 'GET') {
+    return withWall(request, env, ctx, (wall) =>
+      withWallChild(env, wall, url.searchParams.get('childId'), (actor) => handlePlan(url, env, actor)));
+  }
+  if (pathname === '/api/wall/completions' && method === 'POST') {
+    return withWall(request, env, ctx, (wall) => withJsonBody(request, (body) =>
+      withWallChild(env, wall, body.childId, (actor) => handleCompletions(request, env, actor, body))));
+  }
+  if (pathname === '/api/wall/rewards/entries' && method === 'POST') {
+    return withWall(request, env, ctx, (wall) => withJsonBody(request, (body) =>
+      withWallChild(env, wall, body.childId, (actor) => handleRewardEntries(request, env, actor, body))));
+  }
+  const wallClaimMatch = /^\/api\/wall\/assignments\/([^/]+)\/claim$/.exec(pathname);
+  if (wallClaimMatch && method === 'POST') {
+    return withWall(request, env, ctx, (wall) => withJsonBody(request, (body) => {
+      // `childId` is this route family's own parameter, not part of the claim
+      // body — CLAIM_BODY_KEYS is reused verbatim and would reject it as a key
+      // the caller may not set, which is precisely the check worth keeping.
+      const { childId, ...claimBody } = body;
+      return withWallChild(env, wall, childId, (actor) =>
+        handleAssignmentClaim(env, actor, wallClaimMatch[1], claimBody));
+    }));
+  }
+  if (wallClaimMatch && method === 'DELETE') {
+    // childId rides the query string on DELETE. §8.3's table gives "Body /
+    // query" as one column and the release carries nothing else; a body on a
+    // DELETE is legal but awkward, and an absent one would 400 as unparseable
+    // JSON before the route could say anything useful.
+    return withWall(request, env, ctx, (wall) =>
+      withWallChild(env, wall, url.searchParams.get('childId'), (actor) =>
+        handleAssignmentClaimRelease(env, actor, wallClaimMatch[1])));
   }
 
   return json({ error: 'Not found.' }, 404);
@@ -265,18 +325,39 @@ function isParentToken(request, env) {
 }
 
 // A device credential is valid only when it hashes to a non-revoked row.
-// Returns { deviceId, childId } or null. §4.2's rule that "the Worker derives
-// child_id from the token, never the request body" is enforced by every
-// device-scoped handler reading device.childId rather than a query/body value.
+// Returns { deviceId, childId, scope } or null. §4.2's rule that "the Worker
+// derives child_id from the token, never the request body" is enforced by
+// every device-scoped handler reading actor.childId rather than a query/body
+// value — and by the wall routes, which are the one exception (Wall §8.3),
+// resolving the named child against the roster before they build an actor.
+//
+// SELECT * rather than a column list, deliberately: naming `scope` explicitly
+// would make this throw on a database where 0009 has not been applied yet, and
+// this is the auth path — that is the Child App stopping dead, not one row
+// being held back the way §11.7 contains a completion. DEPLOY.md's ordering
+// note says apply first; this is what happens if the order slips anyway. A row
+// from before 0009 reads as 'child', which is exactly what it is.
 async function resolveDevice(request, env) {
   const token = bearerToken(request);
   if (!token) return null;
   const tokenHash = await sha256Hex(token);
   const row = await env.DB.prepare(
-    `SELECT id, child_id FROM devices WHERE token_hash = ?1 AND revoked_at IS NULL`
+    `SELECT * FROM devices WHERE token_hash = ?1 AND revoked_at IS NULL`
   ).bind(tokenHash).first();
   if (!row) return null;
-  return { deviceId: row.id, childId: row.child_id };
+  return { deviceId: row.id, childId: row.child_id, scope: row.scope || 'child' };
+}
+
+// Who a write is attributed to (Wall §8.4). A device token names one child, so
+// `device:<id>` is enough to trace a row back. One wall device writes for every
+// active child, so the row itself has to say it came from the wall — it is the
+// cheap half of any later "who ticked this", and it costs one string literal.
+function deviceActor(device) {
+  return { deviceId: device.deviceId, childId: device.childId, actorTag: `device:${device.deviceId}` };
+}
+
+function wallActor(wall, childId) {
+  return { deviceId: wall.deviceId, childId, actorTag: `wall:${wall.deviceId}` };
 }
 
 // Wrap a parent-only handler. Any non-parent credential — missing, wrong
@@ -289,14 +370,72 @@ async function withParent(request, env, handler) {
 
 // Wrap a device-only handler. 401 for an unknown/revoked bearer; the handler
 // itself is responsible for any 403 "wrong child" check against a resource.
+//
+// Wall §8.2: a wall token is 401 here too. These routes derive child_id from
+// the token, and a household-scoped credential has no child to derive — so the
+// existing device routes gain strictly no new callers from this slice, and the
+// wall's narrowing cannot leak sideways into them.
 async function withDevice(request, env, ctx, handler) {
   const device = await resolveDevice(request, env);
-  if (!device) return json({ error: 'Unauthorized.' }, 401);
-  ctx.waitUntil(
-    env.DB.prepare(`UPDATE devices SET last_seen_at = ?1 WHERE id = ?2`)
-      .bind(Date.now(), device.deviceId).run()
-  );
+  if (!device || device.scope !== 'child') return json({ error: 'Unauthorized.' }, 401);
+  ctx.waitUntil(touchDevice(env, device.deviceId));
   return await handler(device);
+}
+
+// Wrap a wall-only handler (Wall §8.2). The mirror image: a child device token
+// is 401 on every /api/wall/* route, so the two credential classes cannot be
+// substituted for one another in either direction.
+//
+// What this credential may do is bounded by the routes, not by trust. It widens
+// *which child* may be acted for — never *what may be written*: every wall
+// route below hands the request to the same handler a device token reaches,
+// with the same ASSIGNMENT_COMPLETION_FIELDS allowlist and the same SQL.
+async function withWall(request, env, ctx, handler) {
+  const device = await resolveDevice(request, env);
+  if (!device || device.scope !== 'wall') return json({ error: 'Unauthorized.' }, 401);
+  ctx.waitUntil(touchDevice(env, device.deviceId));
+  return await handler({ deviceId: device.deviceId });
+}
+
+function touchDevice(env, deviceId) {
+  return env.DB.prepare(`UPDATE devices SET last_seen_at = ?1 WHERE id = ?2`)
+    .bind(Date.now(), deviceId).run();
+}
+
+// The one exception to "the Worker derives child_id from the token, never the
+// request body" (CLAUDE.md §III.E, Wall §8.3). A household-scoped credential
+// cannot name a child by itself, so the wall names one — and the name is
+// checked against the roster before anything touches `assignments`.
+//
+// Three of §III.E's four bounds live here: the child must be active, the
+// handler receives the *server's* id rather than the caller's string, and every
+// statement downstream keeps its own `AND child_id = ?` with that id
+// substituted for the token-derived one. The fourth (cross-credential 401) is
+// withDevice/withWall above. A wall token therefore cannot act for an archived
+// child, cannot act for an id that is not a child at all, and cannot reach a
+// row belonging to a child other than the one it named.
+async function withWallChild(env, wall, childId, handler) {
+  if (typeof childId !== 'string' || !childId) {
+    return json({ error: 'childId is required.' }, 400);
+  }
+  const row = await env.DB.prepare(
+    `SELECT id FROM children WHERE id = ?1 AND active = 1`
+  ).bind(childId).first();
+  if (!row) return json({ error: 'Not an active child.' }, 404);
+  return await handler(wallActor(wall, row.id));
+}
+
+// Reads the body once. The wall routes need `childId` out of it before the rest
+// goes to the shared handler, and a handler that parsed the request itself
+// would leave nothing for the second read.
+async function withJsonBody(request, handler) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Body must be JSON.' }, 400);
+  }
+  return await handler(body || {});
 }
 
 // ============================================================================
@@ -1024,9 +1163,14 @@ async function handlePairCodeMint(request, env) {
   } catch {
     return json({ error: 'Body must be JSON.' }, 400);
   }
-  if (!body || typeof body.childId !== 'string' || !body.childId) {
+  // Wall §3.2 — the same mint, the same alphabet, the same 15-minute TTL. A
+  // wall code names no child, so it carries the §8.1 sentinel; that is what
+  // /api/wall/pair checks for, and what /api/pair refuses.
+  const scope = body && body.scope === 'wall' ? 'wall' : 'child';
+  if (scope === 'child' && (!body || typeof body.childId !== 'string' || !body.childId)) {
     return json({ error: 'childId is required.' }, 400);
   }
+  const codeChildId = scope === 'wall' ? WALL_SENTINEL_CHILD_ID : body.childId;
 
   const now = Date.now();
   const expiresAt = now + PAIR_CODE_TTL_MS;
@@ -1036,8 +1180,8 @@ async function handlePairCodeMint(request, env) {
     try {
       await env.DB.prepare(
         `INSERT INTO pair_codes (code, child_id, expires_at, created_at) VALUES (?1, ?2, ?3, ?4)`
-      ).bind(code, body.childId, expiresAt, now).run();
-      return json({ code, expiresAt });
+      ).bind(code, codeChildId, expiresAt, now).run();
+      return json({ code, expiresAt, scope });
     } catch (err) {
       // PK collision on `code` — vanishingly rare at 30^8, retry with a new one.
       if (attempt === 4) throw err;
@@ -1105,33 +1249,50 @@ async function handleRewardsAdjust(request, env) {
 // Pairing (§4.3, §5.4) — unauthenticated
 // ============================================================================
 
-async function handlePair(request, env) {
-  if (!env.DB) return json({ error: 'D1 binding "DB" is not configured on this Worker.' }, 500);
+// Shared by /api/pair and /api/wall/pair (Wall §3.2). Returns a Response on
+// every failure path, or { token, deviceId, childId } once the code has been
+// consumed and the device row minted.
+//
+// `scope` is checked against the code, not merely stamped on the device: a
+// child's pair code redeemed at /api/wall/pair would turn a credential meant
+// for one child into one that acts for every active child, which is the one
+// escalation this route family could offer. The §8.1 sentinel is what the two
+// codes are told apart by, and the check runs in both directions.
+async function redeemPairCode(request, env, scope) {
+  if (!env.DB) return { error: json({ error: 'D1 binding "DB" is not configured on this Worker.' }, 500) };
 
   let body;
   try {
     body = await request.json();
   } catch {
-    return json({ error: 'Body must be JSON.' }, 400);
+    return { error: json({ error: 'Body must be JSON.' }, 400) };
   }
   const code = typeof body.code === 'string' ? body.code.trim().toUpperCase() : '';
   const label = typeof body.label === 'string' ? body.label.slice(0, 200) : null;
-  if (!code) return json({ error: 'code is required.' }, 400);
+  if (!code) return { error: json({ error: 'code is required.' }, 400) };
 
   const row = await env.DB.prepare(
     `SELECT code, child_id, expires_at, consumed_at, fail_count FROM pair_codes WHERE code = ?1`
   ).bind(code).first();
 
-  if (!row) return json({ error: 'Unknown pairing code.' }, 409);
+  if (!row) return { error: json({ error: 'Unknown pairing code.' }, 409) };
+
+  const isWallCode = row.child_id === WALL_SENTINEL_CHILD_ID;
+  if (scope === 'wall' && !isWallCode) {
+    return { error: json({ error: 'That code is for a child device, not a wall display.' }, 409) };
+  }
+  if (scope === 'child' && isWallCode) {
+    return { error: json({ error: 'That code is for a wall display, not a child device.' }, 409) };
+  }
 
   const now = Date.now();
   const alreadyBurned = row.fail_count >= PAIR_CODE_MAX_FAILS;
   if (row.consumed_at || alreadyBurned) {
-    return json({ error: 'Pairing code already used.' }, 409);
+    return { error: json({ error: 'Pairing code already used.' }, 409) };
   }
   if (row.expires_at < now) {
     await env.DB.prepare(`UPDATE pair_codes SET fail_count = fail_count + 1 WHERE code = ?1`).bind(code).run();
-    return json({ error: 'Pairing code expired.' }, 409);
+    return { error: json({ error: 'Pairing code expired.' }, 409) };
   }
 
   // Success: consume the code, mint the device.
@@ -1139,12 +1300,31 @@ async function handlePair(request, env) {
   const tokenHash = await sha256Hex(token);
   const deviceId = crypto.randomUUID();
 
+  // The child INSERT deliberately does not name `scope` — the column defaults
+  // to 'child', so child pairing keeps working on a database where 0009 has
+  // not been applied yet. The wall INSERT names it, and therefore needs 0009;
+  // that is the right way round, since nothing can want a wall token before
+  // the wall app exists.
+  const insertDevice = scope === 'wall'
+    ? env.DB.prepare(
+        `INSERT INTO devices (id, child_id, label, token_hash, created_at, scope) VALUES (?1, ?2, ?3, ?4, ?5, 'wall')`
+      ).bind(deviceId, WALL_SENTINEL_CHILD_ID, label, tokenHash, now)
+    : env.DB.prepare(
+        `INSERT INTO devices (id, child_id, label, token_hash, created_at) VALUES (?1, ?2, ?3, ?4, ?5)`
+      ).bind(deviceId, row.child_id, label, tokenHash, now);
+
   await env.DB.batch([
     env.DB.prepare(`UPDATE pair_codes SET consumed_at = ?1 WHERE code = ?2 AND consumed_at IS NULL`).bind(now, code),
-    env.DB.prepare(
-      `INSERT INTO devices (id, child_id, label, token_hash, created_at) VALUES (?1, ?2, ?3, ?4, ?5)`
-    ).bind(deviceId, row.child_id, label, tokenHash, now),
+    insertDevice,
   ]);
+
+  return { token, deviceId, childId: row.child_id };
+}
+
+async function handlePair(request, env) {
+  const redeemed = await redeemPairCode(request, env, 'child');
+  if (redeemed.error) return redeemed.error;
+  const childId = redeemed.childId;
 
   // childName comes from the §3.2 projection, which is what that table is for:
   // reading a child's name without parsing a JSON blob. The `records` fallback
@@ -1153,17 +1333,42 @@ async function handlePair(request, env) {
   // has not pushed since. Pairing is not the place to discover a stale table.
   const projected = await env.DB.prepare(
     `SELECT name FROM children WHERE id = ?1`
-  ).bind(row.child_id).first();
+  ).bind(childId).first();
 
   let childName = projected ? projected.name : null;
   if (!childName) {
     const childRecord = await env.DB.prepare(
       `SELECT value FROM records WHERE store = 'children' AND key = ?1 AND deleted = 0`
-    ).bind(JSON.stringify(row.child_id)).first();
+    ).bind(JSON.stringify(childId)).first();
     childName = childRecord ? (JSON.parse(childRecord.value) || {}).name || null : null;
   }
 
-  return json({ token, childId: row.child_id, childName });
+  return json({ token: redeemed.token, childId, childName });
+}
+
+// ============================================================================
+// Wall Display App (Wall §8.3) — wall credential
+// ============================================================================
+
+// Unauthenticated, like /api/pair. The credential it mints is household-scoped
+// and route-restricted; §3.1 records why it is neither SYNC_TOKEN nor a Worker
+// secret — there is nothing for Ray to set anywhere, and revocation is the one
+// click in the Devices UI that already exists.
+async function handleWallPair(request, env) {
+  const redeemed = await redeemPairCode(request, env, 'wall');
+  if (redeemed.error) return redeemed.error;
+  return json({ token: redeemed.token, deviceId: redeemed.deviceId });
+}
+
+// Wall §3.3 — the roster, read live from D1 on every poll. A child added in
+// the Management App appears within one poll and an archived one disappears,
+// with no wall-side action at all: that requirement is the whole reason this
+// credential is household-scoped rather than per-child (§0.1).
+async function handleWallChildren(env) {
+  const { results } = await env.DB.prepare(
+    `SELECT id, name FROM children WHERE active = 1 ORDER BY name`
+  ).all();
+  return json({ children: results || [] });
 }
 
 // ============================================================================
@@ -1187,7 +1392,10 @@ function defaultPlanRange() {
   };
 }
 
-async function handlePlan(url, env, device) {
+// Shared by /api/plan (child devices) and /api/wall/plan. `actor.childId` is
+// token-derived on the first and roster-validated on the second; from here
+// down there is no difference, which is the point.
+async function handlePlan(url, env, actor) {
   const defaults = defaultPlanRange();
   const from = isValidDate(url.searchParams.get('from')) ? url.searchParams.get('from') : defaults.from;
   const to = isValidDate(url.searchParams.get('to')) ? url.searchParams.get('to') : defaults.to;
@@ -1196,7 +1404,7 @@ async function handlePlan(url, env, device) {
   // Rescinded rows are included on purpose (§5.5) so the client can remove
   // them from its cache rather than never learning they were rescinded.
   let sql = `SELECT * FROM assignments WHERE child_id = ?1 AND date >= ?2 AND date <= ?3`;
-  const params = [device.childId, from, to];
+  const params = [actor.childId, from, to];
   if (since !== null) {
     sql += ` AND updated_at > ?4`;
     params.push(since);
@@ -1207,20 +1415,14 @@ async function handlePlan(url, env, device) {
   return json({ ...capRows(results, 'assignments'), from, to });
 }
 
-async function handleCompletions(request, env, device) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return json({ error: 'Body must be JSON.' }, 400);
-  }
+async function handleCompletions(request, env, actor, body) {
   const completions = body && body.completions;
   if (!Array.isArray(completions)) return json({ error: 'Body must include a "completions" array.' }, 400);
   if (completions.length > MAX_BATCH) return json({ error: `At most ${MAX_BATCH} completions per batch.` }, 413);
   if (completions.length === 0) return json({ applied: 0, rejected: [] });
 
   const now = Date.now();
-  const updatedBy = `device:${device.deviceId}`;
+  const updatedBy = actor.actorTag;
   const rejected = [];
   const deferred = [];
   let applied = 0;
@@ -1267,7 +1469,7 @@ async function handleCompletions(request, env, device) {
       result = await env.DB.prepare(
         `UPDATE assignments SET ${setClauses.join(', ')}, updated_at = ?${keys.length + 1}, updated_by = ?${keys.length + 2}
          WHERE id = ?${keys.length + 3} AND child_id = ?${keys.length + 4} AND claim_group IS NULL`
-      ).bind(...values, now, updatedBy, row.id, device.childId).run();
+      ).bind(...values, now, updatedBy, row.id, actor.childId).run();
     } catch (err) {
       // Child Feedback Loop §11.7, closed. This throw used to escape the loop
       // and the handler, landing on the top-level catch as a 500 — which
@@ -1302,7 +1504,7 @@ async function handleCompletions(request, env, device) {
     // path, so an ordinary drain of unshared rows pays nothing extra here.
     const owned = await env.DB.prepare(
       `SELECT claim_group FROM assignments WHERE id = ?1 AND child_id = ?2`
-    ).bind(row.id, device.childId).first();
+    ).bind(row.id, actor.childId).first();
     if (owned && owned.claim_group != null) {
       rejected.push({ id: row.id, error: 'This assignment is shared; use /api/assignments/:id/claim instead.' });
     } else {
@@ -1320,13 +1522,7 @@ async function handleCompletions(request, env, device) {
 // (deferredTo, childBlockHint, childSortOrder — §5.4's field-list note).
 const CLAIM_BODY_KEYS = ['grade', 'completionNote'];
 
-async function handleAssignmentClaim(request, env, device, id) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return json({ error: 'Body must be JSON.' }, 400);
-  }
+async function handleAssignmentClaim(env, actor, id, body) {
   body = body || {};
 
   const badKeys = Object.keys(body).filter((k) => !CLAIM_BODY_KEYS.includes(k));
@@ -1343,7 +1539,7 @@ async function handleAssignmentClaim(request, env, device, id) {
   // child, wrong id) is a 404, not a 403, matching every other device route.
   const row = await env.DB.prepare(
     `SELECT claim_group, rescinded_at FROM assignments WHERE id = ?1 AND child_id = ?2`
-  ).bind(id, device.childId).first();
+  ).bind(id, actor.childId).first();
   if (!row) return json({ error: 'Not found.' }, 404);
   if (row.claim_group == null) {
     return json({ error: 'This assignment is not shared; use /api/completions.' }, 400);
@@ -1366,7 +1562,7 @@ async function handleAssignmentClaim(request, env, device, id) {
              AND held.rescinded_at IS NULL
              AND held.claimed_by IS NOT NULL
         )`
-  ).bind(device.childId, now, row.claim_group).run();
+  ).bind(actor.childId, now, row.claim_group).run();
 
   let won = !!(arbitration.meta && arbitration.meta.changes > 0);
 
@@ -1380,19 +1576,19 @@ async function handleAssignmentClaim(request, env, device, id) {
         WHERE claim_group = ?1 AND rescinded_at IS NULL AND claimed_by IS NOT NULL
         LIMIT 1`
     ).bind(row.claim_group).first();
-    won = !!claimant && claimant.claimed_by === device.childId;
+    won = !!claimant && claimant.claimed_by === actor.childId;
     if (!won) return json({ claimed: false });
   }
 
   // On a win only — first-time or an idempotent replay — record the
   // completion on the caller's own row. §5.4 step 4.
-  const updatedBy = `device:${device.deviceId}`;
+  const updatedBy = actor.actorTag;
   await env.DB.prepare(
     `UPDATE assignments
         SET status = 'complete', completed_at = ?1, grade = ?2, completion_note = ?3,
             updated_at = ?1, updated_by = ?4
       WHERE id = ?5 AND child_id = ?6`
-  ).bind(now, body.grade ?? null, body.completionNote ?? null, updatedBy, id, device.childId).run();
+  ).bind(now, body.grade ?? null, body.completionNote ?? null, updatedBy, id, actor.childId).run();
 
   const assignment = await env.DB.prepare(`SELECT * FROM assignments WHERE id = ?1`).bind(id).first();
   return json({ claimed: true, assignment });
@@ -1400,10 +1596,10 @@ async function handleAssignmentClaim(request, env, device, id) {
 
 // Shared Chores §5.5 — undo has to give the chore back, or a mis-tap locks a
 // sibling out of work they could still do.
-async function handleAssignmentClaimRelease(env, device, id) {
+async function handleAssignmentClaimRelease(env, actor, id) {
   const row = await env.DB.prepare(
     `SELECT claim_group FROM assignments WHERE id = ?1 AND child_id = ?2`
-  ).bind(id, device.childId).first();
+  ).bind(id, actor.childId).first();
   if (!row) return json({ error: 'Not found.' }, 404);
   if (row.claim_group == null) {
     return json({ error: 'This assignment is not shared.' }, 400);
@@ -1416,38 +1612,32 @@ async function handleAssignmentClaimRelease(env, device, id) {
     `UPDATE assignments
         SET claimed_by = NULL, claimed_at = NULL, updated_at = ?1
       WHERE claim_group = ?2 AND claimed_by = ?3 AND rescinded_at IS NULL`
-  ).bind(now, row.claim_group, device.childId).run();
+  ).bind(now, row.claim_group, actor.childId).run();
 
   if (!result.meta || result.meta.changes === 0) return json({ released: false });
 
   // The sibling's row is not touched beyond claimed_by/claimed_at/updated_at
   // above — it was never completed, so there is nothing on it to clear.
-  const updatedBy = `device:${device.deviceId}`;
+  const updatedBy = actor.actorTag;
   await env.DB.prepare(
     `UPDATE assignments
         SET status = 'pending', completed_at = NULL, grade = NULL, completion_note = NULL,
             updated_at = ?1, updated_by = ?2
       WHERE id = ?3 AND child_id = ?4`
-  ).bind(now, updatedBy, id, device.childId).run();
+  ).bind(now, updatedBy, id, actor.childId).run();
 
   const assignment = await env.DB.prepare(`SELECT * FROM assignments WHERE id = ?1`).bind(id).first();
   return json({ released: true, assignment });
 }
 
-async function handleRewardEntries(request, env, device) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return json({ error: 'Body must be JSON.' }, 400);
-  }
+async function handleRewardEntries(request, env, actor, body) {
   const entries = body && body.entries;
   if (!Array.isArray(entries)) return json({ error: 'Body must include an "entries" array.' }, 400);
   if (entries.length > MAX_BATCH) return json({ error: `At most ${MAX_BATCH} entries per batch.` }, 413);
   if (entries.length === 0) return json({ applied: 0 });
 
   const now = Date.now();
-  const createdBy = `device:${device.deviceId}`;
+  const createdBy = actor.actorTag;
   const statements = [];
   const queuedIds = [];
   const rejected = [];
@@ -1483,7 +1673,7 @@ async function handleRewardEntries(request, env, device) {
         `INSERT INTO reward_entries (id, child_id, assignment_id, category, amount, reason, earned_at, created_by)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT (id) DO NOTHING`
-      ).bind(row.id, device.childId, row.assignmentId || null, row.category, row.amount, reason, row.earnedAt || now, createdBy)
+      ).bind(row.id, actor.childId, row.assignmentId || null, row.category, row.amount, reason, row.earnedAt || now, createdBy)
     );
   }
 
