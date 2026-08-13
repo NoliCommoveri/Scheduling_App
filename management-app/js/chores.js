@@ -1,7 +1,14 @@
 /* Module: chores.js — Module 06, Chore Authoring.
  * Per SRS_Management_Module_06_Chore_Authoring.md, TDS_Slice_M6_Management_App_Rev2.md §1/§3.
  * Reads `children` (childId reference) and `tiers` (difficultyTier reference) only —
- * no Family Event code, no Course/Lesson/Activity/Curriculum/Category CRUD lives here. */
+ * no Family Event code, no Course/Lesson/Activity/Curriculum/Category CRUD lives here.
+ *
+ * FR-8's bulk CSV import (docs/TDS_Slice_Chore_Bulk_Import.md) parses and
+ * validates in `chores-csv-core.js`, which is pure; this file keeps the parts
+ * that cannot be — the Storage lookups, the last validateFields() gate, the
+ * batched write, and the UI. Both entry paths build their record through the
+ * one `buildRecord()`, so an imported Chore and a hand-authored one are the
+ * same shape. This remains the only writer of the `chores` store. */
 
 const Chores = (() => {
   const CHORE_TYPES = [
@@ -231,6 +238,113 @@ const Chores = (() => {
     const all = await Storage.getAll('chores');
     if (!childId) return all;
     return all.filter((c) => participantsOf(c).includes(childId));
+  }
+
+  // ---- Bulk CSV Import (FR-8, TDS_Slice_Chore_Bulk_Import.md §4) ----
+  //
+  // The parse and every per-row rule live in ChoresCsvCore, which is pure. What
+  // is left here is the part that cannot be: resolving the lookup data, running
+  // the last validation gate, and the batched write.
+
+  // TDS §4.3 — mints a token not already in `used` and not already minted in
+  // this batch, bounded at 10 attempts exactly as createChore() is. Adds what
+  // it mints to `used`, so the caller's set carries the batch forward.
+  function mintChoreToken(used) {
+    for (let i = 0; i < 10; i++) {
+      const candidate = randomToken();
+      if (!used.has(candidate)) {
+        used.add(candidate);
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  // TDS §3 — occurrence ids are minted, never authored, so "unique within the
+  // Chore" and "no '-'" (Shared Chores §2.4) hold by construction:
+  // randomToken() draws from [a-z0-9] only, and this re-rolls until the row's
+  // own ids are distinct.
+  function buildInstancesFromLabels(labels) {
+    if (!labels || !labels.length) return undefined;
+    const seen = new Set();
+    return labels.map((label) => {
+      let id = randomToken();
+      while (seen.has(id)) id = randomToken();
+      seen.add(id);
+      return { id, label };
+    });
+  }
+
+  // FR-8 entry point. Every check — the header gate, every per-row rule, and
+  // validateFields() on every candidate — runs before any write; one or more
+  // failures ⇒ nothing is written and existing Chores are untouched.
+  async function importChoresCsv(text) {
+    const [children, tiers] = await Promise.all([
+      Storage.getAll('children'),
+      Storage.getAll('tiers'),
+    ]);
+    const lookups = {
+      // `active` is resolved here rather than in the core so the
+      // absent-means-active rule stays in children.js (TDS §1).
+      children: children.map((c) => ({ id: c.id, name: c.name, active: Children.isActive(c) })),
+      tierIds: tiers.map((t) => t.tierId),
+    };
+
+    const read = ChoresCsvCore.readCsv(text, lookups);
+    if (read.error) return { error: read.error, failures: read.failures };
+
+    // TDS §1's last gate: nothing reaches the store that the manual create
+    // form would have rejected. The core's checks shape the message; this
+    // decides. Running it over every candidate (not stopping at the first)
+    // keeps the one-pass-fix property the per-row loop already has.
+    const failures = [];
+    for (const candidate of read.candidates) {
+      const fields = {
+        ...candidate.fields,
+        instances: buildInstancesFromLabels(candidate.instanceLabels),
+      };
+      const error = await validateFields(fields);
+      if (error) failures.push(`Row ${candidate.rowNumber}: ${error}`);
+      else candidate.resolvedFields = fields;
+    }
+    if (failures.length > 0) {
+      return { error: 'Import rejected — no Chores were written.', failures };
+    }
+
+    // TDS §4.3 — one exclusive transaction: the getAll() that reads the tokens
+    // in use and every put() are inside it, so two concurrent imports cannot
+    // both observe the same token free. This is what createChore() does for a
+    // single record, batched.
+    let mintFailed = false;
+    const written = [];
+    try {
+      await Storage.runTransaction(['chores'], 'readwrite', (t) => {
+        const store = t.objectStore('chores');
+        const req = store.getAll();
+        req.onsuccess = () => {
+          const used = new Set(req.result.map((c) => c.id.slice(4)));
+          for (const candidate of read.candidates) {
+            const token = mintChoreToken(used);
+            if (!token) {
+              mintFailed = true;
+              written.length = 0;
+              t.abort();
+              return;
+            }
+            const record = buildRecord('CHR-' + token, candidate.resolvedFields);
+            store.put(record);
+            written.push(record);
+          }
+        };
+      });
+    } catch (err) {
+      if (!mintFailed) throw err;
+    }
+    if (mintFailed) return { error: 'Could not mint a unique Chore token after 10 attempts — nothing was written.' };
+
+    const childIds = new Set();
+    written.forEach((r) => r.childIds.forEach((id) => childIds.add(id)));
+    return { summary: { choresCreated: written.length, childrenTouched: childIds.size } };
   }
 
   // ---- Rendering ----
@@ -495,6 +609,82 @@ const Chores = (() => {
     root.appendChild(list);
 
     root.appendChild(buildCreateForm(root, children, tiers));
+    root.appendChild(buildBulkImportSection(root));
+  }
+
+  function readFileAsText(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsText(file);
+    });
+  }
+
+  // TDS §4.1 — emitted from ChoresCsvCore's own CSV_COLUMNS, so the header a
+  // parent downloads cannot drift from the header the gate demands. Header row
+  // only: the template is itself a valid import that writes nothing.
+  function downloadCsvTemplate() {
+    // Same Blob-URL treatment reporting.js and courses.js use; revoked after.
+    const url = URL.createObjectURL(
+      new Blob([ChoresCsvCore.templateCsv()], { type: 'text/csv;charset=utf-8' })
+    );
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'chore-import-template.csv';
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // FR-8's UI, mirroring courses.js's bulk-import section: file input, Import,
+  // Download blank template, and a result area that reports the outcome of
+  // every attempt — reject with a reason per failing row, or the counts.
+  function buildBulkImportSection(root) {
+    const section = document.createElement('section');
+    section.className = 'bulk-import';
+    section.innerHTML = `
+      <h2>Bulk Import Chores (CSV)</h2>
+      <p class="bulk-import-hint">
+        One row per Chore. Separate multiple children, days, or occurrences with
+        <code>|</code> — e.g. <code>Ada|Ben</code>, <code>Mon|Wed|Fri</code>,
+        <code>Breakfast|Dinner</code>. Per-child day splits are not imported; add
+        those with Edit afterwards.
+      </p>
+      <input type="file" name="csvFile" accept=".csv,text/csv">
+      <div class="bulk-import-actions">
+        <button type="button" data-action="import">Import</button>
+        <button type="button" class="secondary" data-action="template">Download blank template</button>
+      </div>
+      <div class="bulk-import-result" hidden></div>
+    `;
+    const fileInput = section.querySelector('input[type="file"]');
+    const resultEl = section.querySelector('.bulk-import-result');
+
+    section.querySelector('[data-action="template"]').addEventListener('click', downloadCsvTemplate);
+
+    section.querySelector('[data-action="import"]').addEventListener('click', async () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) {
+        resultEl.hidden = false;
+        resultEl.innerHTML = `<p class="error">Choose a CSV file first.</p>`;
+        return;
+      }
+      const text = await readFileAsText(file);
+      const result = await importChoresCsv(text);
+      resultEl.hidden = false;
+      if (result.error) {
+        const failures = (result.failures || []).map((f) => `<li>${escapeHtml(f)}</li>`).join('');
+        resultEl.innerHTML = `<p class="error">${escapeHtml(result.error)}</p>${failures ? `<ul>${failures}</ul>` : ''}`;
+        return;
+      }
+      const { choresCreated, childrenTouched } = result.summary;
+      resultEl.innerHTML =
+        `<p class="success">Imported: ${choresCreated} Chore(s) across ${childrenTouched} child(ren).</p>`;
+      fileInput.value = '';
+      render(root);
+    });
+
+    return section;
   }
 
   function buildDisplayItem(root, chore, children) {
@@ -634,7 +824,7 @@ const Chores = (() => {
   }
 
   return {
-    render, createChore, editChore, deleteChore, listChores,
+    render, createChore, editChore, deleteChore, listChores, importChoresCsv,
     participantsOf, allocationOf, daysFor, instancesOf, pruneParticipant,
   };
 })();
