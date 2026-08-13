@@ -20,6 +20,7 @@ function typesByKey(overrides = {}) {
     ['practice-level', { activityTypeKey: 'practice-level', label: 'Practice', structurePattern: 'count' }],
     ['quiz', { activityTypeKey: 'quiz', label: 'Quiz', structurePattern: 'count' }],
     ['pdf', { activityTypeKey: 'pdf', label: 'PDF', structurePattern: 'page-range' }],
+    ['online-sim', { activityTypeKey: 'online-sim', label: 'Online Sim', structurePattern: 'count' }],
   ]);
   for (const [k, v] of Object.entries(overrides)) base.set(k, v);
   return base;
@@ -136,4 +137,158 @@ test('sanitizeTitlePatterns accepts a valid sparse map spanning multiple types',
   assert.deepEqual(result, {
     titlePatterns: { video: '{lesson} — Lesson {n}', pdf: 'Pages {start}–{end}' },
   });
+});
+
+// -------------------------------------------------------- computeSplitChunks
+
+test('computeSplitChunks: first-page mode on the worked example (10, 14 over budget 10-17)', () => {
+  const result = RecipeCore.computeSplitChunks({ numbers: [10, 14], mode: 'first', budgetStart: 10, budgetEnd: 17 });
+  assert.deepEqual(result.chunks, [{ start: 10, end: 13 }, { start: 14, end: 17 }]);
+  assert.deepEqual(result.warnings, []);
+});
+
+test('computeSplitChunks: last-page mode on the worked example (13, 17) is byte-identical to first-page (10, 14) — acceptance check 5', () => {
+  const first = RecipeCore.computeSplitChunks({ numbers: [10, 14], mode: 'first', budgetStart: 10, budgetEnd: 17 });
+  const last = RecipeCore.computeSplitChunks({ numbers: [13, 17], mode: 'last', budgetStart: 10, budgetEnd: 17 });
+  assert.deepEqual(last.chunks, first.chunks);
+});
+
+test('computeSplitChunks: single-chunk splits in both modes — the case that defeats inference', () => {
+  const first = RecipeCore.computeSplitChunks({ numbers: [10], mode: 'first', budgetStart: 10, budgetEnd: 17 });
+  const last = RecipeCore.computeSplitChunks({ numbers: [17], mode: 'last', budgetStart: 10, budgetEnd: 17 });
+  assert.deepEqual(first.chunks, [{ start: 10, end: 17 }]);
+  assert.deepEqual(last.chunks, [{ start: 10, end: 17 }]);
+});
+
+test('computeSplitChunks warns on a front gap without blocking (first mode)', () => {
+  const result = RecipeCore.computeSplitChunks({ numbers: [12], mode: 'first', budgetStart: 10, budgetEnd: 17 });
+  assert.deepEqual(result.chunks, [{ start: 12, end: 17 }]);
+  assert.match(result.warnings.join(' '), /Front gap/);
+});
+
+test('computeSplitChunks warns on a back gap without blocking (last mode)', () => {
+  const result = RecipeCore.computeSplitChunks({ numbers: [14], mode: 'last', budgetStart: 10, budgetEnd: 17 });
+  assert.deepEqual(result.chunks, [{ start: 10, end: 14 }]);
+  assert.match(result.warnings.join(' '), /Back gap/);
+});
+
+test('computeSplitChunks warns, but generates, when a split point falls outside the budget', () => {
+  const result = RecipeCore.computeSplitChunks({ numbers: [5, 14], mode: 'first', budgetStart: 10, budgetEnd: 17 });
+  assert.equal(result.error, undefined);
+  assert.equal(result.chunks.length, 2);
+  assert.match(result.warnings.join(' '), /outside the Lesson's page budget/);
+});
+
+test('computeSplitChunks rejects non-ascending or duplicate split points', () => {
+  assert.match(RecipeCore.computeSplitChunks({ numbers: [14, 10], mode: 'first', budgetStart: 10, budgetEnd: 17 }).error, /strictly increasing/);
+  assert.match(RecipeCore.computeSplitChunks({ numbers: [10, 10], mode: 'first', budgetStart: 10, budgetEnd: 17 }).error, /strictly increasing/);
+});
+
+// -------------------------------------------------------- buildProposalRows
+
+function ctx(overrides = {}) {
+  return {
+    lessonTitle: 'Adding Fractions',
+    budgetStart: 10,
+    budgetEnd: 17,
+    activityTypesByKey: typesByKey(),
+    titlePatterns: undefined,
+    ...overrides,
+  };
+}
+
+test('buildProposalRows reproduces the worked example: 9 rows in entry order, each type consecutive', () => {
+  const recipe = {
+    entries: [
+      { activityTypeKey: 'pdf', pageRange: { numbers: [10, 14], mode: 'first' } },
+      { activityTypeKey: 'video', count: 1 },
+      { activityTypeKey: 'practice-level', count: 4 },
+      { activityTypeKey: 'online-sim', count: 1 },
+      { activityTypeKey: 'quiz', count: 1 },
+    ],
+  };
+  const result = RecipeCore.buildProposalRows(recipe, ctx());
+  assert.equal(result.error, undefined);
+  assert.equal(result.rows.length, 9);
+  assert.deepEqual(result.rows.map((r) => r.activityTypeKey), [
+    'pdf', 'pdf', 'video', 'practice-level', 'practice-level', 'practice-level', 'practice-level', 'online-sim', 'quiz',
+  ]);
+});
+
+test('buildProposalRows gives the two PDF chunks page ranges and Pages-pattern titles (acceptance check 4, pre-fill only)', () => {
+  const recipe = { entries: [{ activityTypeKey: 'pdf', pageRange: { numbers: [10, 14], mode: 'first' } }] };
+  const result = RecipeCore.buildProposalRows(recipe, ctx());
+  assert.deepEqual(
+    result.rows.map((r) => [r.pageRangeStart, r.pageRangeEnd, r.title]),
+    [[10, 13, 'Pages 10–13'], [14, 17, 'Pages 14–17']],
+  );
+});
+
+test('buildProposalRows titles four Practice rows "Level 1".."Level 4" with no page range (acceptance check 6)', () => {
+  const recipe = { entries: [{ activityTypeKey: 'practice-level', count: 4 }] };
+  const result = RecipeCore.buildProposalRows(recipe, ctx());
+  assert.deepEqual(result.rows.map((r) => r.title), ['Level 1', 'Level 2', 'Level 3', 'Level 4']);
+  assert.ok(result.rows.every((r) => r.pageRangeStart === undefined));
+});
+
+test('buildProposalRows collapses a single Video to the Lesson title; count 2 yields Part 1/Part 2 (acceptance check 7)', () => {
+  const one = RecipeCore.buildProposalRows({ entries: [{ activityTypeKey: 'video', count: 1 }] }, ctx());
+  assert.deepEqual(one.rows.map((r) => r.title), ['Adding Fractions']);
+  const two = RecipeCore.buildProposalRows({ entries: [{ activityTypeKey: 'video', count: 2 }] }, ctx());
+  assert.deepEqual(two.rows.map((r) => r.title), ['Adding Fractions: Part 1', 'Adding Fractions: Part 2']);
+});
+
+test('buildProposalRows drops a zero-count entry silently', () => {
+  const recipe = { entries: [{ activityTypeKey: 'video', count: 0 }, { activityTypeKey: 'quiz', count: 1 }] };
+  const result = RecipeCore.buildProposalRows(recipe, ctx());
+  assert.deepEqual(result.rows.map((r) => r.activityTypeKey), ['quiz']);
+});
+
+test('buildProposalRows rejects an all-zero recipe as empty', () => {
+  const result = RecipeCore.buildProposalRows({ entries: [{ activityTypeKey: 'video', count: 0 }] }, ctx());
+  assert.match(result.error, /generates no Activities/);
+});
+
+test('buildProposalRows rejects a second page-range entry (D11, acceptance check 10)', () => {
+  const recipe = {
+    entries: [
+      { activityTypeKey: 'pdf', pageRange: { numbers: [10], mode: 'first' } },
+      { activityTypeKey: 'workbook', pageRange: { numbers: [12], mode: 'first' } },
+    ],
+  };
+  const result = RecipeCore.buildProposalRows(recipe, ctx({
+    activityTypesByKey: typesByKey({ workbook: { activityTypeKey: 'workbook', label: 'Workbook', structurePattern: 'page-range' } }),
+  }));
+  assert.match(result.error, /At most one page-range/);
+});
+
+test('buildProposalRows honors a Course title-pattern override, including at count 1 (acceptance check 23)', () => {
+  const recipe = { entries: [{ activityTypeKey: 'video', count: 1 }] };
+  const result = RecipeCore.buildProposalRows(recipe, ctx({ titlePatterns: { video: '{lesson} — Lesson {n}' } }));
+  assert.deepEqual(result.rows.map((r) => r.title), ['Adding Fractions — Lesson 1']);
+});
+
+test('buildProposalRows surfaces computeSplitChunks warnings on the whole-recipe result', () => {
+  const recipe = { entries: [{ activityTypeKey: 'pdf', pageRange: { numbers: [12], mode: 'first' } }] };
+  const result = RecipeCore.buildProposalRows(recipe, ctx());
+  assert.match(result.warnings.join(' '), /Front gap/);
+});
+
+// --------------------------------------------------------- finalizeProposal
+
+test('finalizeProposal assigns contiguous order 0..N-1 in the given (post-reorder) array order', () => {
+  const rows = [{ title: 'Quiz 1' }, { title: 'Video 1' }, { title: 'Level 1' }];
+  const result = RecipeCore.finalizeProposal(rows);
+  assert.deepEqual(result.rows.map((r) => r.order), [0, 1, 2]);
+  assert.deepEqual(result.rows.map((r) => r.title), ['Quiz 1', 'Video 1', 'Level 1']);
+});
+
+test('finalizeProposal rejects a title blanked out by a Stage 2 edit', () => {
+  const result = RecipeCore.finalizeProposal([{ title: '  ' }]);
+  assert.match(result.error, /non-empty title/);
+});
+
+test('finalizeProposal rejects an empty row list', () => {
+  const result = RecipeCore.finalizeProposal([]);
+  assert.match(result.error, /generates no Activities/);
 });
