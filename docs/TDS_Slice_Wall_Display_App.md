@@ -140,8 +140,15 @@ Rationale: the requirement is "all active children from D1, period" (Ray,
   NOT SYNC_TOKEN: `CLAUDE.md` §0 says the parent token never goes on a child
   device, and a tablet on the kitchen wall is a child device by any reading —
   it would carry whole-database scope and every parent route into a shared
-  room. A separate secret with a five-route allowlist costs almost nothing and
-  keeps that non-negotiable intact.
+  room. A separately-minted credential with a five-route allowlist costs almost
+  nothing and keeps that non-negotiable intact.
+NOT A WORKER SECRET EITHER: the wall token is minted at runtime by redeeming a
+  pair code, exactly as a child device token is, and is stored hashed in
+  `devices`. There is NOTHING for Ray to set in the Cloudflare dashboard for
+  this app, and no value to type anywhere except the 8-character pair code on
+  the tablet once. A `WALL_TOKEN` dashboard secret was considered and rejected:
+  it cannot be revoked without a dashboard visit AND a re-type on the tablet,
+  where a minted device row is revoked with one click in a UI that exists.
 Consequence: `child_id` comes from the request, not the token, on the wall
   routes only. This is a genuine narrowing of Online Revamp §4.2. It is
   contained by the route family: the wall routes are the only ones that accept
@@ -776,11 +783,13 @@ invention. Concretely, what should be shared when Alexa is built:
   `AND child_id = ?` clause" pattern (§8.3), which is the whole of the safety argument;
 - the reuse of `ASSIGNMENT_COMPLETION_FIELDS` rather than a per-caller field list (§8.3).
 
-**They stay two credentials, not one.** The wall's lives in `localStorage` on a tablet in Ray's
-kitchen and is revoked from the Devices UI; Alexa's lives in Amazon's endpoint configuration,
-outside Ray's control, and is rotated from the Cloudflare dashboard. Different exposure, different
-lifetime, different revocation path — one mechanism, two secrets. `ALEXA_BRIDGE_TOKEN` remains a
-Worker secret; the wall never sees it, and vice versa.
+**They stay two credentials, not one — and they are not the same kind of thing.** The wall's is
+*minted* by redeeming a pair code, lives in `localStorage` on a tablet in Ray's kitchen, and is
+revoked from the Devices UI. Alexa's is a *Worker secret*, lives in Amazon's endpoint
+configuration outside Ray's control, and is rotated from the Cloudflare dashboard. Different
+exposure, different lifetime, different revocation path — one mechanism, two credential
+instances. `ALEXA_BRIDGE_TOKEN` remains a Worker secret; the wall never sees it, and the wall's
+token is not a secret Ray ever sets or handles.
 
 ### 9.2 §6.3's reward gap now has an answer to point at
 
