@@ -297,8 +297,6 @@ const Courses = (() => {
 
   // Optional Activity fields (SRS Module 03 §4). All three are absent-when-blank:
   // a blank entry stores no property at all — never "", 0, null, or a default.
-  const BLOCK_HINTS = ['morning', 'afternoon', 'evening', 'night']; // Interchange Contract §1d.
-
   // Reads only the optional keys the form actually submitted. A submitted-but-
   // blank value normalizes to null, meaning "omit on create / delete on edit".
   // Returns { error } on invalid input, else { fields: { <present keys> } }.
@@ -323,18 +321,12 @@ const Courses = (() => {
       out.instructions =
         raw === undefined || raw === null || String(raw).trim() === '' ? null : String(raw).trim();
     }
-    if ('blockHint' in input) {
-      const raw = input.blockHint;
-      if (!raw) out.blockHint = null;
-      else if (!BLOCK_HINTS.includes(raw)) return { error: 'Block hint must be morning, afternoon, evening, or night.' };
-      else out.blockHint = raw;
-    }
     return { fields: out };
   }
 
   // Set when a value is present, delete when null. Never touches any other field.
   function applyOptionalActivityFields(record, normalized) {
-    for (const key of ['expectedDurationMin', 'instructions', 'blockHint']) {
+    for (const key of ['expectedDurationMin', 'instructions']) {
       if (key in normalized) {
         if (normalized[key] === null) delete record[key];
         else record[key] = normalized[key];
@@ -342,55 +334,17 @@ const Courses = (() => {
     }
   }
 
-  function blockHintOptions(selected) {
-    return ['', ...BLOCK_HINTS]
-      .map((v) => {
-        const label = v === '' ? '(none)' : v;
-        const sel = v === (selected || '') ? ' selected' : '';
-        return `<option value="${v}"${sel}>${label}</option>`;
-      })
-      .join('');
-  }
-
-  function isCustomType(type) {
-    return type.activityTypeKey.startsWith('AT-');
-  }
-
-  function buildPayload(type, form) {
-    if (!isCustomType(type) && type.structurePattern === 'page-range') {
-      const start = Number(form.pageRangeStart.value);
-      const end = Number(form.pageRangeEnd.value);
-      if (!form.pageRangeStart.value || !form.pageRangeEnd.value) {
-        return { error: 'Page range start and end are required.' };
-      }
-      if (start > end) return { error: 'Page range start must not exceed end.' };
-      return { payload: { pageRangeStart: start, pageRangeEnd: end } };
-    }
-    if (!isCustomType(type) && type.activityTypeKey === 'practice-level') {
-      return { payload: {} }; // sequenceNumber IS the payload (§8) — no separate field.
-    }
-    if (!isCustomType(type)) {
-      // Selector reference for platform-hosted count types (Video, Quiz, etc.).
-      if (!form.reference.value.trim()) return { error: 'Reference is required.' };
-      return { payload: { reference: form.reference.value.trim() } };
-    }
-    // Custom type — always a single free-text field, regardless of structurePattern (§8).
-    // Stored as `{ text }` so Packet Generation's freeText projection (Interchange
-    // Contract §1a payload; TDS_Slice_M7 §4.5) reads it directly — no rename at emit.
-    if (!form.referenceOrInstructions.value.trim()) return { error: 'This field is required.' };
-    return { payload: { text: form.referenceOrInstructions.value.trim() } };
-  }
-
-  // FR-P3 (TDS_Slice_M8 §3) — pdf/reading-pages share one page-range budget
-  // per Lesson (§6). Pre-fill only; never blocks or warns on override.
+  // FR-P3 (TDS_Slice_M8 §3) — the Lesson's single page-range budget (D11 —
+  // a Lesson holds at most one page-range type). Pre-fill only; never blocks
+  // or warns on override. Any Activity carrying a pageRangeStart counts,
+  // regardless of type — with `payload` gone and one page-range type per
+  // Lesson, the old pdf/reading-pages key filter checked nothing extra.
   async function computePageRangePrefill(lesson) {
     const activities = await Storage.getAllByIndex('activities', 'by_lessonId', lesson.id);
     const covered = new Set();
     for (const a of activities) {
-      if (a.activityType !== 'pdf' && a.activityType !== 'reading-pages') continue;
-      const { pageRangeStart, pageRangeEnd } = a.payload || {};
-      if (typeof pageRangeStart !== 'number' || typeof pageRangeEnd !== 'number') continue;
-      for (let p = pageRangeStart; p <= pageRangeEnd; p++) covered.add(p);
+      if (typeof a.pageRangeStart !== 'number' || typeof a.pageRangeEnd !== 'number') continue;
+      for (let p = a.pageRangeStart; p <= a.pageRangeEnd; p++) covered.add(p);
     }
     for (let p = lesson.pageRangeStart; p <= lesson.pageRangeEnd; p++) {
       if (!covered.has(p)) return p;
@@ -398,34 +352,26 @@ const Courses = (() => {
     return lesson.pageRangeEnd + 1; // whole budget covered — past-budget extension, no warning.
   }
 
-  // FR-P6 (TDS_Slice_M8 §3) — next sequenceNumber among this Lesson's
-  // Activities of the same type. Form-render default only.
-  async function computeSequencePrefill(lesson, type) {
-    const activities = await Storage.getAllByIndex('activities', 'by_lessonId', lesson.id);
-    const sameType = activities.filter(
-      (a) => a.activityType === type.activityTypeKey && typeof a.sequenceNumber === 'number'
-    );
-    return sameType.length ? Math.max(...sameType.map((a) => a.sequenceNumber)) + 1 : 1;
-  }
-
   async function createActivity(lessonId, fields, type, tier) {
     if (!fields.title || !fields.title.trim()) return { error: 'Title is required.' };
     if (!tier) return { error: 'Difficulty Tier must resolve to an existing Tier.' };
     if (!type) return { error: 'Activity Type must resolve to an existing type.' };
 
-    let sequenceNumber;
-    if (type.structurePattern === 'count') {
-      if (fields.sequenceNumber === undefined || fields.sequenceNumber === '') {
-        return { error: 'Sequence number is required for this Activity Type.' };
+    let pageRangeStart;
+    let pageRangeEnd;
+    if (type.structurePattern === 'page-range') {
+      if (!fields.pageRangeStart || !fields.pageRangeEnd) {
+        return { error: 'Page range start and end are required for this Activity Type.' };
       }
-      sequenceNumber = Number(fields.sequenceNumber);
+      pageRangeStart = Number(fields.pageRangeStart);
+      pageRangeEnd = Number(fields.pageRangeEnd);
+      if (pageRangeStart > pageRangeEnd) return { error: 'Page range start must not exceed end.' };
     }
 
     const optNorm = normalizeOptionalActivityFields(fields);
     if (optNorm.error) return { error: optNorm.error };
 
     const course = await Storage.get('courses', (await Storage.get('lessons', lessonId)).courseId);
-    const lessonBefore = await Storage.get('lessons', lessonId);
     const existingActivities = await Storage.getAllByIndex('activities', 'by_lessonId', lessonId);
     const order = existingActivities.length
       ? Math.max(...existingActivities.map((a) => a.order)) + 1
@@ -446,13 +392,13 @@ const Courses = (() => {
           activityType: type.activityTypeKey,
           title: fields.title.trim(),
           required: !!fields.required,
-          payload: fields.payload,
           difficultyTier: tier.tierId,
-          capturesGrade: type.capturePattern === 'grade-optional',
           order,
-          lessonTitle: lessonBefore.title,
         };
-        if (sequenceNumber !== undefined) record.sequenceNumber = sequenceNumber;
+        if (pageRangeStart !== undefined) {
+          record.pageRangeStart = pageRangeStart;
+          record.pageRangeEnd = pageRangeEnd;
+        }
         applyOptionalActivityFields(record, optNorm.fields);
 
         t.objectStore('activities').put(record);
@@ -471,19 +417,14 @@ const Courses = (() => {
     const optNorm = normalizeOptionalActivityFields(fields);
     if (optNorm.error) return { error: optNorm.error };
 
-    // Spread preserves id/seq/order/lessonId/payload/capturesGrade/lessonTitle —
-    // editing never re-mints the id and never touches seq, order, or sequenceNumber
-    // (sequenceNumber only changes when the form explicitly submits a new value).
+    // Spread preserves id/seq/order/lessonId/pageRangeStart/pageRangeEnd —
+    // editing never re-mints the id and never touches seq, order, or page range.
     const record = {
       ...existing,
       title: fields.title.trim(),
       required: !!fields.required,
       difficultyTier: tier.tierId,
     };
-    if (fields.payload) record.payload = fields.payload;
-    if (fields.sequenceNumber !== undefined && fields.sequenceNumber !== '') {
-      record.sequenceNumber = Number(fields.sequenceNumber);
-    }
     applyOptionalActivityFields(record, optNorm.fields);
     await Storage.put('activities', record);
     return { record };
@@ -515,10 +456,12 @@ const Courses = (() => {
 
   // Locked column order (TDS §1) — exact header match required, whole file
   // rejected before any row is read if it deviates.
+  // `reference`, `text`, `sequenceNumber`, and `blockHint` dropped —
+  // TDS_Slice_Lesson_Recipe.md §13 (amends TDS_Slice_M8 §1's locked order).
   const CSV_COLUMNS = [
     'courseCode', 'lessonCode', 'lessonTitle', 'lessonOrder', 'activityType', 'title', 'required',
-    'pageRangeStart', 'pageRangeEnd', 'reference', 'text',
-    'difficultyTier', 'sequenceNumber', 'expectedDurationMin', 'instructions', 'blockHint',
+    'pageRangeStart', 'pageRangeEnd',
+    'difficultyTier', 'expectedDurationMin', 'instructions',
   ];
 
   // Hand-rolled RFC4180-ish parser: comma-delimited, double-quote escaping
@@ -564,16 +507,14 @@ const Courses = (() => {
     return !rowObj[col] || !String(rowObj[col]).trim();
   }
 
-  // Payload columns populated/blank per-type, a direct projection of
-  // buildPayload()'s branching (TDS §1's table).
-  function validateCsvPayload(type, rowObj, rowNumber) {
-    const custom = isCustomType(type);
-    if (!custom && type.structurePattern === 'page-range') {
+  // Page-range columns populated/blank per-type, a direct projection of
+  // createActivity()'s branching (TDS_Slice_Lesson_Recipe.md §4.1 — the
+  // structurePattern question collapses to one: does this type take a page
+  // range?). No more custom/canonical split — every type behaves the same.
+  function validateCsvPageRange(type, rowObj, rowNumber) {
+    if (type.structurePattern === 'page-range') {
       if (blankCol(rowObj, 'pageRangeStart') || blankCol(rowObj, 'pageRangeEnd')) {
         return { error: `Row ${rowNumber}: pageRangeStart and pageRangeEnd are required for this Activity Type.` };
-      }
-      if (!blankCol(rowObj, 'reference') || !blankCol(rowObj, 'text')) {
-        return { error: `Row ${rowNumber}: reference and text must be blank for this Activity Type.` };
       }
       const start = Number(rowObj.pageRangeStart);
       const end = Number(rowObj.pageRangeEnd);
@@ -581,26 +522,12 @@ const Courses = (() => {
         return { error: `Row ${rowNumber}: pageRangeStart and pageRangeEnd must be whole numbers.` };
       }
       if (start > end) return { error: `Row ${rowNumber}: pageRangeStart must not exceed pageRangeEnd.` };
-      return { payload: { pageRangeStart: start, pageRangeEnd: end } };
+      return { pageRangeStart: start, pageRangeEnd: end };
     }
-    if (!custom && type.activityTypeKey === 'practice-level') {
-      if (!blankCol(rowObj, 'pageRangeStart') || !blankCol(rowObj, 'pageRangeEnd') || !blankCol(rowObj, 'reference') || !blankCol(rowObj, 'text')) {
-        return { error: `Row ${rowNumber}: pageRangeStart, pageRangeEnd, reference, and text must all be blank for Practice Level.` };
-      }
-      return { payload: {} };
+    if (!blankCol(rowObj, 'pageRangeStart') || !blankCol(rowObj, 'pageRangeEnd')) {
+      return { error: `Row ${rowNumber}: pageRangeStart and pageRangeEnd must be blank for this Activity Type.` };
     }
-    if (!custom) {
-      if (blankCol(rowObj, 'reference')) return { error: `Row ${rowNumber}: reference is required for this Activity Type.` };
-      if (!blankCol(rowObj, 'pageRangeStart') || !blankCol(rowObj, 'pageRangeEnd') || !blankCol(rowObj, 'text')) {
-        return { error: `Row ${rowNumber}: pageRangeStart, pageRangeEnd, and text must be blank for this Activity Type.` };
-      }
-      return { payload: { reference: rowObj.reference.trim() } };
-    }
-    if (blankCol(rowObj, 'text')) return { error: `Row ${rowNumber}: text is required for a custom Activity Type.` };
-    if (!blankCol(rowObj, 'pageRangeStart') || !blankCol(rowObj, 'pageRangeEnd') || !blankCol(rowObj, 'reference')) {
-      return { error: `Row ${rowNumber}: pageRangeStart, pageRangeEnd, and reference must be blank for a custom Activity Type.` };
-    }
-    return { payload: { text: rowObj.text.trim() } };
+    return {};
   }
 
   // Per-row validation (§4.2) — read-only, no writes. Returns { error } or { candidate }.
@@ -635,16 +562,8 @@ const Courses = (() => {
     const lessonTitle = (rowObj.lessonTitle || '').trim();
     if (!lessonTitle) return { error: `Row ${rowNumber}: lessonTitle is required.` };
 
-    const payloadResult = validateCsvPayload(type, rowObj, rowNumber);
-    if (payloadResult.error) return { error: payloadResult.error };
-
-    let sequenceNumber;
-    if (type.structurePattern === 'count') {
-      if (blankCol(rowObj, 'sequenceNumber') || !Number.isInteger(Number(rowObj.sequenceNumber))) {
-        return { error: `Row ${rowNumber}: sequenceNumber is required and must be a whole number for this Activity Type.` };
-      }
-      sequenceNumber = Number(rowObj.sequenceNumber);
-    }
+    const pageRangeResult = validateCsvPageRange(type, rowObj, rowNumber);
+    if (pageRangeResult.error) return { error: pageRangeResult.error };
 
     const optNorm = normalizeOptionalActivityFields(rowObj);
     if (optNorm.error) return { error: `Row ${rowNumber}: ${optNorm.error}` };
@@ -652,7 +571,8 @@ const Courses = (() => {
     return {
       candidate: {
         rowNumber, course, lessonCode, lessonTitle, lessonOrder, type, tier,
-        title, required: requiredBool, payload: payloadResult.payload, sequenceNumber,
+        title, required: requiredBool,
+        pageRangeStart: pageRangeResult.pageRangeStart, pageRangeEnd: pageRangeResult.pageRangeEnd,
         optionalFields: optNorm.fields,
       },
     };
@@ -696,13 +616,13 @@ const Courses = (() => {
                 activityType: row.type.activityTypeKey,
                 title: row.title,
                 required: row.required,
-                payload: row.payload,
                 difficultyTier: row.tier.tierId,
-                capturesGrade: row.type.capturePattern === 'grade-optional',
                 order,
-                lessonTitle: row.lessonTitle,
               };
-              if (row.sequenceNumber !== undefined) record.sequenceNumber = row.sequenceNumber;
+              if (row.pageRangeStart !== undefined) {
+                record.pageRangeStart = row.pageRangeStart;
+                record.pageRangeEnd = row.pageRangeEnd;
+              }
               applyOptionalActivityFields(record, row.optionalFields);
               activitiesStore.put(record);
               seq++;
@@ -1216,7 +1136,6 @@ const Courses = (() => {
       <div class="payload-fields"></div>
       <label>Expected duration (min)<input type="number" name="expectedDurationMin" min="1" step="1"></label>
       <label>Instructions<input type="text" name="instructions"></label>
-      <label>Block hint<select name="blockHint">${blockHintOptions('')}</select></label>
       <p class="error" hidden></p>
       <button type="submit">Add Activity</button>
     `;
@@ -1226,52 +1145,31 @@ const Courses = (() => {
 
     let renderToken = 0; // guards against a stale async pre-fill landing after a later type switch
 
+    // §4.1 — structurePattern now answers one question: does this type take
+    // a page range? Reference/text/sequenceNumber are gone; title carries
+    // what reference used to, and it is already a top-level required field.
     async function renderPayloadFields() {
       const token = ++renderToken;
       const type = activityTypes.find((t) => t.activityTypeKey === form.activityType.value);
-      if (!type) {
-        payloadContainer.innerHTML = '';
-        return;
-      }
-      const custom = isCustomType(type);
-      let html = '';
-      if (!custom && type.structurePattern === 'page-range') {
-        html += `
+      payloadContainer.innerHTML = '';
+      if (!type) return;
+
+      if (type.structurePattern === 'page-range') {
+        payloadContainer.innerHTML = `
           <label>Page range start<input type="number" name="pageRangeStart"></label>
           <label>Page range end<input type="number" name="pageRangeEnd"></label>
         `;
-      } else if (!custom && type.activityTypeKey === 'practice-level') {
-        html += '';
-      } else if (!custom) {
-        html += `<label>Reference<input type="text" name="reference"></label>`;
-      } else {
-        html += `<label>Reference / instructions<input type="text" name="referenceOrInstructions"></label>`;
-      }
-      if (type.structurePattern === 'count') {
-        html += `<label>Sequence number<input type="number" name="sequenceNumber"></label>`;
-      }
-      payloadContainer.innerHTML = html;
-
-      // FR-P3 — page-range pre-fill, pdf/reading-pages only, budget set on the Lesson.
-      if (
-        !custom &&
-        (type.activityTypeKey === 'pdf' || type.activityTypeKey === 'reading-pages') &&
-        lesson.pageRangeStart !== undefined &&
-        lesson.pageRangeEnd !== undefined
-      ) {
-        const prefill = await computePageRangePrefill(lesson);
-        if (token !== renderToken) return;
-        const startField = payloadContainer.querySelector('[name="pageRangeStart"]');
-        if (startField) startField.value = prefill;
+        // FR-P3 — page-range pre-fill, budget set on the Lesson.
+        if (lesson.pageRangeStart !== undefined && lesson.pageRangeEnd !== undefined) {
+          const prefill = await computePageRangePrefill(lesson);
+          if (token !== renderToken) return;
+          const startField = payloadContainer.querySelector('[name="pageRangeStart"]');
+          if (startField) startField.value = prefill;
+        }
+        return;
       }
 
       if (type.structurePattern === 'count') {
-        // FR-P6 — sequenceNumber pre-fill.
-        const seqPrefill = await computeSequencePrefill(lesson, type);
-        if (token !== renderToken) return;
-        const seqField = payloadContainer.querySelector('[name="sequenceNumber"]');
-        if (seqField) seqField.value = seqPrefill;
-
         // FR-P4 — count-target progress, read-only.
         const target = (lesson.activityCountTargets || []).find((t) => t.activityTypeKey === type.activityTypeKey);
         if (target) {
@@ -1302,22 +1200,15 @@ const Courses = (() => {
         errorEl.textContent = 'Difficulty Tier must resolve to an existing Tier.';
         return;
       }
-      const payloadResult = buildPayload(type, form);
-      if (payloadResult.error) {
-        errorEl.hidden = false;
-        errorEl.textContent = payloadResult.error;
-        return;
-      }
       const result = await createActivity(
         lesson.id,
         {
           title: form.title.value,
           required: form.required.checked,
-          payload: payloadResult.payload,
-          sequenceNumber: type.structurePattern === 'count' ? form.sequenceNumber.value : undefined,
+          pageRangeStart: type.structurePattern === 'page-range' ? form.pageRangeStart.value : undefined,
+          pageRangeEnd: type.structurePattern === 'page-range' ? form.pageRangeEnd.value : undefined,
           expectedDurationMin: form.expectedDurationMin.value,
           instructions: form.instructions.value,
-          blockHint: form.blockHint.value,
         },
         type,
         tier
@@ -1333,13 +1224,11 @@ const Courses = (() => {
     return form;
   }
 
-  // Edit form for an existing Activity. Edits title, required, difficulty tier,
-  // sequenceNumber (count types only), and the optional trio. Payload is left
-  // untouched here (never re-minted, never re-validated) — same as the prior
-  // rename flow. Saving never re-mints id and never touches seq/order.
+  // Edit form for an existing Activity. Edits title, required, difficulty
+  // tier, and the optional trio. Page range is left untouched here (never
+  // re-validated) — same as the prior rename flow. Saving never re-mints id
+  // and never touches seq/order.
   function buildActivityEditForm(root, lesson, activity, activityTypes, tiers) {
-    const type = activityTypes.find((t) => t.activityTypeKey === activity.activityType);
-    const isCount = type && type.structurePattern === 'count';
     const tierOptions = tiers
       .map(
         (t) =>
@@ -1353,10 +1242,8 @@ const Courses = (() => {
       <label>Title<input type="text" name="title" value="${escapeHtml(activity.title)}" required></label>
       <label>Required<input type="checkbox" name="required" ${activity.required ? 'checked' : ''}></label>
       <label>Difficulty Tier<select name="difficultyTier"><option value="">(select)</option>${tierOptions}</select></label>
-      ${isCount ? `<label>Sequence number<input type="number" name="sequenceNumber" value="${activity.sequenceNumber ?? ''}"></label>` : ''}
       <label>Expected duration (min)<input type="number" name="expectedDurationMin" min="1" step="1" value="${activity.expectedDurationMin ?? ''}"></label>
       <label>Instructions<input type="text" name="instructions" value="${escapeHtml(activity.instructions || '')}"></label>
-      <label>Block hint<select name="blockHint">${blockHintOptions(activity.blockHint)}</select></label>
       <p class="error" hidden></p>
       <button type="submit">Save</button>
       <button type="button" data-action="cancel">Cancel</button>
@@ -1376,10 +1263,8 @@ const Courses = (() => {
         {
           title: form.title.value,
           required: form.required.checked,
-          sequenceNumber: isCount ? form.sequenceNumber.value : undefined,
           expectedDurationMin: form.expectedDurationMin.value,
           instructions: form.instructions.value,
-          blockHint: form.blockHint.value,
         },
         tier
       );

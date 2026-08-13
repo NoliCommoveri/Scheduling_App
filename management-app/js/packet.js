@@ -42,11 +42,6 @@ const Packet = (() => {
   const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const DEFAULT_MINUTES = 15; // Module 05 §2.3 fallback for missing expectedDurationMin
 
-  // §4.5 payload projection map — keyed by canonical activityTypeKey.
-  const PAGE_RANGE_KEYS = ['pdf', 'reading-pages'];
-  const REFERENCE_KEYS = ['video', 'quiz', 'test', 'report', 'workbook', 'project', 'drill'];
-  // 'practice-level' → none; anything else (parent-added AT-… keys) → freeText.
-
   let session = null; // the in-memory proposal; null between runs
   let lastResult = null; // {ok, message} | {error} for the result banner
 
@@ -169,18 +164,22 @@ const Packet = (() => {
     const child = await Storage.get('children', childId);
     if (!child) return { error: 'Select an existing child.' };
 
-    const [activityTypes, tiers, allCourses, allChores, allEvents] = await Promise.all([
+    const [activityTypes, tiers, allCourses, allChores, allEvents, allLessons] = await Promise.all([
       Storage.getAll('activityTypes'),
       Storage.getAll('tiers'),
       Storage.getAll('courses'),
       Storage.getAll('chores'),
       Storage.getAll('familyEvents'),
+      Storage.getAll('lessons'),
     ]);
 
     const maps = {
       typeLabel: new Map(activityTypes.map((t) => [t.activityTypeKey, t.label])),
       rewardCat: new Map(tiers.map((t) => [t.tierId, t.rewardCategoryId])),
       courseName: new Map(allCourses.map((c) => [c.id, c.name])),
+      // §7.2 — replace fields the Activity record no longer stores (§3.1).
+      capturesGrade: new Map(activityTypes.map((t) => [t.activityTypeKey, t.capturePattern === 'grade-optional'])),
+      lessonTitle: new Map(allLessons.map((l) => [l.id, l.title])),
     };
 
     const instances = allCourses.filter((c) => c.state === 'instance' && c.childId === childId);
@@ -463,20 +462,17 @@ const Packet = (() => {
     return { ok: true };
   }
 
-  // ---- Payload projection (§4.5) ----
+  // ---- Payload projection (TDS_Slice_Lesson_Recipe.md §7.1) ----
   //
-  // All that survives of the packet projections: the kind-specific half of an
-  // activity's payload, which assignmentFromActivity still builds on. It maps
-  // an activity type to a payload shape and has nothing to do with the
-  // interchange allow-lists the rest of §4.5 described.
+  // One content shape survives D5: pageRangeStart/pageRangeEnd, present or
+  // not. The `kind` discriminator that used to distinguish pageRange /
+  // reference / freeText / none goes with `reference`/`text` — it named
+  // nothing once there was only one shape left, and the Child App tests for
+  // `pageRangeStart` directly (§9.1 in the Lesson Recipe slice).
 
-  function projectPayload(activityTypeKey, stored) {
-    if (PAGE_RANGE_KEYS.includes(activityTypeKey)) {
-      return { kind: 'pageRange', pageRangeStart: stored.pageRangeStart, pageRangeEnd: stored.pageRangeEnd };
-    }
-    if (REFERENCE_KEYS.includes(activityTypeKey)) return { kind: 'reference', reference: stored.reference };
-    if (activityTypeKey === 'practice-level') return { kind: 'none' };
-    return { kind: 'freeText', text: stored.text }; // any parent-added key
+  function projectPayload(a) {
+    if (typeof a.pageRangeStart !== 'number') return {};
+    return { pageRangeStart: a.pageRangeStart, pageRangeEnd: a.pageRangeEnd };
   }
 
   // ---- Assignment projection (Revamp §3.3) — the Phase 3 write path ----
@@ -488,7 +484,7 @@ const Packet = (() => {
   // instructions, etc." Nothing but this function enforces that shape, so per
   // §3.7.1's rule for JSON-in-TEXT it is written down here:
   //
-  //   activity → { kind, …kind-specific, required, capturesGrade,
+  //   activity → { pageRangeStart?, pageRangeEnd?, required, capturesGrade,
   //                difficultyTier, lessonTitle?, instructions? }
   //   chore    → { choreType, difficultyTier, required, notes? }
   //   event    → { startDate, endDate, notes?, time? }
@@ -503,12 +499,13 @@ const Packet = (() => {
 
   function assignmentFromActivity(item, sortOrder) {
     const a = item.record;
-    const payload = Object.assign(projectPayload(a.activityType, a.payload || {}), {
+    const payload = Object.assign(projectPayload(a), {
       required: !!a.required,
-      capturesGrade: !!a.capturesGrade,
+      capturesGrade: session.maps.capturesGrade.get(a.activityType) === true,
       difficultyTier: a.difficultyTier,
     });
-    if (a.lessonTitle) payload.lessonTitle = a.lessonTitle;
+    const lessonTitle = session.maps.lessonTitle.get(a.lessonId);
+    if (lessonTitle) payload.lessonTitle = lessonTitle;
     if (a.instructions) payload.instructions = a.instructions;
 
     const row = {
@@ -523,7 +520,6 @@ const Packet = (() => {
       sortOrder,
     };
     if (a.expectedDurationMin != null) row.expectedDurationMin = a.expectedDurationMin;
-    if (a.sequenceNumber != null) row.sequenceNo = a.sequenceNumber;
     if (item.blockHint) row.blockHint = item.blockHint;
     return row;
   }
