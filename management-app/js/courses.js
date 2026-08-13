@@ -216,6 +216,10 @@ const Courses = (() => {
       const targets = [];
       for (const row of raw) {
         if (!row.activityTypeKey) continue; // an empty row is not a target
+        // A blank count is not a target either — the form now opens with a
+        // suggested row per Course/Curriculum type (§5.2), and the ones the
+        // parent leaves empty must store nothing rather than a target of 0.
+        if (row.targetCount === undefined || row.targetCount === null || String(row.targetCount).trim() === '') continue;
         const n = Number(row.targetCount);
         if (!Number.isInteger(n) || n < 0) {
           return { error: 'Activity count target must be a non-negative whole number.' };
@@ -798,8 +802,13 @@ const Courses = (() => {
 
   // Repeatable activityTypeKey/targetCount row-builder for FR-P2's
   // activityCountTargets[] group. `.collect()` reads current row state back
-  // out on submit.
-  function buildCountTargetsFieldset(activityTypes, existingTargets) {
+  // out on submit. A Lesson with no targets yet opens with one blank-count row
+  // per `suggestedKeys` entry (the Course's title patterns ∪ the Curriculum's
+  // suggested types — RecipeCore.suggestedTargetTypeKeys) so the parent types
+  // numbers instead of re-picking types the Course already declared. Blank
+  // rows store nothing, and every other type stays one "Add target" away —
+  // the suggestion is soft (Module 01 FR-3).
+  function buildCountTargetsFieldset(activityTypes, existingTargets, suggestedKeys) {
     const fieldset = document.createElement('fieldset');
     fieldset.className = 'count-targets';
     fieldset.innerHTML = `
@@ -829,7 +838,11 @@ const Courses = (() => {
       rowsEl.appendChild(row);
     }
 
-    (existingTargets || []).forEach((t) => addRow(t.activityTypeKey, t.targetCount));
+    if (existingTargets && existingTargets.length) {
+      existingTargets.forEach((t) => addRow(t.activityTypeKey, t.targetCount));
+    } else {
+      (suggestedKeys || []).forEach((key) => addRow(key, undefined));
+    }
     fieldset.querySelector('[data-action="add-target"]').addEventListener('click', () => addRow());
 
     fieldset.collect = () =>
@@ -1019,11 +1032,17 @@ const Courses = (() => {
       return render(root);
     }
     const frozen = await hasActivitiesBeneathCourse(course.id);
-    const [lessonsRaw, activityTypes] = await Promise.all([
+    const [lessonsRaw, activityTypes, curriculum] = await Promise.all([
       Storage.getAllByIndex('lessons', 'by_courseId', course.id),
       Storage.getAll('activityTypes'),
+      course.curriculumId ? Storage.get('curricula', course.curriculumId) : Promise.resolve(null),
     ]);
     const lessons = lessonsRaw.sort((a, b) => a.order - b.order);
+    const suggestedTargetKeys = RecipeCore.suggestedTargetTypeKeys({
+      titlePatterns: course.titlePatterns,
+      suggestedActivityTypes: curriculum && curriculum.suggestedActivityTypes,
+      activityTypes,
+    });
 
     const backBtn = document.createElement('button');
     backBtn.textContent = '← Back to Courses';
@@ -1112,7 +1131,7 @@ const Courses = (() => {
       <p class="error" hidden></p>
       <button type="submit">Add Lesson</button>
     `;
-    const countTargetsFieldset = buildCountTargetsFieldset(activityTypes, null);
+    const countTargetsFieldset = buildCountTargetsFieldset(activityTypes, null, suggestedTargetKeys);
     form.querySelector('.error').before(countTargetsFieldset);
     const errorEl = form.querySelector('.error');
     form.addEventListener('submit', async (e) => {
@@ -1142,7 +1161,17 @@ const Courses = (() => {
       viewLessonId = null;
       return render(root);
     }
-    const [activityTypes, tiers] = await Promise.all([Storage.getAll('activityTypes'), Tiers.listSorted()]);
+    const [activityTypes, tiers, course] = await Promise.all([
+      Storage.getAll('activityTypes'),
+      Tiers.listSorted(),
+      Storage.get('courses', lesson.courseId),
+    ]);
+    const curriculum = course && course.curriculumId ? await Storage.get('curricula', course.curriculumId) : null;
+    const suggestedTargetKeys = RecipeCore.suggestedTargetTypeKeys({
+      titlePatterns: course && course.titlePatterns,
+      suggestedActivityTypes: curriculum && curriculum.suggestedActivityTypes,
+      activityTypes,
+    });
     const activities = (await Storage.getAllByIndex('activities', 'by_lessonId', lesson.id)).sort(
       (a, b) => a.order - b.order
     );
@@ -1196,7 +1225,11 @@ const Courses = (() => {
       <p class="success" hidden></p>
       <button type="submit">Save Lesson</button>
     `;
-    const editLessonTargetsFieldset = buildCountTargetsFieldset(activityTypes, lesson.activityCountTargets);
+    const editLessonTargetsFieldset = buildCountTargetsFieldset(
+      activityTypes,
+      lesson.activityCountTargets,
+      suggestedTargetKeys,
+    );
     editLessonForm.querySelector('.error').before(editLessonTargetsFieldset);
     const editLessonErr = editLessonForm.querySelector('.error');
     const editLessonOk = editLessonForm.querySelector('.success');
@@ -1506,6 +1539,29 @@ const Courses = (() => {
         const budgetChanged = budgetStart !== lesson.pageRangeStart || budgetEnd !== lesson.pageRangeEnd;
         renderStage2(tier, budgetChanged && budgetStart !== undefined ? { start: budgetStart, end: budgetEnd } : null);
       });
+
+      // §5.2a — open on the Lesson's own content plan rather than on nothing.
+      // The count targets (FR-P2) were typed once, on the Lesson; a page-range
+      // target additionally implies a split of the budget the two fields above
+      // already carry. All of it is a pre-fill: rows are removable, counts and
+      // split points editable, and "Copy from lesson" still overwrites the lot.
+      const targetSeed = RecipeCore.buildCountTargetSeed(lesson.activityCountTargets, {
+        activityTypesByKey: typesByKey,
+        budgetStart: lesson.pageRangeStart,
+        budgetEnd: lesson.pageRangeEnd,
+      });
+      targetSeed.countRows.forEach((row) => {
+        addCountRow(row.activityTypeKey);
+        countRowsEl.lastElementChild.querySelector('input').value = row.count;
+      });
+      refreshAddOptions();
+      if (targetSeed.pageRangeTypeKey) {
+        pageRangeTypeSelect.value = targetSeed.pageRangeTypeKey;
+        if (targetSeed.splitNumbers.length) {
+          splitNumbersInput.value = targetSeed.splitNumbers.join(', ');
+          pageRangeFieldset.querySelector(`[name="splitMode"][value="${targetSeed.splitMode}"]`).checked = true;
+        }
+      }
 
       section.appendChild(errorEl);
       section.appendChild(proposeBtn);

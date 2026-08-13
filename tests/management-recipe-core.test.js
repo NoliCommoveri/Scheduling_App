@@ -383,3 +383,178 @@ test('pickCourseSettingsToCopy omits fields the source Course does not have, rat
   const course = { id: 'COU-1', name: 'Math 5', courseCode: 'MATH5', state: 'template', curriculumId: 'CUR-1' };
   assert.deepEqual(RecipeCore.pickCourseSettingsToCopy(course), { curriculumId: 'CUR-1' });
 });
+
+// ------------------------------------------------------ suggestedTargetTypeKeys
+
+const TYPE_TABLE = [
+  { activityTypeKey: 'video', label: 'Video' },
+  { activityTypeKey: 'practice-level', label: 'Practice' },
+  { activityTypeKey: 'quiz', label: 'Quiz' },
+  { activityTypeKey: 'pdf', label: 'PDF' },
+  { activityTypeKey: 'online-sim', label: 'Online Sim' },
+];
+
+test('suggestedTargetTypeKeys unions the Course title patterns with the Curriculum suggestions', () => {
+  assert.deepEqual(
+    RecipeCore.suggestedTargetTypeKeys({
+      titlePatterns: { 'practice-level': 'Round {n}' },
+      suggestedActivityTypes: ['video', 'quiz'],
+      activityTypes: TYPE_TABLE,
+    }),
+    ['video', 'practice-level', 'quiz'],
+  );
+});
+
+test('suggestedTargetTypeKeys returns table order, not the order either source named a type', () => {
+  assert.deepEqual(
+    RecipeCore.suggestedTargetTypeKeys({
+      titlePatterns: { quiz: 'Assessment {n}' },
+      suggestedActivityTypes: ['pdf', 'video'],
+      activityTypes: TYPE_TABLE,
+    }),
+    ['video', 'quiz', 'pdf'],
+  );
+});
+
+test('suggestedTargetTypeKeys names a type once when both sources name it', () => {
+  assert.deepEqual(
+    RecipeCore.suggestedTargetTypeKeys({
+      titlePatterns: { video: '{lesson}' },
+      suggestedActivityTypes: ['video'],
+      activityTypes: TYPE_TABLE,
+    }),
+    ['video'],
+  );
+});
+
+test('suggestedTargetTypeKeys drops a suggestion naming a type that is no longer in the table', () => {
+  assert.deepEqual(
+    RecipeCore.suggestedTargetTypeKeys({
+      suggestedActivityTypes: ['video', 'AT-deleted'],
+      activityTypes: TYPE_TABLE,
+    }),
+    ['video'],
+  );
+});
+
+test('suggestedTargetTypeKeys on a Course with neither source suggests nothing', () => {
+  assert.deepEqual(RecipeCore.suggestedTargetTypeKeys({ activityTypes: TYPE_TABLE }), []);
+});
+
+// ------------------------------------------------------------ evenSplitStarts
+
+test('evenSplitStarts divides a budget into the first pages of N even chunks', () => {
+  assert.deepEqual(RecipeCore.evenSplitStarts(800, 810, 3), [800, 803, 807]);
+  assert.deepEqual(RecipeCore.evenSplitStarts(1, 10, 2), [1, 6]);
+  assert.deepEqual(RecipeCore.evenSplitStarts(800, 810, 1), [800]);
+});
+
+test('evenSplitStarts stays strictly ascending at the tightest fit — one page per chunk', () => {
+  assert.deepEqual(RecipeCore.evenSplitStarts(5, 8, 4), [5, 6, 7, 8]);
+});
+
+test('evenSplitStarts yields nothing when there is no budget, or too few pages to split', () => {
+  assert.deepEqual(RecipeCore.evenSplitStarts(undefined, undefined, 3), []);
+  assert.deepEqual(RecipeCore.evenSplitStarts(800, undefined, 3), []);
+  assert.deepEqual(RecipeCore.evenSplitStarts(800, 802, 4), []);
+  assert.deepEqual(RecipeCore.evenSplitStarts(800, 810, 0), []);
+});
+
+// -------------------------------------------------------- buildCountTargetSeed
+
+test('buildCountTargetSeed turns count targets into Stage 1 count rows, in target order', () => {
+  const seed = RecipeCore.buildCountTargetSeed(
+    [
+      { activityTypeKey: 'video', targetCount: 1 },
+      { activityTypeKey: 'practice-level', targetCount: 3 },
+      { activityTypeKey: 'quiz', targetCount: 1 },
+    ],
+    { activityTypesByKey: typesByKey() },
+  );
+  assert.deepEqual(seed.countRows, [
+    { activityTypeKey: 'video', count: 1 },
+    { activityTypeKey: 'practice-level', count: 3 },
+    { activityTypeKey: 'quiz', count: 1 },
+  ]);
+  assert.equal(seed.pageRangeTypeKey, null);
+  assert.deepEqual(seed.splitNumbers, []);
+});
+
+test('buildCountTargetSeed routes a page-range target to the single page-range slot, split over the budget', () => {
+  const seed = RecipeCore.buildCountTargetSeed(
+    [
+      { activityTypeKey: 'video', targetCount: 1 },
+      { activityTypeKey: 'pdf', targetCount: 3 },
+    ],
+    { activityTypesByKey: typesByKey(), budgetStart: 800, budgetEnd: 810 },
+  );
+  assert.deepEqual(seed.countRows, [{ activityTypeKey: 'video', count: 1 }]);
+  assert.equal(seed.pageRangeTypeKey, 'pdf');
+  assert.deepEqual(seed.splitNumbers, [800, 803, 807]);
+  assert.equal(seed.splitMode, 'first');
+});
+
+test('buildCountTargetSeed pre-selects a page-range type with no splits when the Lesson has no budget', () => {
+  const seed = RecipeCore.buildCountTargetSeed([{ activityTypeKey: 'pdf', targetCount: 3 }], {
+    activityTypesByKey: typesByKey(),
+  });
+  assert.equal(seed.pageRangeTypeKey, 'pdf');
+  assert.deepEqual(seed.splitNumbers, []);
+});
+
+test('buildCountTargetSeed keeps only the first page-range target (D11)', () => {
+  const seed = RecipeCore.buildCountTargetSeed(
+    [
+      { activityTypeKey: 'pdf', targetCount: 2 },
+      { activityTypeKey: 'workbook', targetCount: 4 },
+    ],
+    {
+      activityTypesByKey: typesByKey({
+        workbook: { activityTypeKey: 'workbook', label: 'Workbook', structurePattern: 'page-range' },
+      }),
+      budgetStart: 1,
+      budgetEnd: 10,
+    },
+  );
+  assert.equal(seed.pageRangeTypeKey, 'pdf');
+  assert.deepEqual(seed.splitNumbers, [1, 6]);
+  assert.deepEqual(seed.countRows, []);
+});
+
+test('buildCountTargetSeed skips a zero target and a target naming a deleted type', () => {
+  const seed = RecipeCore.buildCountTargetSeed(
+    [
+      { activityTypeKey: 'video', targetCount: 0 },
+      { activityTypeKey: 'AT-gone', targetCount: 2 },
+      { activityTypeKey: 'quiz', targetCount: 1 },
+    ],
+    { activityTypesByKey: typesByKey() },
+  );
+  assert.deepEqual(seed.countRows, [{ activityTypeKey: 'quiz', count: 1 }]);
+});
+
+test('buildCountTargetSeed on a Lesson with no targets seeds an empty Stage 1', () => {
+  assert.deepEqual(RecipeCore.buildCountTargetSeed(undefined, { activityTypesByKey: typesByKey() }), {
+    countRows: [],
+    pageRangeTypeKey: null,
+    splitNumbers: [],
+    splitMode: 'first',
+  });
+});
+
+test('a seeded page-range split feeds buildProposalRows without a gap warning', () => {
+  const seed = RecipeCore.buildCountTargetSeed([{ activityTypeKey: 'pdf', targetCount: 3 }], {
+    activityTypesByKey: typesByKey(),
+    budgetStart: 800,
+    budgetEnd: 810,
+  });
+  const result = RecipeCore.buildProposalRows(
+    { entries: [{ activityTypeKey: 'pdf', pageRange: { numbers: seed.splitNumbers, mode: seed.splitMode } }] },
+    { lessonTitle: 'Fractions', budgetStart: 800, budgetEnd: 810, activityTypesByKey: typesByKey() },
+  );
+  assert.deepEqual(result.warnings, []);
+  assert.deepEqual(
+    result.rows.map((r) => [r.pageRangeStart, r.pageRangeEnd]),
+    [[800, 802], [803, 806], [807, 810]],
+  );
+});
