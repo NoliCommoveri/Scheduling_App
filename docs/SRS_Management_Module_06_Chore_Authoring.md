@@ -2,6 +2,39 @@
 ## Module 6: Chore Authoring
 *Written against Domain Model §2.6 (Chore — primary source, including `daysOfWeek[]`), §2.3 (Difficulty Tier & Reward Category), §2.10 (Generated Packet — recurrence expansion and fixed merge order), §3.5a (Chore as received, Child App side, including `daysOfWeek[]`), §4.2 (Completion CSV — chore rows), Architecture Evaluation §4/§5/§8, Documentation Roadmap §3.*
 
+*Amended 2026-08-13 — see Amendment A1 below. Affected passages are marked *(A1)*.*
+
+---
+
+## 0. Amendment A1 — bulk import, 2026-08-13
+
+**§2.2's assumption is withdrawn.** That passage recorded an assumption about
+volume — "a household realistically has a handful of recurring chores per
+child, not hundreds" — and closed by inviting its own reversal: *"Flag if your
+actual chore list is large enough to want bulk import — nothing here would need
+to change architecturally, it just isn't built."* That flag has been raised.
+
+The architectural claim it made proved correct: `docs/TDS_Slice_Chore_Bulk_Import.md`
+adds no store, no index, no schema version change, no migration, and no Worker
+route. A bulk-imported Chore is built by the same `buildRecord()` and validated
+by the same `validateFields()` a hand-authored one is, so nothing in §4's field
+list, §5's table, or §2.6's closed enum changes meaning — the module gains an
+entry path, not a new kind of record.
+
+What changed in this document: **§2.2** is rewritten from "not offered" to
+"offered, flat rows only"; **FR-8** is added to §4; **§5**'s `Bulk import` row
+is replaced; **§8**'s acceptance criterion 7 is inverted and criterion 8 added.
+Nothing else in this module changed.
+
+**Two things deliberately stay out of the CSV** (TDS §1): `childDays` — the
+per-child day override — because a flat comma-delimited row represents a list
+tolerably and a *map* not at all; and per-occurrence `blockHint`, for the same
+reason. Both remain authorable in the edit form, which is where a household's
+handful of such chores belongs. A row needing either is not rejected; it is
+imported without it, which is a valid Chore. This is the same call
+`TDS_Slice_M8_Management_App.md` FR-P5 made for Lesson content-planning fields:
+bulk import creates the bulk, hand-editing refines it.
+
 ---
 
 ## 1. Purpose
@@ -12,7 +45,11 @@ Lets the parent author and maintain standalone, per-child recurring Chores — h
 
 **2.1 — `daysOfWeek[]` is a required, non-empty subset of `{Sun, Mon, Tue, Wed, Thu, Fri, Sat}`.** A single generalized field covers every recurrence pattern a household actually wants — a chore done every day, a chore done one specific day, or a chore done on any other combination (e.g., every day except Saturday, for households with a standing no-chores day). One day selected covers what would otherwise be called "weekly"; all seven covers "daily"; nothing else needs a distinct code path — the (future) Packet Generation module expands a Chore's recurrence by checking membership in this one set, regardless of how many days are in it.
 
-**2.2 — No bulk import for Chores; manual CRUD only, an assumption based on volume.** Course Template Library (Module 3) split Course (manual-only) from Lesson/Activity (bulk-eligible) specifically because of a real volume difference — hundreds of Activities per semester versus a handful of Courses. Chores don't have that problem: a household realistically has a handful of recurring chores per child, not hundreds. **Assumption applied: Chore Authoring is manual CRUD only, no CSV path.** Flag if your actual chore list is large enough to want bulk import — nothing here would need to change architecturally, it just isn't built.
+**2.2 — Bulk CSV import is offered, alongside manual CRUD, and carries the flat fields only.** *(A1 — reverses this section's original "no bulk import" assumption; see §0.)* Chores are authorable one at a time in the form (FR-1) or in bulk from a CSV (FR-8). The two paths are not parallel implementations: the importer produces the same field object the create form produces, hands it to the same validation, and writes it through the same record builder, so every rule in §5 applies identically to both and no Chore can be imported that could not have been typed.
+
+The CSV is **one row per Chore**, nine locked columns, exact-header-match gate, all-or-nothing commit — the same treatment `TDS_Slice_M8_Management_App.md` §1/§4 established for Lessons and Activities. Multi-valued cells (participants, days, occurrence labels) use `|` as their separator, chosen because `,` is the field delimiter and `/` occurs inside a canonical `choreType` (`Kitchen/Dining`, §2.6).
+
+**Two of the Chore's fields are not importable:** `childDays` (§4/FR-1's per-participant day override) and per-occurrence `blockHint`. Both are nested — a map and an object member — and a flat row cannot carry them without inventing a sub-syntax for the two fields a household has the fewest of. They stay in the edit form. A bulk-created Chore gives every participant the same `daysOfWeek`; a parent wanting a split adds it afterwards. See `docs/TDS_Slice_Chore_Bulk_Import.md` §1.
 
 **2.3 — No start/end scheduling for a Chore's recurrence; treated as indefinite from creation until deletion.** Domain Model §2.6 doesn't mention a start or end date for a Chore (unlike Pacing Profile's `startDate`, Module 5). **Assumption applied:** once created, a Chore recurs indefinitely on its `daysOfWeek[]` pattern until the parent deletes it (§2.5/FR-3) — there's no "pause" or "end this chore on date X" concept in this module. Flag if you want a scheduled end date; not something inferred here, since no user story has asked for one.
 
@@ -48,6 +85,15 @@ Lets the parent author and maintain standalone, per-child recurring Chores — h
 
 **FR-6 — No template/instance concept applies.** Unlike Course (Module 3/4), a Chore is authored once, directly, against one Child — there is no stamping, no template library, no propagation question of any kind for Chores. This module has no "assign" action distinct from creation.
 
+**FR-8 — Bulk import Chores via CSV.** *(A1 — new; see §0 and `docs/TDS_Slice_Chore_Bulk_Import.md`.)* The parent selects a CSV file and imports it, creating one Chore per data row. A **Download blank template** action sits beside Import and emits the locked header row, which is itself a valid file that writes nothing.
+
+- **Locked columns, in this order:** `children`, `title`, `choreType`, `daysOfWeek`, `allocation`, `difficultyTier`, `instances`, `blockHint`, `notes`. Required non-blank: `children`, `title`, `choreType`, `daysOfWeek`, `difficultyTier`. The header is validated as a whole-file gate before any data row is read — a missing, extra, renamed or reordered column rejects the file with a message naming the nine.
+- **`children`** names participants by **name**, matched case-insensitively against *active* Children only, or by literal `CHI-…` record id as an escape hatch (the only way to name an archived Child). A name matching no active Child, or matching two or more, is a row failure — an ambiguous name is reported with the ids to disambiguate with, never guessed at.
+- **`difficultyTier`** is the `tierId` (e.g. `D01`), matching both the stored field and the Lesson/Activity CSV's identical rule. **`choreType`** is the canonical value spelled and cased exactly (§2.6); the comparison is exact so a wrong-cased value fails loudly rather than writing a value the child device would later reject.
+- **`instances`** carries occurrence **labels** only, `|`-separated (`Breakfast|Lunch|Dinner`); the ids are minted at write time, never authored, which is what makes §5's uniqueness and no-`-` rules unfailable from this path. Blank means one unlabeled occurrence — the property is omitted entirely, not written as an empty list.
+- **All-or-nothing.** Every per-row check and the §5 validation run before any write. One or more failures ⇒ nothing is written, existing Chores are untouched, and the parent gets a reason for *every* failing row, not just the first, so a spreadsheet is fixed in one pass. On success the summary reports how many Chores were created and across how many Children.
+- **No idempotency is claimed.** Re-importing the same file creates a second full set of Chores — a Chore has no natural key to deduplicate on, and the module has never had one.
+
 **FR-7 — One or more participants, one allocation rule.** *Repealed and replaced, `TDS_Slice_Shared_Chores.md` §0.1/§2.2.* A Chore names one or more participating Children (`childIds`) and an `allocation` of `each` or `claim`. "Breakfast Dishes" is one Chore record regardless of how many children do it: `each` gives every participant their own row per occurrence, to complete and earn on independently (optionally on different days per participant, via `childDays`); `claim` gives every participant a linked row, of which the first completion takes the reward and resolves the rest (server-arbitrated; a `claim` Chore cannot also use `childDays`, §4.3 of the TDS slice). A single-participant Chore is simply `childIds` with one entry and `allocation: 'each'` — not a distinct case. This aligns with Family Event, which has always supported multiple `childId`s (Domain Model §2.7); a shared Chore no longer needs duplicate records the way a shared Family Event never did.
 
 ## 5. Validation rules
@@ -64,7 +110,7 @@ Lets the parent author and maintain standalone, per-child recurring Chores — h
 | `daysOfWeek[]` | Required; non-empty subset of {Sun, Mon, Tue, Wed, Thu, Fri, Sat}; no duplicates. One day selected behaves as "weekly"; all seven behaves as "daily"; any other combination (e.g., six days, excluding Saturday) is equally valid — there is no separate "daily" code path (§2.1). |
 | `difficultyTier` | Required; must resolve to an existing row in Module 2's table. |
 | Delete | Requires explicit confirmation; irreversible; does not touch already-delivered content or child-side history (§2.5). |
-| Bulk import | Not offered — manual CRUD only (§2.2). |
+| Bulk import | *(A1)* Offered (FR-8). Nine locked columns, exact header match as a whole-file gate, `\|` as the list separator in multi-valued cells, all-or-nothing commit. Every row is validated by the rules above — the importer builds the same field object the form does and shares its validation, so this table is the single definition of a valid Chore for both paths. `childDays` and per-occurrence `blockHint` are not importable (§2.2); `instances` ids are minted, never authored. |
 
 ## 6. Permissions
 
@@ -86,4 +132,5 @@ No *additional* per-action PIN. The Management App's `launchPin` (Domain Model �
 4. Deleting a Chore requires an explicit confirmation step and does not alter any Activity Record already produced against it.
 5. Creating a Chore with an empty `daysOfWeek[]` is rejected; creating one with a single day succeeds and behaves as a "weekly" chore.
 6. A Chore can be authored against two or more Children as a single record (§4/FR-7); removing a participant, or deleting the Child, stops future generation for them without touching the record's other participants or anything already delivered.
-7. No UI path in this module offers a bulk/CSV import option (§2.2).
+7. *(A1 — inverted; was "No UI path in this module offers a bulk/CSV import option".)* The Chores view offers a bulk CSV import with a blank-template download beside it. A file whose header deviates from the nine locked columns in any way is rejected before a single data row is read; a file with one valid and one invalid row writes **nothing**, confirmed by a Chore count before and after.
+8. *(A1)* A row naming a Child by a name two active Children share is rejected with both `CHI-…` ids in the message, and the same file with an id substituted imports cleanly; a row naming an archived Child by name is rejected, by id succeeds. No imported Chore ever carries a `childDays` property, and an imported Chore's key set is identical to that of a hand-authored Chore of the same shape.
