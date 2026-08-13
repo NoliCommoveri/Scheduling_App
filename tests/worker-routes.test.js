@@ -278,7 +278,7 @@ test('Shared Chores §3: instanceKey defaults to the empty string, not null', as
   });
   const insertStmt = DB.batched[0].find((s) => s.sql.includes('INSERT INTO assignments'));
   assert.ok(insertStmt.sql.includes('instance_key'), 'instance_key is in the column list');
-  assert.ok(insertStmt.sql.includes('instance_key = ?17'), 'the NOT EXISTS guard keys on it too');
+  assert.ok(insertStmt.sql.includes('instance_key = ?16'), 'the NOT EXISTS guard keys on it too');
   // Shared Chores §5.2 added claim_group as the bind right after instance_key,
   // pushing instance_key to third-from-last (claim_group, then now).
   assert.equal(insertStmt.args.at(-3), '', 'bound as empty string, never null — NULL = NULL never matches in SQLite');
