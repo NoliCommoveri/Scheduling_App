@@ -106,7 +106,17 @@ const Courses = (() => {
     if (fields.subject) record.subject = fields.subject.trim();
     if (fields.description) record.description = fields.description.trim();
     if (fields.defaultPacingHint) record.defaultPacingHint = fields.defaultPacingHint.trim();
+    if (fields.titlePatterns) record.titlePatterns = fields.titlePatterns;
     return record;
+  }
+
+  // §5.6.1's four save-time checks live in RecipeCore; this just supplies the
+  // activityTypes lookup. `raw` is the disclosure block's whole map each save
+  // (not a patch), so an empty result means "no overrides", not "no change".
+  async function resolveTitlePatternsInput(raw) {
+    const activityTypes = await Storage.getAll('activityTypes');
+    const byKey = new Map(activityTypes.map((t) => [t.activityTypeKey, t]));
+    return RecipeCore.sanitizeTitlePatterns(raw || {}, byKey);
   }
 
   async function createCourse(fields) {
@@ -116,7 +126,14 @@ const Courses = (() => {
     const codeResult = await validateCourseCode(fields.courseCode, fields.name, undefined);
     if (codeResult.error) return { error: codeResult.error };
 
-    const record = buildCourseRecord('COU-' + randomToken(), fields, codeResult.code);
+    const patternsResult = await resolveTitlePatternsInput(fields.titlePatterns);
+    if (patternsResult.error) return { error: patternsResult.error };
+
+    const record = buildCourseRecord(
+      'COU-' + randomToken(),
+      { ...fields, titlePatterns: patternsResult.titlePatterns },
+      codeResult.code,
+    );
     await Storage.put('courses', record);
     return { record };
   }
@@ -136,10 +153,15 @@ const Courses = (() => {
       courseCode = codeResult.code;
     }
 
+    const patternsResult = await resolveTitlePatternsInput(fields.titlePatterns);
+    if (patternsResult.error) return { error: patternsResult.error };
+
     // Preserve every field the edit form doesn't manage (curriculumId,
-    // subject, description, coreElective, defaultPacingHint) — only name
-    // and courseCode are ever overwritten here.
+    // subject, description, coreElective, defaultPacingHint) — only name,
+    // courseCode, and titlePatterns are ever overwritten here.
     const record = { ...existing, name: fields.name.trim(), courseCode };
+    if (patternsResult.titlePatterns) record.titlePatterns = patternsResult.titlePatterns;
+    else delete record.titlePatterns;
     await Storage.put('courses', record);
     return { record };
   }
@@ -763,6 +785,36 @@ const Courses = (() => {
     return fieldset;
   }
 
+  // §5.6.1's disclosure block: one row per Activity Type, placeholder showing
+  // the built-in default so the parent sees what they'd get before typing.
+  // Video's placeholder shows the multi-count form — the count-1 collapse
+  // isn't representable as a static placeholder, and overriding always opts
+  // out of the collapse anyway (§5.6.1).
+  function buildTitlePatternsFieldset(activityTypes, existingPatterns) {
+    const details = document.createElement('details');
+    details.className = 'title-patterns';
+    const rows = activityTypes
+      .map((t) => {
+        const placeholder = RecipeCore.builtInPattern(t.activityTypeKey, 2);
+        const current = (existingPatterns && existingPatterns[t.activityTypeKey]) || '';
+        return `
+          <label>${escapeHtml(t.label)}
+            <input type="text" name="titlePattern:${t.activityTypeKey}" value="${escapeHtml(current)}" placeholder="${escapeHtml(placeholder)}">
+          </label>
+        `;
+      })
+      .join('');
+    details.innerHTML = `<summary>Title patterns (optional)</summary>${rows}`;
+    details.collect = () => {
+      const out = {};
+      activityTypes.forEach((t) => {
+        out[t.activityTypeKey] = details.querySelector(`[name="titlePattern:${t.activityTypeKey}"]`).value;
+      });
+      return out;
+    };
+    return details;
+  }
+
   function buildBulkImportSection(root) {
     const section = document.createElement('section');
     section.className = 'bulk-import';
@@ -807,7 +859,11 @@ const Courses = (() => {
 
   async function renderCourseList(root) {
     root.innerHTML = '';
-    const [courses, curricula] = await Promise.all([listCourseTemplates(), Storage.getAll('curricula')]);
+    const [courses, curricula, activityTypes] = await Promise.all([
+      listCourseTemplates(),
+      Storage.getAll('curricula'),
+      Storage.getAll('activityTypes'),
+    ]);
 
     const heading = document.createElement('h1');
     heading.textContent = 'Course Template Library';
@@ -845,6 +901,8 @@ const Courses = (() => {
       <p class="error" hidden></p>
       <button type="submit">Add Course</button>
     `;
+    const titlePatternsFieldset = buildTitlePatternsFieldset(activityTypes, null);
+    form.querySelector('.error').before(titlePatternsFieldset);
     const errorEl = form.querySelector('.error');
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -852,6 +910,7 @@ const Courses = (() => {
         name: form.name.value,
         curriculumId: form.curriculumId.value,
         courseCode: form.courseCode.value,
+        titlePatterns: titlePatternsFieldset.collect(),
       });
       if (result.error) {
         errorEl.hidden = false;
@@ -902,6 +961,8 @@ const Courses = (() => {
       <p class="success" hidden></p>
       <button type="submit">Save</button>
     `;
+    const titlePatternsFieldset = buildTitlePatternsFieldset(activityTypes, course.titlePatterns);
+    editForm.querySelector('.error').before(titlePatternsFieldset);
     const editErr = editForm.querySelector('.error');
     const editOk = editForm.querySelector('.success');
     editForm.addEventListener('submit', async (e) => {
@@ -909,6 +970,7 @@ const Courses = (() => {
       const result = await editCourse(course.id, {
         name: editForm.name.value,
         courseCode: frozen ? course.courseCode : editForm.courseCode.value,
+        titlePatterns: titlePatternsFieldset.collect(),
       });
       if (result.error) {
         editErr.hidden = false;
