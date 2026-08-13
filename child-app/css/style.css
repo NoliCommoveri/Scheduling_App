@@ -241,6 +241,14 @@ button { font-family: inherit; cursor: pointer; }
   color: var(--ink-faint); margin: 12px 4px 6px;
 }
 
+/* Lesson group header (Lesson Recipe slice §9.1) — shared by every card from
+   one Lesson, replacing the per-card lessonTitle subline. */
+.lesson-head {
+  font-family: var(--font-display); font-weight: 800; font-size: 15px;
+  color: var(--ink); margin: 16px 2px 8px; padding-bottom: 5px;
+  border-bottom: 1px solid var(--line);
+}
+
 /* ---------- Item card ---------- */
 .card {
   background: var(--surface); border-radius: var(--radius);
@@ -256,14 +264,12 @@ button { font-family: inherit; cursor: pointer; }
   color: var(--ink-soft); background: var(--surface-2);
   border-radius: 6px; padding: 2px 7px;
 }
-.ordinal {
-  font-size: 11px; font-weight: 800; letter-spacing: .02em;
-  color: var(--primary); background: var(--primary-soft);
-  border-radius: 6px; padding: 2px 7px;
-}
 .title { font-weight: 700; font-size: 16px; color: var(--ink); }
+.card-title-line { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.title-dot { color: var(--ink-faint); font-weight: 800; }
 .lesson-sub { font-size: 13px; color: var(--ink-soft); margin-top: 1px; }
 .course-sub { font-size: 11px; font-weight: 700; letter-spacing: .02em; color: var(--ink-faint); margin-bottom: 2px; }
+.instr-btn { margin-top: 8px; }
 .payload {
   margin-top: 7px; font-size: 14px; font-weight: 600; color: var(--ink);
   background: var(--surface-2); border-radius: 9px; padding: 7px 10px;

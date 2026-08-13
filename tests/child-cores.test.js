@@ -32,7 +32,7 @@ function row(overrides = {}) {
   return {
     id: 'a1', child_id: 'CH-1', date: '2026-08-11', kind: 'activity', batch_id: 'b1',
     source_id: 'ACT-1', title: 'Read chapter 4', course_name: 'History',
-    activity_type: 'Reading', sequence_no: null, payload: null,
+    activity_type: 'Reading', payload: null,
     expected_duration_min: 20, reward_amount: null, reward_category: 'RC-1',
     block_hint: 'Morning', sort_order: 3, rescinded_at: null,
     status: 'pending', completed_at: null, grade: null, deferred_to: null,
@@ -283,7 +283,7 @@ test('decorateById indexes rows toState drops, which is the whole point of it', 
 });
 
 test('decorateById decorates each row exactly as the planner does', () => {
-  const source = row({ id: 'a1', status: 'complete', course_name: 'Math', sequence_no: 4 });
+  const source = row({ id: 'a1', status: 'complete', course_name: 'Math' });
   const byId = AssignmentCore.decorateById([source]);
   assert.deepEqual(byId.a1, AssignmentCore.decorate(source));
   assert.notEqual(byId.a1, source); // copied, never the stored row itself
@@ -370,7 +370,7 @@ test('toState no longer mints a second name for any column', () => {
   // them now read the column. Re-adding any would put the double representation
   // the collapse removed straight back.
   const item = AssignmentCore.toState([row({
-    sort_order: 4, block_hint: 'morning', sequence_no: 2,
+    sort_order: 4, block_hint: 'morning',
     reward_amount: 5, expected_duration_min: 20,
   })]).rows[0];
   for (const alias of [
@@ -383,7 +383,6 @@ test('toState no longer mints a second name for any column', () => {
   assert.equal(item.block_hint, 'morning');
   assert.equal(item.course_name, 'History');
   assert.equal(item.activity_type, 'Reading');
-  assert.equal(item.sequence_no, 2);
   assert.equal(item.reward_category, 'RC-1');
   assert.equal(item.reward_amount, 5);
   assert.equal(item.expected_duration_min, 20);
@@ -510,32 +509,39 @@ test('filterView selects one kind, ordered by block then position', () => {
   assert.deepEqual(ids(PlannerCore.filterView(rows, TODAY, nothingResolved, 'chores')), ['c1']);
 });
 
-// Child Feedback Loop §4.2 — filterView("school") groups by block, then
-// course, then lesson order.
-test('filterView (school) groups by block, then course, then lesson order', () => {
+// Child Feedback Loop §4.2, reworked by the Lesson Recipe slice §9.2 —
+// filterView("school") groups by block, then course, then lesson, then
+// effectiveSortKey. `sequence_no` is gone; a lesson group's order comes
+// entirely from sort_order/child_sort_order now.
+test('filterView (school) groups by block, then course, then lesson, then effective key', () => {
   const rows = plan(
-    row({ id: 'a1', course_name: 'History', sequence_no: 2, sort_order: 9 }),
-    row({ id: 'a2', course_name: 'History', sequence_no: 1, sort_order: 0 }),
+    row({ id: 'a1', course_name: 'History', payload: JSON.stringify({ lessonTitle: 'Rivers' }), sort_order: 9 }),
+    row({ id: 'a2', course_name: 'History', payload: JSON.stringify({ lessonTitle: 'Rivers' }), sort_order: 0 }),
     row({ id: 'a3', course_name: 'Maths', sort_order: 1 }),
     row({ id: 'a4', course_name: null, sort_order: 0 })
   );
-  // First-seen course order (History, then Maths); the course-less item
-  // falls into its own unlabeled group, forced last regardless of §4.2.
+  // First-seen course order (History, then Maths); within History, the one
+  // lesson group sorts by effectiveSortKey; the course-less item falls into
+  // its own unlabeled group, forced last regardless of §4.2.
   assert.deepEqual(
     ids(PlannerCore.filterView(rows, TODAY, nothingResolved, 'school')),
     ['a2', 'a1', 'a3', 'a4']
   );
 });
 
-test('filterView (school) falls back to position when a course group has a partial sequence_no', () => {
+test('filterView (school) keeps two lessons of the same course in first-seen order, each sorted on its own', () => {
+  const lessonA = JSON.stringify({ lessonTitle: 'Rivers' });
+  const lessonB = JSON.stringify({ lessonTitle: 'Mountains' });
   const rows = plan(
-    row({ id: 'a1', course_name: 'History', sequence_no: 2, sort_order: 0 }),
-    row({ id: 'a2', course_name: 'History', sequence_no: null, sort_order: 1 })
+    row({ id: 'a1', course_name: 'History', payload: lessonB, sort_order: 0 }), // Mountains seen first
+    row({ id: 'a2', course_name: 'History', payload: lessonA, sort_order: 0 }), // Rivers seen second
+    row({ id: 'a3', course_name: 'History', payload: lessonA, sort_order: 0, child_sort_order: -1 }), // Rivers, reordered ahead
+    row({ id: 'a4', course_name: 'History', payload: null, sort_order: 1 }) // no lesson — its own trailing group
   );
   assert.deepEqual(
     ids(PlannerCore.filterView(rows, TODAY, nothingResolved, 'school')),
-    ['a1', 'a2'],
-    'not every item in the group has a sequence_no, so the whole group sorts by position instead'
+    ['a1', 'a3', 'a2', 'a4'],
+    'Mountains group first (first-seen), Rivers group sorted by effective key within itself, lesson-less items trail'
   );
 });
 
@@ -547,25 +553,35 @@ test('filterView (chores) stays block-then-position only — course_name has no 
   assert.deepEqual(ids(PlannerCore.filterView(rows, TODAY, nothingResolved, 'chores')), ['c2', 'c1']);
 });
 
-// Child Feedback Loop §4.3, decided — the reorder arrows are suppressed for a
-// parent-authored lesson order, and scoped to block+course for everything else.
-test('canReorder is false only for a row carrying a parent-authored sequence_no', () => {
-  assert.equal(PlannerCore.canReorder(row({ sequence_no: null })), true);
-  assert.equal(PlannerCore.canReorder(row({ sequence_no: 0 })), false, 'zero is a real lesson order, not absence');
-  assert.equal(PlannerCore.canReorder(row({ sequence_no: 3 })), false);
-  assert.equal(PlannerCore.canReorder(row({ kind: 'chore', sequence_no: null })), true);
-});
-
-test('reorderPeers narrows an activity to its own block and course', () => {
+// Child Feedback Loop §4.3, widened by the Lesson Recipe slice §9.2 — every
+// row is reorderable now that `sequence_no` (parent-authored lesson order) is
+// gone with the column, and the peer scope narrows one level further, to the
+// lesson.
+test('reorderPeers narrows an activity to its own block, course, and lesson', () => {
+  const rivers = JSON.stringify({ lessonTitle: 'Rivers' });
+  const mountains = JSON.stringify({ lessonTitle: 'Mountains' });
   const rows = plan(
-    row({ id: 'a1', course_name: 'History', block_hint: 'morning' }),
-    row({ id: 'a2', course_name: 'History', block_hint: 'morning' }),
-    row({ id: 'a3', course_name: 'Maths', block_hint: 'morning' }),
-    row({ id: 'a4', course_name: 'History', block_hint: 'afternoon' })
+    row({ id: 'a1', course_name: 'History', block_hint: 'morning', payload: rivers }),
+    row({ id: 'a2', course_name: 'History', block_hint: 'morning', payload: rivers }),
+    row({ id: 'a3', course_name: 'History', block_hint: 'morning', payload: mountains }),
+    row({ id: 'a4', course_name: 'Maths', block_hint: 'morning', payload: rivers }),
+    row({ id: 'a5', course_name: 'History', block_hint: 'afternoon', payload: rivers })
   );
   const scope = PlannerCore.reorderPeers(rows, rows[1]);
-  assert.deepEqual(ids(scope.peers), ['a1', 'a2'], 'another course and another block are both out of reach');
+  assert.deepEqual(
+    ids(scope.peers), ['a1', 'a2'],
+    'a different lesson, a different course, and a different block are all out of reach'
+  );
   assert.equal(scope.index, 1);
+});
+
+test('reorderPeers keeps lesson-less activities of a course together, apart from its lessons', () => {
+  const rows = plan(
+    row({ id: 'a1', course_name: 'History', block_hint: 'morning', payload: null }),
+    row({ id: 'a2', course_name: 'History', block_hint: 'morning', payload: JSON.stringify({ lessonTitle: 'Rivers' }) }),
+    row({ id: 'a3', course_name: 'History', block_hint: 'morning', payload: null })
+  );
+  assert.deepEqual(ids(PlannerCore.reorderPeers(rows, rows[0]).peers), ['a1', 'a3']);
 });
 
 test('reorderPeers keeps course-less activities together, apart from the courses', () => {
@@ -618,6 +634,25 @@ test('assembleToday groups School by course within each block; Chores stay posit
 
   assert.deepEqual(ids(today.blocks[0].school), ['a1', 'a2'], 'course group order is first-seen, not position');
   assert.deepEqual(ids(today.blocks[0].chores), ['c2', 'c1'], 'chores keep plain position order');
+});
+
+// Lesson Recipe slice §9.2 — byCourseThenLesson sub-groups each course by
+// lessonTitle before it sorts, replacing the old sequence_no/position choice
+// with one sort (effectiveSortKey) applied inside every lesson group.
+test('assembleToday sub-groups a course by lesson, in first-seen order, sorted within by effective key', () => {
+  const rivers = JSON.stringify({ lessonTitle: 'Rivers' });
+  const mountains = JSON.stringify({ lessonTitle: 'Mountains' });
+  const today = PlannerCore.assembleToday(plan(
+    row({ id: 'a1', course_name: 'History', payload: mountains, sort_order: 0 }), // Mountains seen first
+    row({ id: 'a2', course_name: 'History', payload: rivers, sort_order: 9 }),
+    row({ id: 'a3', course_name: 'History', payload: rivers, sort_order: 0 }),
+    row({ id: 'a4', course_name: 'History', payload: null, sort_order: 0 }) // no lesson — trailing group
+  ), TODAY, nothingResolved);
+
+  assert.deepEqual(
+    ids(today.blocks[0].school), ['a1', 'a3', 'a2', 'a4'],
+    'Mountains group first, Rivers group sorted by effective key within itself, lesson-less items trail'
+  );
 });
 
 test('subjectsView groups activities by course_name, in first-seen order', () => {
@@ -871,19 +906,23 @@ test('isEligible: resolved and not yet exported', () => {
   assert.equal(ExportCore.isEligible({ status: 'pending', exported: false }), false);
 });
 
-test('buildRow sources course, activity type and sequence from an activity row', () => {
+test('buildRow sources course and activity type from an activity row; sequenceNumber emits its title', () => {
   // §14 phase 3: the source used to be the received Activity, read out of the
   // now-dropped `activities` store. It is the decorated `assignments` row now.
+  //
+  // Lesson Recipe slice §9.3: `sequence_no` is gone with the column — the
+  // ordinal it used to hold now lives in the title, so the column named
+  // `sequenceNumber` emits the title instead.
   const assignmentRow = {
-    kind: 'activity', title: 'Read chapter 4', course_name: 'History',
-    activity_type: 'Reading', block_hint: 'Morning', sequence_no: 4,
+    kind: 'activity', title: 'Level 3', course_name: 'History',
+    activity_type: 'Reading', block_hint: 'Morning',
   };
   const record = { activityId: 'a1', date: '2026-08-11', status: 'complete', grade: 90 };
   const out = ExportCore.buildRow(record, assignmentRow, 'Sam', 'Fall 2026');
   assert.deepEqual(out, {
-    activityId: 'a1', date: '2026-08-11', course: 'History', activity: 'Read chapter 4',
+    activityId: 'a1', date: '2026-08-11', course: 'History', activity: 'Level 3',
     activityType: 'Reading', plannedBlock: 'Morning', status: 'complete', grade: 90,
-    childName: 'Sam', semesterLabel: 'Fall 2026', sequenceNumber: 4,
+    childName: 'Sam', semesterLabel: 'Fall 2026', sequenceNumber: 'Level 3',
   });
 });
 
@@ -892,7 +931,7 @@ test('buildRow blanks course and sequence for a chore, and reads its type off `c
   // the decorated row's promoted `choreType`, not the §3.3 `activity_type` column.
   const assignmentRow = {
     kind: 'chore', title: 'Dishes', choreType: 'Daily', block_hint: 'Evening',
-    course_name: null, activity_type: null, sequence_no: null,
+    course_name: null, activity_type: null,
   };
   const record = { activityId: 'c1', date: '2026-08-11', status: 'waived', grade: null };
   const out = ExportCore.buildRow(record, assignmentRow, 'Sam', 'Fall 2026');

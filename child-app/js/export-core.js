@@ -33,7 +33,13 @@
 
   // assignmentRow: the decorated `assignments` row matching record.activityId
   // (§3.3), the same shape planner-ui.js and completion.js render from.
-  // course/sequenceNumber are blank for a chore, per §3 — a chore has neither.
+  // course is blank for a chore, per §3 — a chore has no course.
+  //
+  // Lesson Recipe slice §9.3: `sequence_no` is gone with the column — the
+  // ordinal it used to hold now lives in the title itself. The column keeps
+  // its name (this report's header is a contract a parent may already be
+  // reading a spreadsheet against) but emits the title instead, still blank
+  // for a chore.
   function buildRow(record, assignmentRow, childName, semesterLabel) {
     var isChore = assignmentRow.kind === "chore";
     return {
@@ -47,7 +53,7 @@
       grade: typeof record.grade === "number" ? record.grade : "",
       childName: childName || "",
       semesterLabel: semesterLabel || "",
-      sequenceNumber: isChore ? "" : (typeof assignmentRow.sequence_no === "number" ? assignmentRow.sequence_no : "")
+      sequenceNumber: isChore ? "" : (assignmentRow.title || "")
     };
   }
 

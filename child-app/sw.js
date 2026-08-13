@@ -91,7 +91,19 @@
 // instead of after all blocks. No file added or removed; planner-ui.js changed
 // contents only. Same v6/v10/v11 hazard: this handler is cache-first for the
 // shell, so a device left on v13 would keep seeing events sink to the bottom.
-const CACHE_NAME = "daily-plan-shell-v15";
+// v16: Lesson Recipe slice §9 — the Child App card rework and `sequence_no`
+// deletion. No file added or removed; planner-core.js, planner-ui.js,
+// export-core.js and style.css changed contents. `sequence_no` is dropped as
+// a card field and as a grouping/reorder key — the column itself left D1 back
+// in the slice's Phase 1, so a device left on v15 has been silently falling
+// back to position-only sorting and a fully-suppressed reorder arrow set
+// (byCourseThenLesson/canReorder never saw a `sequence_no` post-migration
+// either way) — but it also still runs `renderContent`'s `content.kind`
+// switch, which stopped matching anything the moment packet.js's Phase 2
+// projection shipped, so its page-range line has been silently blank since
+// then. The bump is what gets the repair (and the lesson-header rework) onto
+// the device.
+const CACHE_NAME = "daily-plan-shell-v16";
 
 const APP_SHELL = [
   "./",

@@ -10,17 +10,20 @@
 // `sequenceNumber`, `activityType` and a `payload` that assignment-core had
 // quietly replaced with a parsed object — which was the only reason those
 // names were minted at all. It now renders from the §3.3 columns themselves:
-// `course_name`, `sequence_no`, `activity_type`.
+// `course_name`, `activity_type` (the Lesson Recipe slice §9 later dropped
+// `sequence_no` outright — the column, not just the alias — so it is not in
+// this list any more; the ordinal it used to carry now lives in the title).
 //
 // The camelCase names that remain here are not columns and are not aliases:
 // `choreType`, `lessonTitle`, `capturesGrade`, `required`, `notes`, `time` and
 // an event's `startDate`/`endDate` come out of the row's `payload`, where the
-// Management App writes what §3.3 gives no column, and `content` is that
-// payload's kind-specific descriptor. Phase 3 (§14) dropped the
-// `activities`/`chores`/`events` stores and the four legacy `loadState()` keys;
-// folding `plannerMeta` into `child_block_hint`/`child_sort_order` — split out
-// of that collapse as its own write-path item — is also done: setOverride
-// below writes the column directly rather than a separate store's vocabulary.
+// Management App writes what §3.3 gives no column, and `content` is what's
+// left of an activity's payload once those are lifted out — a page range,
+// or nothing. Phase 3 (§14) dropped the `activities`/`chores`/`events` stores
+// and the four legacy `loadState()` keys; folding `plannerMeta` into
+// `child_block_hint`/`child_sort_order` — split out of that collapse as its
+// own write-path item — is also done: setOverride below writes the column
+// directly rather than a separate store's vocabulary.
 
 (function (g) {
   "use strict";
@@ -503,12 +506,9 @@
 
       today.blocks.forEach(function (block) {
         wrap.appendChild(laneHead(block.name));
-        var group = [];
         if (block.school.length) {
           wrap.appendChild(node("div", "cat-label", "School"));
-          block.school.forEach(function (a) {
-            wrap.appendChild(itemCard(a, "activity", block.name, block.school));
-          });
+          renderSchoolGroup(wrap, block.school, function () { return block.name; });
         }
         if (block.chores.length) {
           wrap.appendChild(node("div", "cat-label", "Chores"));
@@ -533,6 +533,29 @@
       return lane;
     }
 
+    // Lesson group header (Lesson Recipe slice §9.1) — moves the lesson name
+    // off a per-card subline onto one header shared by every card from that
+    // Lesson.
+    function lessonHead(title) {
+      return node("div", "lesson-head", title);
+    }
+
+    // Renders a run of activity cards with a lessonHead inserted whenever
+    // lessonTitle changes from the item immediately before it. `items` is
+    // already grouped by lesson (byCourseThenLesson / filterView), so same-
+    // lesson items are always contiguous; a lesson-less item gets no header.
+    // `blockNameFor` varies per item in the filter views (one flat list
+    // spanning every block) and is constant within a single Today block.
+    function renderSchoolGroup(wrap, items, blockNameFor) {
+      var lastLesson;
+      items.forEach(function (item) {
+        var lesson = item.lessonTitle || null;
+        if (lesson && lesson !== lastLesson) wrap.appendChild(lessonHead(lesson));
+        lastLesson = lesson;
+        wrap.appendChild(itemCard(item, "activity", blockNameFor(item), items));
+      });
+    }
+
     // ---------- filter views (School / Chores) ----------
     function renderFilter(category) {
       var d = state.data;
@@ -543,12 +566,13 @@
           category === "chores" ? "No chores for this date." : "No school work for this date."));
         return wrap;
       }
-      list.forEach(function (item) {
-        var blockName = P.effectiveBlock(item);
-        var card = itemCard(item, category === "chores" ? "chore" : "activity", blockName, list);
-        card.style.setProperty("--lane-color", "var(--" + blockName + ")");
-        wrap.appendChild(card);
-      });
+      if (category === "chores") {
+        list.forEach(function (item) {
+          wrap.appendChild(itemCard(item, "chore", P.effectiveBlock(item), list));
+        });
+      } else {
+        renderSchoolGroup(wrap, list, P.effectiveBlock);
+      }
       return wrap;
     }
 
@@ -642,9 +666,6 @@
       var tagrow = node("div", "tagrow");
       var typeText = kind === "chore" ? item.choreType : item.activity_type;
       if (typeText) tagrow.appendChild(node("span", "type-tag", typeText));
-      if (typeof item.sequence_no === "number") {
-        tagrow.appendChild(node("span", "ordinal", "No. " + item.sequence_no));
-      }
       if (tagrow.childNodes.length) main.appendChild(tagrow);
 
       if (kind === "activity" && item.course_name) {
@@ -747,6 +768,23 @@
       noteInput.focus();
     }
 
+    // Lesson Recipe slice §9.1 — an activity's instructions, read-only, no PIN.
+    // Replaces the old inline `<details>` disclosure; a chore's notes keep that.
+    function openInstructionsModal(item) {
+      var overlay = node("div", "modal-overlay");
+      var card = node("div", "modal-card");
+      card.appendChild(node("h2", "modal-title", "Instructions"));
+      card.appendChild(node("p", "modal-help", item.title));
+      card.appendChild(node("p", null, item.instructions));
+      var actions = node("div", "modal-actions");
+      var close = node("button", "btn", "Close");
+      close.onclick = function () { overlay.remove(); };
+      actions.appendChild(close);
+      card.appendChild(actions);
+      overlay.appendChild(card);
+      document.body.appendChild(overlay);
+    }
+
     // ---------- item card ----------
     // Shared Chores §6.6 — whether a claim tap would fail before it's even
     // tried. `navigator.onLine` alone is unreliable (it can read `true` on a
@@ -763,29 +801,26 @@
       var top = node("div", "card-top");
       var main = node("div", "card-main");
 
-      var tagrow = node("div", "tagrow");
-      // A chore's type is a payload field (no column); an activity's is the
-      // `activity_type` column, carrying the parent's label rather than the key.
-      var typeText = kind === "chore" ? item.choreType : item.activity_type;
-      if (typeText) tagrow.appendChild(node("span", "type-tag", typeText));
-      // sequence_no: rendered whenever present, keyed off presence (FR-10),
-      // distinct from the title, regardless of the content descriptor's kind.
-      if (typeof item.sequence_no === "number") {
-        tagrow.appendChild(node("span", "ordinal", "No. " + item.sequence_no));
-      }
-      if (tagrow.childNodes.length) main.appendChild(tagrow);
-
       // course_name label (FR-12) — above the title, activities only, only when present.
       if (kind === "activity" && item.course_name) {
         main.appendChild(node("div", "course-sub", item.course_name));
       }
 
-      main.appendChild(node("div", "title", item.title));
-
-      // lessonTitle subline (FR-8) — only when present, never an empty element.
-      if (kind === "activity" && item.lessonTitle) {
-        main.appendChild(node("div", "lesson-sub", item.lessonTitle));
+      // Type and title, merged onto one line (Lesson Recipe slice §9.1). The
+      // old ordinal chip read `sequence_no`, which is gone with the column —
+      // the ordinal now lives in the title itself ("Level 3"), and the lesson
+      // it belongs to is the group header above (lessonHead), not a subline
+      // repeated on every card.
+      var titleLine = node("div", "card-title-line");
+      // A chore's type is a payload field (no column); an activity's is the
+      // `activity_type` column, carrying the parent's label rather than the key.
+      var typeText = kind === "chore" ? item.choreType : item.activity_type;
+      if (typeText) {
+        titleLine.appendChild(node("span", "type-tag", typeText));
+        titleLine.appendChild(node("span", "title-dot", "·"));
       }
+      titleLine.appendChild(node("span", "title", item.title));
+      main.appendChild(titleLine);
 
       // content line by kind (FR-11) — activities only, and only an activity's
       // payload carries a content descriptor at all.
@@ -794,42 +829,41 @@
         if (contentEl) main.appendChild(contentEl);
       }
 
-      // instructions / notes (FR-9) — only when present.
-      var detailText = kind === "chore" ? item.notes : item.instructions;
-      if (detailText) {
-        var det = node("details", "detail");
-        det.appendChild(node("summary", null, "Details"));
-        det.appendChild(node("p", null, detailText));
-        main.appendChild(det);
+      // Chores keep their notes as an inline disclosure; an activity's
+      // instructions open a modal instead (§9.1) — either way, only when present.
+      if (kind === "chore") {
+        if (item.notes) {
+          var det = node("details", "detail");
+          det.appendChild(node("summary", null, "Details"));
+          det.appendChild(node("p", null, item.notes));
+          main.appendChild(det);
+        }
+      } else if (item.instructions) {
+        var instrBtn = node("button", "btn ghost small instr-btn", "Instructions");
+        instrBtn.onclick = function () { openInstructionsModal(item); };
+        main.appendChild(instrBtn);
       }
 
       top.appendChild(main);
 
-      // reorder controls (FR-4), scoped per Child Feedback Loop §4.3.
-      //
-      // Two changes from "within this block+category group": the arrows are
-      // gone entirely for a row carrying a parent-authored `sequence_no`
-      // (P.canReorder), and for everything else they move the row among its
-      // block+course peers rather than the whole rendered list
-      // (P.reorderPeers). Both exist because §4.2 groups by course before it
-      // sorts, so an arrow reaching outside that group could not move the row
-      // where it pointed — it wrote a key, queued an upload, and moved nothing.
-      // The render position is no longer what a reorder is relative to; the
-      // peer index is, so the caller stops passing one.
-      if (P.canReorder(item)) {
-        var scope = P.reorderPeers(group, item);
-        var controls = node("div", "controls");
-        var up = node("button", "icon-btn", "\u2191");
-        up.setAttribute("aria-label", "Move up");
-        up.disabled = scope.index <= 0;
-        up.onclick = function () { reorder(scope.peers, scope.index, -1); };
-        var down = node("button", "icon-btn", "\u2193");
-        down.setAttribute("aria-label", "Move down");
-        down.disabled = scope.index < 0 || scope.index === scope.peers.length - 1;
-        down.onclick = function () { reorder(scope.peers, scope.index, +1); };
-        controls.appendChild(up); controls.appendChild(down);
-        top.appendChild(controls);
-      }
+      // reorder controls (FR-4), scoped per Child Feedback Loop §4.3, widened
+      // by the Lesson Recipe slice §9.2 — `sequence_no` is gone, so nothing is
+      // parent-authored order any more and every row is reorderable. Peers are
+      // the rows sharing this row's block, course, and lesson (P.reorderPeers)
+      // — the same unit byCourseThenLesson sorts together, so an arrow
+      // reaching outside it could not move the row where it pointed.
+      var scope = P.reorderPeers(group, item);
+      var controls = node("div", "controls");
+      var up = node("button", "icon-btn", "\u2191");
+      up.setAttribute("aria-label", "Move up");
+      up.disabled = scope.index <= 0;
+      up.onclick = function () { reorder(scope.peers, scope.index, -1); };
+      var down = node("button", "icon-btn", "\u2193");
+      down.setAttribute("aria-label", "Move down");
+      down.disabled = scope.index < 0 || scope.index === scope.peers.length - 1;
+      down.onclick = function () { reorder(scope.peers, scope.index, +1); };
+      controls.appendChild(up); controls.appendChild(down);
+      top.appendChild(controls);
       card.appendChild(top);
 
       // footer: block mover (FR-5) + entry-point stubs (FR-6/FR-7).
@@ -871,21 +905,13 @@
       return card;
     }
 
-    // `content` is what packet.js's projectPayload wrote: the kind-specific
-    // half of an activity's payload, promoted out of it by assignment-core.
+    // `content` is what packet.js's projectPayload wrote: an activity's page
+    // range, the only content shape left after the Lesson Recipe slice deleted
+    // `reference` (§9.1/D5) — a Practice Level's content is its ordinal, and
+    // that lives in the title now, not here.
     function renderContent(content) {
-      if (!content) return null;
-      switch (content.kind) {
-        case "pageRange":
-          return node("div", "payload", "Pages " + content.pageRangeStart + "\u2013" + content.pageRangeEnd);
-        case "reference":
-          return node("div", "payload ref", content.reference);
-        case "freeText":
-          return node("div", "payload", content.text);
-        case "none":
-        default:
-          return null; // a Practice Level's content is its ordinal (FR-10)
-      }
+      if (!content || typeof content.pageRangeStart !== "number") return null;
+      return node("div", "payload", "Pages " + content.pageRangeStart + "\u2013" + content.pageRangeEnd);
     }
 
     function eventCard(ev) {
