@@ -19,7 +19,7 @@ Three apps' worth of change, built in this order. Each phase leaves the system w
 |---|---|---|---|
 | **1** | Schema + Worker | `0008` migration, registry, three Worker sites | ~0.5h |
 | **2** | Management App | Activity record reduction, type table, `packet.js` projection | ~1.5h |
-| **3** | Management App | The recipe — planner, form, copy-from-lesson | ~2.5h |
+| **3** | Management App | The recipe — planner, form, copy-from-lesson; per-Course title patterns and Course settings copy | ~3h |
 | **4** | Child App | Card rework, lesson grouping, `bySequenceNo` deletion | ~2h |
 
 Phases 2 and 3 are one declared scope (Management App); phase 4 is its own (Child App). No runtime
@@ -47,6 +47,7 @@ and the lesson grouping it was standing in for is built properly.
 | **D10** | One transaction; `nextActivitySeq` advanced by N once | A partial expansion leaves a Lesson half-built with no record of intent. Ids are minted **from the counter**, never `max(existing) + 1`. |
 | **D11** | **A Lesson holds at most one page-range type** | Stated as fact about the curriculum: PDF is MiAcademy's, Workbook belongs to other publishers, and they never co-occur. This makes the Lesson's single `pageRangeStart`/`pageRangeEnd` budget unambiguous, gives the recipe exactly one split field, and lets two hardcoded key-lists become honest `structurePattern` tests. |
 | **D12** | **Dead columns are removed, not tolerated** | `sequence_no` loses its last consumer in this slice and is dropped from D1 by migration `0008`. `blockHint`, `capturesGrade`, `lessonTitle`, `reference`, `text`, and `payload` leave the Activity record. Nothing is kept "in case". |
+| **D13** | Title patterns are **overridable per Course**, in one sparse field | Courses differ in house style — a spelling curriculum names things nothing like MiAcademy — and the alternative is retyping the same override on every Lesson of an outlier course. Sparse, because a course touches 3–5 types; absent keys fall through to the built-in defaults, so improving a default still reaches every course that has not opted out. Overriding a type takes it over at every count, which keeps this one string per type rather than two. |
 
 ---
 
@@ -226,24 +227,97 @@ A copied recipe arrives already ordered.
 
 ### 5.6 Title patterns
 
-Tokens: `{lesson}` = the Lesson's title · `{n}` = the ordinal within the type.
+Two layers: a built-in default per type, and an optional **per-Course override**.
+
+**Tokens:** `{lesson}` the Lesson's title · `{n}` the ordinal within the type · `{type}` the type's
+label · `{start}` / `{end}` the chunk's page range, page-range types only.
+
+**Built-in defaults:**
 
 | Type | Pattern | Yields |
 |---|---|---|
 | Video | `{lesson}` when count is 1; `{lesson}: Part {n}` when more | "Adding Fractions" / "…: Part 2" |
 | Practice | `Level {n}` | "Level 3" |
 | Quiz | `Assessment {n}` | "Assessment 1" |
-| Test / Project / Report / Drill | `{label} {n}` | "Drill 2" |
+| Test / Project / Report / Drill | `{type} {n}` | "Drill 2" |
 | Online Sim | `{lesson}` | editorial — expect a retype |
 | PDF / Workbook / Reading Pages | `Pages {start}–{end}` | editorial — expect a retype |
 
-**The count-1 collapse is Video-only, and it is a rule with a reason:** omit the ordinal when it
-carries no information. "Part 1" of a single part says nothing. Practice and Quiz keep their number
-at count 1 because there the ordinal *is* the name — "Level 1" is what the item is called, not where
-it sits in a list.
+**Video's count-1 collapse is a rule with a reason:** omit the ordinal when it carries no
+information. "Part 1" of a single part says nothing. Practice and Quiz keep their number at count 1
+because there the ordinal *is* the name — "Level 1" is what the item is called, not where it sits in
+a list.
 
 Every type has a pattern because `title` is required and `reference` is gone; no generated Activity
 may arrive blank.
+
+#### 5.6.1 The per-Course override
+
+The Course record gains **one optional field**:
+
+```js
+titlePatterns: { 'practice-level': 'Round {n}', video: '{lesson} — Lesson {n}' }
+```
+
+Sparse: keyed by `activityTypeKey`, holding only the types the parent actually overrode. A course
+usually touches 3–5 types, so most courses store a handful of keys and most store none. An absent
+key falls back to the built-in default, which means a later change to the defaults reaches every
+course that has not opted out.
+
+**Overriding a type takes ownership of it at every count.** One box per type, one string, no
+second slot — so a course whose Video pattern is overridden no longer gets the count-1 collapse.
+That is the trade for keeping this a single field: the collapse is a property of the *default*, not
+a per-course toggle. A parent overriding Video is doing it for an outlier course whose shape they
+already know.
+
+**Where it is set.** A disclosure block on the Course create and edit forms — one row per Activity
+Type, each input's **placeholder showing the built-in default** so the parent can see what they
+would get before typing. Blank stores nothing; it does not store an empty string.
+
+**Validation, at save:**
+
+| Check | Rule |
+|---|---|
+| Tokens | Every `{…}` is one of the five. `{lessson}` is rejected rather than shipped into a title |
+| Page tokens | `{start}` / `{end}` only on `page-range` types |
+| Non-empty | A key present in the map has a non-blank value; blank means absent |
+| Type resolves | Every key exists in `activityTypes` |
+
+**Editing patterns never renames anything.** Same copy-at-creation shape as the rest of the slice —
+patterns are read once, at expansion.
+
+**Not carried to instances.** `titlePatterns` is deliberately omitted from the instance stamp
+(`children.js:152`): the recipe is template-only (D4), so an instance would carry a field nothing
+reads. Same reasoning as `excludeFromGeneration`'s deliberate `delete` at `children.js:195`, and it
+needs an explicit line because both `buildCourseRecord` (`courses.js:97`) and `newCourse` build
+their records from explicit field lists rather than a spread.
+
+**Interaction with §5.4.** Copy-from-lesson is within a Course, so source and destination always
+share the same patterns. Nothing to reconcile.
+
+### 5.7 Copy settings from another Course template
+
+The Course create form gains a **"Copy settings from"** dropdown listing existing template Courses.
+Selecting one pre-fills the form; every value stays editable before save.
+
+| Copied | Not copied |
+|---|---|
+| `titlePatterns` — the reason this exists | `name` — always typed |
+| `subject` | `courseCode` — must be unique, minted or typed per course |
+| `coreElective` | `id`, `state`, and everything instance-related |
+| `description` | Lessons and Activities — this copies **configuration, not structure** |
+| `defaultPacingHint` | — |
+| `curriculumId`, as a pre-selection the parent can change | — |
+
+It is a **form pre-fill, not a link**. The new Course holds its own values from the moment it is
+saved; editing the source afterwards changes nothing. No `sourceTemplateId` is written — that field
+means "instance stamped from template" and must not be overloaded to mean "settings were copied
+once".
+
+Deliberately excludes Lessons and Activities. A structural clone would arrive with Activities
+already present, which is exactly the state D4 uses to withhold the recipe — every cloned Lesson
+would have to be emptied before it could be authored. Copying configuration leaves the new Course
+empty and ready.
 
 ---
 
@@ -263,6 +337,10 @@ A single failure writes nothing and leaves `nextActivitySeq` unmoved.
 | Titles | Non-empty for every record generated |
 | `expectedDurationMin` | Omitted when blank; a positive integer otherwise |
 | Total | At least one record would be generated |
+
+Titles resolve **Course override → built-in default** (§5.6.1), read once when the proposal is
+built. Patterns are validated at Course save, so expansion treats them as trusted input and needs no
+second check.
 
 > There is deliberately **no** "a type may appear at most once" check for count types, and no
 > per-type ordering constraint. Types interleave; that is the entire point.
@@ -471,6 +549,14 @@ reordered to interleave.
 18. A day drawing Video 1, Practice 1–2 and Quiz 1 renders in walk order, not `Video · Practice 1 · Quiz · Practice 2`.
 19. Reorder arrows appear on every row and move rows only within their lesson group.
 20. An Activity with `instructions` renders a button that opens a modal; one without renders neither.
+21. A Course with no `titlePatterns` generates the §5.6 built-in titles, including Video's count-1 collapse.
+22. A Course overriding `practice-level` to `Round {n}` generates "Round 1" … "Round 4"; every other type in that Course still uses its default.
+23. A Course overriding `video` generates that pattern at count 1 as well — the collapse does not apply to an overridden type.
+24. A pattern containing an unknown token is rejected at Course save, not at expansion; `{start}` on a count type is rejected too.
+25. Clearing a pattern back to blank removes the key rather than storing an empty string, and the type reverts to its default.
+26. "Copy settings from" pre-fills patterns and metadata, leaves `name` and `courseCode` empty, creates no Lessons or Activities, and writes no `sourceTemplateId`.
+27. Editing the source Course after a settings copy changes nothing on the copy.
+28. A Course stamped to a child carries no `titlePatterns` on the instance record.
 
 ---
 
@@ -478,7 +564,7 @@ reordered to interleave.
 
 | Document | Change |
 |---|---|
-| `SRS_Management_Module_03` | New **FR-P7** (recipe expansion). FR-P4 unchanged in substance — the count target remains display-only and participates in no validation. FR-4's Activity form loses `reference`, `blockHint`, and `sequenceNumber`. |
+| `SRS_Management_Module_03` | New **FR-P7** (recipe expansion). New **FR-P8** — per-Course `titlePatterns` and "Copy settings from" on the Course create form (§5.6.1, §5.7). FR-P4 unchanged in substance — the count target remains display-only and participates in no validation. FR-4's Activity form loses `reference`, `blockHint`, and `sequenceNumber`. |
 | `SRS_Management_Module_12` | §4 both tables → 11 rows; Workbook `page-range`; Practice relabelled; Online Sim added. |
 | `TDS_Slice_M5_..._Rev7` | §1a table and prose; §174 acceptance item 2 ("10 rows") → 11. |
 | `TDS_Slice_M7_..._Rev1` | §37/§141 payload projection tables → one shape. |
@@ -491,4 +577,4 @@ reordered to interleave.
 ## 14. Open
 
 - **`reward_amount`** is a genuinely dead D1 column today (always NULL; the Child App falls back to `1` at `completion.js:170`). It is reserved for the earning phase rather than unused-forever, so this slice leaves it. If that phase is far enough out, it belongs in `0008` alongside `sequence_no` and comes back when it is actually populated.
-- **Title patterns per-Course or per-Activity-Type globally.** §5.6 hardcodes them per type. Per-course is more flexible — a spelling curriculum names things differently from MiAcademy — but nothing needs it yet.
+- **Curriculum-level pattern defaults.** §5.6.1 puts the override on the Course. If a Curriculum ends up holding many Courses that all share MiAcademy's conventions, a Curriculum → Course inheritance step would remove the remaining repetition — §5.7's settings copy is the cheaper answer for now and may be enough.
