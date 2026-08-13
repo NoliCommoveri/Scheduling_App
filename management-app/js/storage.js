@@ -7,16 +7,20 @@ const Storage = (() => {
   const DB_NAME = 'managementAppDB';
   const DB_VERSION = 4;
 
+  // 11 rows — TDS_Slice_Lesson_Recipe.md §4. Workbook moved to page-range,
+  // Online Sim added, Practice Level relabelled (key unchanged — it is
+  // load-bearing in packet.js/courses.js/children.js).
   const ACTIVITY_TYPE_SEED = [
     { activityTypeKey: 'quiz', label: 'Quiz', capturePattern: 'grade-optional', structurePattern: 'count' },
     { activityTypeKey: 'test', label: 'Test', capturePattern: 'grade-optional', structurePattern: 'count' },
     { activityTypeKey: 'project', label: 'Project', capturePattern: 'grade-optional', structurePattern: 'count' },
     { activityTypeKey: 'report', label: 'Report', capturePattern: 'grade-optional', structurePattern: 'count' },
-    { activityTypeKey: 'pdf', label: 'PDF', capturePattern: 'grade-optional', structurePattern: 'page-range' },
     { activityTypeKey: 'drill', label: 'Drill', capturePattern: 'grade-optional', structurePattern: 'count' },
-    { activityTypeKey: 'workbook', label: 'Workbook', capturePattern: 'grade-optional', structurePattern: 'count' },
+    { activityTypeKey: 'workbook', label: 'Workbook', capturePattern: 'grade-optional', structurePattern: 'page-range' },
+    { activityTypeKey: 'pdf', label: 'PDF', capturePattern: 'grade-optional', structurePattern: 'page-range' },
     { activityTypeKey: 'video', label: 'Video', capturePattern: 'no-capture', structurePattern: 'count' },
-    { activityTypeKey: 'practice-level', label: 'Practice Level', capturePattern: 'no-capture', structurePattern: 'count' },
+    { activityTypeKey: 'online-sim', label: 'Online Sim', capturePattern: 'no-capture', structurePattern: 'count' },
+    { activityTypeKey: 'practice-level', label: 'Practice', capturePattern: 'no-capture', structurePattern: 'count' },
     { activityTypeKey: 'reading-pages', label: 'Reading Pages', capturePattern: 'no-capture', structurePattern: 'page-range' },
   ];
 
