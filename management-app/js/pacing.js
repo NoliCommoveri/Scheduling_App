@@ -230,11 +230,16 @@ const Pacing = (() => {
     const form = document.createElement('form');
     form.className = 'pacing-form';
     const mode = (profile && profile.pacingMode) || 'activityCount';
+    // An unconfigured Instance opens on the school week rather than on nothing —
+    // the same Mon–Fri fallback FR-1a seeds a stamped Instance with
+    // (PacingCore.DEFAULT_DAYS), so the two paths cannot drift apart. Still a
+    // starting point: every box is editable before the first save.
+    const checkedDays = profile ? profile.daysOfWeek : PacingCore.DEFAULT_DAYS;
     form.innerHTML = `
       <fieldset><legend>Days of week</legend>
         ${DAYS.map(
           (d) => `<label class="day-option"><input type="checkbox" name="daysOfWeek" value="${d}" ${
-            profile && profile.daysOfWeek.includes(d) ? 'checked' : ''
+            checkedDays.includes(d) ? 'checked' : ''
           }> ${d}</label>`
         ).join('')}
       </fieldset>
