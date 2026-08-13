@@ -89,7 +89,9 @@ All of this is manual-authoring UI logic — no new store, no new file, reuses t
 
 ### 4.1 File selection & parse
 
-Manual file selection (`<input type="file">`, `FileReader.readAsText`) — same swappable-acquisition treatment as Packet Import and Completion Import. The hand-rolled CSV parser splits on commas outside double-quoted fields, unescapes `""` → `"` inside quoted fields, and accepts either `\n` or `\r\n` line endings. **Header row is checked first, exact match to the 12 locked columns in the locked order (§1) — any deviation rejects the whole file before a single data row is read** *(A1 — was 16)*, same severity and same reasoning as SRS §2.3's schema-level gate for Completion Import.
+Manual file selection (`<input type="file">`, `FileReader.readAsText`) — same swappable-acquisition treatment as Packet Import and Completion Import.
+
+*(A1)* **A "Download blank template" button sits beside Import**, emitting a one-line CSV containing exactly the locked header from the same `CSV_COLUMNS` constant the gate validates against — so the template cannot drift from the check, and a future column change updates both at once. Header row only: the file it produces is itself a valid import that writes nothing. Blob URL, revoked after the click, matching `reporting.js`'s export idiom. This exists because §1's amendment moved the header under anyone holding an older spreadsheet, and the gate is deliberately unforgiving; the recovery path had otherwise been transcribing twelve column names out of an error message by hand. The hand-rolled CSV parser splits on commas outside double-quoted fields, unescapes `""` → `"` inside quoted fields, and accepts either `\n` or `\r\n` line endings. **Header row is checked first, exact match to the 12 locked columns in the locked order (§1) — any deviation rejects the whole file before a single data row is read** *(A1 — was 16)*, same severity and same reasoning as SRS §2.3's schema-level gate for Completion Import.
 
 ### 4.2 Per-row parse into a candidate record
 
@@ -143,3 +145,4 @@ Surfaced to the parent after every import attempt (success or reject) — reusin
 11. *(A1 — replaces the `sequenceNumber` pre-fill check, which no longer has a field)* No Activity written by either entry path carries `payload`, `reference`, `text`, `blockHint`, `capturesGrade`, `lessonTitle`, or `sequenceNumber`; a bulk-imported Activity and a hand-authored one of the same type have identical key sets.
 12. *(A1)* A CSV row for a `practice-level` Activity with `pageRangeStart`/`pageRangeEnd` populated is rejected — `practice-level` is `count`-structured, and a `workbook` row is now the opposite case: page range **required**, since that type moved to `page-range`.
 13. Importing the same valid CSV file twice creates two full sets of Lessons/Activities the second time (no idempotency/dedup is claimed or implied by FR-5 — unlike Completion Import, §2.4 of that module, this path has no re-import no-op rule).
+14. *(A1)* The downloaded template's single line matches the locked header byte for byte; re-uploading it unchanged is accepted and reports 0 Lessons and 0 Activities written rather than erroring.

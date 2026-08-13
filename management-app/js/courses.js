@@ -884,17 +884,42 @@ const Courses = (() => {
     return details;
   }
 
+  // The header is a whole-file gate (TDS_Slice_M8 §4.1) — one wrong or
+  // reordered column rejects the file before a row is read, and the twelve
+  // columns changed under anyone still holding a pre-reduction spreadsheet.
+  // Handing out the exact header beats transcribing it from a document.
+  // Header row only: the template is itself a valid CSV that imports nothing.
+  function downloadCsvTemplate() {
+    // Same Blob-URL treatment reporting.js uses for its exports; revoked after.
+    const url = URL.createObjectURL(
+      new Blob([CSV_COLUMNS.join(',') + '\n'], { type: 'text/csv;charset=utf-8' })
+    );
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'lesson-activity-import-template.csv';
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
   function buildBulkImportSection(root) {
     const section = document.createElement('section');
     section.className = 'bulk-import';
     section.innerHTML = `
       <h2>Bulk Import Lessons &amp; Activities (CSV)</h2>
+      <p class="bulk-import-hint">
+        One row per Activity. Row order within a Lesson is the order the child works through it.
+      </p>
       <input type="file" name="csvFile" accept=".csv,text/csv">
-      <button type="button" data-action="import">Import</button>
+      <div class="bulk-import-actions">
+        <button type="button" data-action="import">Import</button>
+        <button type="button" class="secondary" data-action="template">Download blank template</button>
+      </div>
       <div class="bulk-import-result" hidden></div>
     `;
     const fileInput = section.querySelector('input[type="file"]');
     const resultEl = section.querySelector('.bulk-import-result');
+
+    section.querySelector('[data-action="template"]').addEventListener('click', downloadCsvTemplate);
 
     section.querySelector('[data-action="import"]').addEventListener('click', async () => {
       const file = fileInput.files && fileInput.files[0];
