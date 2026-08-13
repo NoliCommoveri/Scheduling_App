@@ -205,7 +205,31 @@ const Children = (() => {
       for (const a of newActivities) t.objectStore('activities').put(a);
     });
 
-    return { record: newCourse };
+    // A stamped Instance now arrives with a starting Pacing Profile, derived
+    // from the Course's `defaultPacingHint` (Mgmt SRS 05 §2.6a). Written by
+    // pacing.js, not here — `pacingProfiles` has one writer. Deliberately
+    // outside the transaction above: a failure leaves a profile-less Instance,
+    // which §2.6 already treats as valid, rather than losing the stamp.
+    const pacing = await Pacing.ensureDefaultProfile(newCourse.id);
+
+    return { record: newCourse, pacing };
+  }
+
+  // Stamp confirmation copy — says what the starting Profile is and where each
+  // half of it came from, so the hint's effect is visible rather than magic.
+  function describeStamp(pacing) {
+    if (!pacing || pacing.error || !pacing.created) {
+      return 'Stamped. Set up Pacing Configuration for this Instance as the required next step.';
+    }
+    const fromHint = [
+      pacing.source.days === 'hint' ? 'days' : null,
+      pacing.source.budget === 'hint' ? 'pace' : null,
+    ].filter(Boolean);
+    let provenance;
+    if (fromHint.length === 2) provenance = "from the Course's pacing hint";
+    else if (fromHint.length === 1) provenance = `with ${fromHint[0]} from the Course's pacing hint, the rest default`;
+    else provenance = 'from the defaults (the Course states no pacing hint)';
+    return `Stamped. Pacing Profile created ${provenance} — ${pacing.summary}. Adjust it in Pacing Configuration.`;
   }
 
   // FR-6 — un-assign/delete a Course Instance. Cascades its own Lessons and
@@ -677,10 +701,10 @@ const Children = (() => {
         stampErr.textContent = 'Select a Course Template.';
         return;
       }
-      await stampCourse(stampForm.templateId.value, child.id);
+      const stamped = await stampCourse(stampForm.templateId.value, child.id);
       stampErr.hidden = true;
       stampOk.hidden = false;
-      stampOk.textContent = 'Stamped. Set up Pacing Configuration for this Instance as the required next step.';
+      stampOk.textContent = describeStamp(stamped.pacing);
       render(root);
     });
     root.appendChild(stampForm);

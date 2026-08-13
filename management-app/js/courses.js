@@ -1004,7 +1004,12 @@ const Courses = (() => {
       <label>Subject<input type="text" name="subject"></label>
       <label>Core / Elective<select name="coreElective"><option value="">(none)</option><option value="core">Core</option><option value="elective">Elective</option></select></label>
       <label>Description<input type="text" name="description"></label>
-      <label>Default pacing hint<input type="text" name="defaultPacingHint"></label>
+      <label>Default pacing hint
+        <input type="text" name="defaultPacingHint" placeholder="Activities Per Day - 2; Days - Mon/Wed/Fri">
+        <small class="field-help">Seeds the Pacing Profile when this Course is stamped to a child.
+          "Minutes Per Day - 60" works too. Anything left out defaults to Mon–Fri, 1 activity/day,
+          and the Profile stays editable in Pacing Configuration.</small>
+      </label>
       <p class="error" hidden></p>
       <button type="submit">Add Course</button>
     `;

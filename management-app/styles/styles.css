@@ -112,6 +112,13 @@ label {
   min-width: 0;
 }
 
+/* Explanatory copy under a field, quieter than the field's own label. */
+.field-help {
+  font-size: 0.8rem;
+  opacity: 0.75;
+  line-height: 1.35;
+}
+
 /* A checkbox or radio belongs beside its text, not stacked above it. */
 label:has(> input[type="checkbox"]),
 label:has(> input[type="radio"]) {
