@@ -1,0 +1,288 @@
+/* wall.css — TDS_Slice_Wall_Display_App.md §10.2: baseline 960x600 CSS px
+   landscape, fluid rather than fixed; touch targets >= 64px; no horizontal
+   scrolling. A fixed, mains-powered display read from six feet away, not a
+   phone screen — bigger type and flatter contrast than either app apps. */
+
+:root {
+  --bg: #141a2c;
+  --panel: #1e2740;
+  --panel-2: #26304d;
+  --text: #f4f6fb;
+  --text-dim: #a9b2c9;
+  --accent: #f7b538;
+  --danger: #e8615a;
+  --radius: 18px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow-x: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+#app {
+  min-height: 100vh;
+  width: 100%;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+/* ---- wizard / setup / unpaired screen ---------------------------------- */
+
+.wiz {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 5vh 6vw;
+  text-align: center;
+}
+
+.wiz-brand {
+  font-size: 1.1rem;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  margin-bottom: 1.5rem;
+}
+
+.wiz-progress {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.wiz-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--panel-2);
+}
+
+.wiz-dot.done {
+  background: var(--accent);
+}
+
+.wiz-card {
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: 2.5rem 3rem;
+  width: min(560px, 90vw);
+}
+
+.wiz-step-label {
+  color: var(--text-dim);
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.5rem;
+}
+
+.wiz-title {
+  font-size: 1.8rem;
+  margin: 0 0 0.75rem;
+}
+
+.wiz-help {
+  color: var(--text-dim);
+  font-size: 1.05rem;
+  line-height: 1.5;
+  margin: 0 0 1.5rem;
+}
+
+.field {
+  text-align: left;
+  margin-bottom: 1.25rem;
+}
+
+.field label {
+  display: block;
+  font-size: 0.95rem;
+  color: var(--text-dim);
+  margin-bottom: 0.4rem;
+}
+
+.field input,
+#settingsPin {
+  width: 100%;
+  min-height: 64px;
+  font-size: 1.4rem;
+  padding: 0.5rem 1rem;
+  border-radius: 12px;
+  border: 2px solid var(--panel-2);
+  background: var(--bg);
+  color: var(--text);
+  letter-spacing: 0.08em;
+}
+
+.field input:focus,
+#settingsPin:focus {
+  outline: 2px solid var(--accent);
+  border-color: var(--accent);
+}
+
+.err-text {
+  color: var(--danger);
+  min-height: 1.4em;
+  font-size: 0.95rem;
+  margin-top: 0.4rem;
+}
+
+.wiz-actions {
+  display: flex;
+  gap: 1rem;
+  justify-content: flex-end;
+  margin-top: 1rem;
+}
+
+.btn {
+  min-height: 64px;
+  min-width: 64px;
+  padding: 0.75rem 1.75rem;
+  font-size: 1.15rem;
+  font-weight: 600;
+  border: none;
+  border-radius: 14px;
+  background: var(--accent);
+  color: #1a1408;
+  cursor: pointer;
+}
+
+.btn.ghost {
+  background: transparent;
+  color: var(--text-dim);
+  border: 2px solid var(--panel-2);
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* ---- ambient screen ------------------------------------------------------ */
+
+.ambient {
+  min-height: 100vh;
+  padding: 4vh 4vw;
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+.ambient-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ambient-brand {
+  font-size: 1.4rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.gear-btn {
+  min-width: 64px;
+  min-height: 64px;
+  font-size: 1.6rem;
+  background: var(--panel);
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.ambient-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  align-content: flex-start;
+}
+
+.child-tile {
+  min-width: 220px;
+  min-height: 140px;
+  flex: 1 1 220px;
+  background: var(--panel);
+  border: none;
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.child-tile-name {
+  font-size: 1.6rem;
+  font-weight: 700;
+}
+
+.child-tile-count {
+  font-size: 1.2rem;
+  color: var(--text-dim);
+}
+
+.ambient-empty,
+.ambient-loading,
+.ambient-error {
+  color: var(--text-dim);
+  font-size: 1.2rem;
+  padding: 2rem 0;
+}
+
+/* ---- settings overlay ---------------------------------------------------- */
+
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 13, 22, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+.settings-pad-card,
+.settings-panel {
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: 2.5rem;
+  width: min(520px, 90vw);
+}
+
+.settings-panel h2,
+.settings-pad-card h2 {
+  margin-top: 0;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 0;
+  border-top: 1px solid var(--panel-2);
+}
+
+.settings-row-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.settings-row-help {
+  color: var(--text-dim);
+  font-size: 0.9rem;
+  margin-top: 0.2rem;
+}

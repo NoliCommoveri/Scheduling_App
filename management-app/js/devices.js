@@ -53,6 +53,15 @@ const Devices = (() => {
     // separate, deliberate act for those).
     renderDeviceList(root, devicesResult.devices, childById);
     renderPairForm(root, Children.activeOnly(children));
+    renderWallPairForm(root);
+  }
+
+  // A wall device's child_id is the WALL_SENTINEL_CHILD_ID empty string
+  // (worker/index.js §8.1) — never a real child id, since ids are
+  // server-minted UUIDs. That sentinel is what tells a wall row apart from a
+  // child row here, with no need to thread `scope` through this list.
+  function isWallDevice(d) {
+    return d.child_id === '';
   }
 
   function renderDeviceList(root, devices, childById) {
@@ -95,8 +104,11 @@ const Devices = (() => {
     for (const d of devices) {
       const child = childById.get(d.child_id);
       const item = document.createElement('li');
+      const childLabel = isWallDevice(d)
+        ? 'Wall display (household)'
+        : escapeHtml(child ? child.name : d.child_id);
       item.innerHTML = `
-        <span class="device-child">${escapeHtml(child ? child.name : d.child_id)}</span>
+        <span class="device-child">${childLabel}</span>
         <span class="device-label">${escapeHtml(d.label || '(unlabeled)')}</span>
         <span class="device-seen">last seen: ${formatTime(d.last_seen_at)}</span>
         ${
@@ -158,6 +170,50 @@ const Devices = (() => {
         resultEl.hidden = false;
         resultEl.innerHTML =
           `Code: <strong>${escapeHtml(code)}</strong> — enter it in the Child App within 15 minutes ` +
+          `(expires ${formatTime(expiresAt)}).`;
+      } catch (err) {
+        errorEl.hidden = false;
+        errorEl.textContent = err.message;
+      }
+    });
+
+    root.appendChild(form);
+  }
+
+  // TDS_Slice_Wall_Display_App.md §3.2 — the wall is paired once, as a
+  // device, not per child. `/api/devices/pair-code` already accepts
+  // `{ scope: 'wall' }` (worker/index.js `handlePairCodeMint`); this is the
+  // form for it. No child selector: the code names no child, and the wall
+  // reads every active one straight from D1 once it redeems the code.
+  function renderWallPairForm(root) {
+    const heading = document.createElement('h3');
+    heading.textContent = 'Pair the wall display';
+    root.appendChild(heading);
+
+    const p = document.createElement('p');
+    p.textContent = 'One code pairs the whole display — every active child appears on it automatically, with nothing to pair per child.';
+    root.appendChild(p);
+
+    const form = document.createElement('form');
+    form.innerHTML = `
+      <p class="error" hidden></p>
+      <p class="code-result" hidden></p>
+      <button type="submit">Pair wall display</button>
+    `;
+    const errorEl = form.querySelector('.error');
+    const resultEl = form.querySelector('.code-result');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errorEl.hidden = true;
+      try {
+        const { code, expiresAt } = await Sync.api('/api/devices/pair-code', {
+          method: 'POST',
+          body: { scope: 'wall' },
+        });
+        resultEl.hidden = false;
+        resultEl.innerHTML =
+          `Code: <strong>${escapeHtml(code)}</strong> — enter it in the wall display's setup wizard within 15 minutes ` +
           `(expires ${formatTime(expiresAt)}).`;
       } catch (err) {
         errorEl.hidden = false;

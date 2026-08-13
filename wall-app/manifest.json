@@ -1,0 +1,16 @@
+{
+  "name": "Family Wall Display",
+  "short_name": "Wall Display",
+  "description": "Ambient family display: today's events and each child's chore count, PIN-gated completion.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#141a2c",
+  "theme_color": "#141a2c",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

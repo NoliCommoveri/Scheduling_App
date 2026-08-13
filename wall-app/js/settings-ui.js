@@ -1,0 +1,102 @@
+// settings-ui.js — the admin gate and the Settings panel
+// (TDS_Slice_Wall_Display_App.md §4.5). Phase 2 scope: the PIN gate itself,
+// re-pairing the display, and the shell reload button §10.2 requires. Child
+// PIN management and the failed-earns list join in Phase 4b, once there are
+// child PINs and earns to manage.
+
+(function (g) {
+  "use strict";
+
+  function el(html) {
+    var t = document.createElement("template");
+    t.innerHTML = html.trim();
+    return t.content.firstElementChild;
+  }
+
+  // Shows the admin PIN pad; calls onClose() whichever way the user leaves
+  // (success into the panel and back out, or Cancel). Reuses PinCore's
+  // verify — the admin PIN is stored the same shape as a child's (§4.5), just
+  // under wall.settings instead of wall.pins.
+  function open(root, onClose) {
+    renderPad(root, onClose);
+  }
+
+  function renderPad(root, onClose) {
+    root.innerHTML = "";
+    var body = el(
+      '<div class="settings-overlay">' +
+        '<div class="settings-pad-card">' +
+          '<h2>Admin PIN</h2>' +
+          '<input id="settingsPin" inputmode="numeric" type="password" autocomplete="off" autofocus>' +
+          '<div class="err-text" id="settingsPinErr"></div>' +
+          '<div class="wiz-actions">' +
+            '<button class="btn ghost" id="settingsCancel">Cancel</button>' +
+            '<button class="btn" id="settingsUnlock">Unlock</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+    root.appendChild(body);
+
+    var input = body.querySelector("#settingsPin");
+    var err = body.querySelector("#settingsPinErr");
+    input.focus();
+
+    body.querySelector("#settingsCancel").addEventListener("click", function () { onClose(); });
+
+    function tryUnlock() {
+      var settings = g.Store.getSettings();
+      var pin = input.value.trim();
+      g.PinCore.verifyPin(pin, { pinSalt: settings.adminPinSalt, pinHash: settings.adminPinHash })
+        .then(function (ok) {
+          if (!ok) { err.textContent = "Wrong PIN."; input.value = ""; input.focus(); return; }
+          renderPanel(root, onClose);
+        });
+    }
+    body.querySelector("#settingsUnlock").addEventListener("click", tryUnlock);
+    input.addEventListener("keydown", function (e) { if (e.key === "Enter") tryUnlock(); });
+  }
+
+  function renderPanel(root, onClose) {
+    root.innerHTML = "";
+    var body = el(
+      '<div class="settings-overlay">' +
+        '<div class="settings-panel">' +
+          '<h2>Settings</h2>' +
+          '<div class="settings-row">' +
+            '<div>' +
+              '<div class="settings-row-title">Re-pair this display</div>' +
+              '<div class="settings-row-help">Use this if the display was revoked, or to move it to a new tablet.</div>' +
+            '</div>' +
+            '<button class="btn" id="repairBtn">Re-pair</button>' +
+          '</div>' +
+          '<div class="settings-row">' +
+            '<div>' +
+              '<div class="settings-row-title">Reload app</div>' +
+              '<div class="settings-row-help">Unregisters and re-registers the shell — use if an update seems stuck.</div>' +
+            '</div>' +
+            '<button class="btn" id="reloadBtn">Reload</button>' +
+          '</div>' +
+          '<div class="wiz-actions"><button class="btn ghost" id="settingsDone">Done</button></div>' +
+        '</div>' +
+      '</div>'
+    );
+    root.appendChild(body);
+
+    body.querySelector("#settingsDone").addEventListener("click", function () { onClose(); });
+
+    body.querySelector("#repairBtn").addEventListener("click", function () {
+      root.innerHTML = "";
+      g.Setup.runRepair(root, function () { onClose(); });
+    });
+
+    body.querySelector("#reloadBtn").addEventListener("click", function () {
+      if (!("serviceWorker" in navigator)) { location.reload(); return; }
+      navigator.serviceWorker.getRegistrations().then(function (regs) {
+        return Promise.all(regs.map(function (r) { return r.unregister(); }));
+      }).then(function () { location.reload(); });
+    });
+  }
+
+  g.SettingsUi = { open: open };
+})(typeof window !== "undefined" ? window : globalThis);
