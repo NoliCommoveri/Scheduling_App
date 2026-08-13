@@ -236,10 +236,11 @@ button { font-family: inherit; cursor: pointer; }
 .lane-glyph svg { width: 16px; height: 16px; stroke: var(--lane-color); }
 .lane-rule { flex: 1; height: 2px; border-radius: 2px; background: color-mix(in srgb, var(--lane-color) 30%, transparent); }
 
-.cat-label {
-  font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase;
-  color: var(--ink-faint); margin: 12px 4px 6px;
-}
+/* .cat-label (the "SCHOOL" / "CHORES" strap inside a lane) is deleted with
+   FR-13: the collapse gives each course its own header and the chores theirs,
+   so the strap sat above a header saying the same word. Nothing renders the
+   class any more — the category split it announced is still there, in the
+   fixed FR-1 order of the sections within a lane. */
 
 /* Lesson group header (Lesson Recipe slice §9.1) — shared by every card from
    one Lesson, replacing the per-card lessonTitle subline. */
@@ -248,6 +249,46 @@ button { font-family: inherit; cursor: pointer; }
   color: var(--ink); margin: 16px 2px 8px; padding-bottom: 5px;
   border-bottom: 1px solid var(--line);
 }
+
+/* ---------- Collapsible group (Module 3 FR-13) ----------
+   One per course on Today and Completed, one per block's chores. Closed by
+   default, so a lane reads as a short list of names; the chevron is the only
+   state cue the child needs, and the count tells them what is inside without
+   opening it. The whole header row is the hit target — 44px tall, thumb-sized
+   on a tablet — except the block picker beside it (FR-14), which is its own. */
+.group { margin-bottom: 9px; }
+/* The header is the surface, not a box around the cards: a card already draws
+   its own surface, border and shadow, and nesting one inside another gives a
+   double frame and two nearly-identical background fills. The open body is
+   plain, indented instead — same cards as every other view, one step in. */
+.group-head {
+  display: flex; align-items: center; gap: 8px; padding-right: 10px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+}
+.group-toggle {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 9px;
+  min-height: 44px; padding: 10px; border: 0; border-radius: var(--radius);
+  background: none; font: inherit; color: var(--ink); text-align: left;
+}
+.group-chevron {
+  flex-shrink: 0; width: 14px; text-align: center;
+  font-size: 20px; font-weight: 800; line-height: 1; color: var(--ink-faint);
+  transition: transform .15s ease;
+}
+.group.open .group-chevron { transform: rotate(90deg); }
+.group-label {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--font-display); font-weight: 800; font-size: 16px; color: var(--ink);
+}
+.group-count {
+  flex-shrink: 0; font-size: 12px; font-weight: 800; color: var(--ink-soft);
+  background: var(--surface-2); border-radius: 999px; padding: 3px 9px;
+}
+.group-block-pick { flex-shrink: 0; }
+.group-body { padding: 9px 0 2px 10px; }
+.group-body .lesson-head:first-child { margin-top: 0; }
+.group-body .card:last-child { margin-bottom: 0; }
 
 /* ---------- Item card ---------- */
 .card {

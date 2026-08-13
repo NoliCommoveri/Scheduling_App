@@ -77,7 +77,16 @@
       upload: { pending: 0, error: null },
       // SRS Module 8 FR-7: dismissed only for this session — reappears on the
       // next app open as long as the condition still holds.
-      reminderDismissed: false
+      reminderDismissed: false,
+      // Which collapsible groups the child has opened (FR-13), keyed by
+      // groupKey below. Absent means collapsed: every group starts shut, and
+      // the map only ever records a deliberate tap. It lives on `state` rather
+      // than in the DOM because render() rebuilds the whole tree on every
+      // completion, reorder and sync poll — a group opened at 9:01 has to
+      // still be open after the 9:02 poll. It is deliberately *not* persisted:
+      // opening the app is the start of a day's work, and FR-13's default is
+      // the short list of course names, not yesterday's expansions.
+      expanded: Object.create(null)
     };
 
     function reload() {
@@ -111,6 +120,20 @@
       return g.DB.setAssignmentFields(id, patch)
         .then(function () { return g.Outbox.enqueueMeta(id, patch); })
         .then(reload);
+    }
+
+    // setOverride for a whole group at once (FR-14). Sequential, not
+    // Promise.all: the outbox is an append-ordered queue keyed by an
+    // autoIncrement seq, and one row at a time is what keeps a group move
+    // queued behind whatever the child did before it. One reload at the end,
+    // so a six-activity course redraws once rather than six times.
+    function setOverrideEach(items, patch) {
+      return items.reduce(function (chain, item) {
+        return chain.then(function () {
+          return g.DB.setAssignmentFields(item.id, patch)
+            .then(function () { return g.Outbox.enqueueMeta(item.id, patch); });
+        });
+      }, Promise.resolve()).then(reload);
     }
 
     function render() {
@@ -504,17 +527,21 @@
         today.events.forEach(function (ev) { wrap.appendChild(eventCard(ev)); });
       }
 
+      // FR-13 — the block's contents are collapsed sections, not loose cards:
+      // one per course for the school half, one for the whole chore half.
+      // The old "School" / "Chores" cat-labels are gone with it; the section
+      // headers say the same thing, and the category split is still the fixed
+      // FR-1 order — every course above the chores, within each lane.
       today.blocks.forEach(function (block) {
         wrap.appendChild(laneHead(block.name));
-        if (block.school.length) {
-          wrap.appendChild(node("div", "cat-label", "School"));
-          renderSchoolGroup(wrap, block.school, function () { return block.name; });
-        }
+        if (block.school.length) renderCourseGroups(wrap, block.school, block.name);
         if (block.chores.length) {
-          wrap.appendChild(node("div", "cat-label", "Chores"));
+          var chores = collapsibleGroup(groupKey("today", block.name, CHORES_GROUP),
+            "Chores", block.chores.length);
           block.chores.forEach(function (c) {
-            wrap.appendChild(itemCard(c, "chore", block.name, block.chores));
+            chores.body.appendChild(itemCard(c, "chore", block.name, block.chores));
           });
+          wrap.appendChild(chores.section);
         }
       });
       return wrap;
@@ -540,19 +567,138 @@
       return node("div", "lesson-head", title);
     }
 
+    // ---------- collapsible groups (FR-13) ----------
+    // A day's school work goes behind one collapse per course, and a block's
+    // chores behind one collapse of their own, so the Today view opens as a
+    // short list of names — "Maths 4 · History 2 · Chores 3" — instead of a
+    // wall of cards (Ray, 2026-08-13).
+    //
+    // The key is what survives a re-render, so it has to name everything that
+    // makes two sections on screen different sections: the view, the block,
+    // and the group. The same course genuinely appears twice when its work is
+    // split across morning and afternoon, and those two collapses open and
+    // shut independently.
+    //
+    // A course name is arbitrary parent-typed text, so the third segment is
+    // prefixed rather than used raw: "course:Maths" cannot collide with the
+    // chore section or with the course-less one whatever a course is called,
+    // including a course called "chores".
+    var CHORES_GROUP = "chores";
+    function courseGroup(courseName) {
+      return courseName ? "course:" + courseName : "nocourse";
+    }
+    function groupKey(view, blockName, name) {
+      return view + "|" + (blockName || "") + "|" + name;
+    }
+    function isExpanded(key) {
+      return state.expanded[key] === true;
+    }
+
+    // Builds the section and hands back its parts: `head` for anything that
+    // sits beside the toggle (FR-14's block picker), `body` for the cards.
+    // Toggling flips the body in place rather than calling render() — a child
+    // who opens Maths should not lose their scroll position, and re-rendering
+    // to change one boolean would also rebuild every other group on the page.
+    var groupBodySeq = 0;
+    function collapsibleGroup(key, label, count) {
+      var open = isExpanded(key);
+      var section = node("div", "group" + (open ? " open" : ""));
+
+      var head = node("div", "group-head");
+      var toggle = node("button", "group-toggle");
+      var bodyId = "group-body-" + (++groupBodySeq);
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      toggle.setAttribute("aria-controls", bodyId);
+      toggle.appendChild(node("span", "group-chevron", "›"));
+      toggle.appendChild(node("span", "group-label", label));
+      toggle.appendChild(node("span", "group-count", String(count)));
+      head.appendChild(toggle);
+      section.appendChild(head);
+
+      var body = node("div", "group-body");
+      body.id = bodyId;
+      body.hidden = !open;
+      section.appendChild(body);
+
+      toggle.onclick = function () {
+        var now = !isExpanded(key);
+        state.expanded[key] = now;
+        toggle.setAttribute("aria-expanded", now ? "true" : "false");
+        body.hidden = !now;
+        if (now) section.classList.add("open");
+        else section.classList.remove("open");
+      };
+
+      return { section: section, head: head, body: body };
+    }
+
+    // FR-14 — move a whole course between blocks in one go. The collapse made
+    // the per-card picker the wrong grain: a child who wants Maths in the
+    // afternoon wants *all* of Maths in the afternoon, and card-by-card means
+    // opening the group and repeating the same choice four times. It writes
+    // the same child-owned column the card's own picker writes
+    // (child_block_hint, §3.3.3), to every row in the group, so nothing about
+    // ownership or the outbox vocabulary changes — only how many rows one
+    // gesture covers. The per-card picker stays: this is the coarse move, not
+    // a replacement for peeling one activity off into another block.
+    function courseBlockPicker(grp, blockName, key) {
+      var pick = node("select", "block-pick group-block-pick");
+      pick.setAttribute("aria-label", "Move all of " + grp.course_name + " to another block");
+      BLOCKS.forEach(function (b) {
+        var opt = node("option", null, b);
+        opt.value = b;
+        if (b === blockName) opt.selected = true;
+        pick.appendChild(opt);
+      });
+      pick.onchange = function () {
+        var target = pick.value;
+        if (target === blockName) return;
+        // The key names the block, so the group the child just moved would
+        // otherwise reappear under the new lane collapsed. Carry the state
+        // across rather than making them open it again.
+        var wasOpen = isExpanded(key);
+        delete state.expanded[key];
+        state.expanded[groupKey("today", target, courseGroup(grp.course_name))] = wasOpen;
+        setOverrideEach(grp.items, { child_block_hint: target });
+      };
+      return pick;
+    }
+
+    // One collapse per course, over one block's school list — which
+    // byCourseThenLesson has already ordered, and which P.groupByCourse
+    // preserves the order of inside each group, so the lesson headers and the
+    // within-lesson sort are exactly what they were before the collapse
+    // wrapped them. A group with no course_name is named here rather than in
+    // the core, and gets no block picker: "all of Maths" is a thing a child
+    // can mean, "all of the work that belongs to no course" is not.
+    function renderCourseGroups(wrap, items, blockName) {
+      P.groupByCourse(items).forEach(function (grp) {
+        var key = groupKey("today", blockName, courseGroup(grp.course_name));
+        var section = collapsibleGroup(key, grp.course_name || "Other school work", grp.items.length);
+        if (grp.course_name) section.head.appendChild(courseBlockPicker(grp, blockName, key));
+        renderSchoolGroup(section.body, grp.items, function () { return blockName; },
+          { hideCourse: !!grp.course_name });
+        wrap.appendChild(section.section);
+      });
+    }
+
     // Renders a run of activity cards with a lessonHead inserted whenever
     // lessonTitle changes from the item immediately before it. `items` is
     // already grouped by lesson (byCourseThenLesson / filterView), so same-
     // lesson items are always contiguous; a lesson-less item gets no header.
     // `blockNameFor` varies per item in the filter views (one flat list
     // spanning every block) and is constant within a single Today block.
-    function renderSchoolGroup(wrap, items, blockNameFor) {
+    // `opts` passes straight to itemCard — the Today view's course collapse
+    // (FR-13) sets `hideCourse`, because the section header above these cards
+    // already names the course; the School filter view, which has no such
+    // header, passes nothing and keeps FR-12's per-card label.
+    function renderSchoolGroup(wrap, items, blockNameFor, opts) {
       var lastLesson;
       items.forEach(function (item) {
         var lesson = item.lessonTitle || null;
         if (lesson && lesson !== lastLesson) wrap.appendChild(lessonHead(lesson));
         lastLesson = lesson;
-        wrap.appendChild(itemCard(item, "activity", blockNameFor(item), items));
+        wrap.appendChild(itemCard(item, "activity", blockNameFor(item), items, opts));
       });
     }
 
@@ -645,8 +791,47 @@
         wrap.appendChild(node("div", "section-empty", "Nothing completed yet today."));
         return wrap;
       }
-      pairs.forEach(function (pair) { wrap.appendChild(completedCard(pair.item, pair.rec)); });
-      claimedElsewhere.forEach(function (item) { wrap.appendChild(claimedCard(item)); });
+
+      // FR-13, the same collapse the Today view uses (Ray, 2026-08-13): school
+      // work behind one section per course, every chore behind one "Chores"
+      // section. No blocks here — this list is "what did I do today", not a
+      // plan — so the key names the view alone, and the two views' groups are
+      // independent: opening Maths here does not open it on Today.
+      //
+      // The record travels with its row through the grouping, so it is indexed
+      // by row id first. P.groupByCourse gathers by first appearance rather
+      // than by contiguity, which is what makes it safe here: these pairs are
+      // in completion order, so a course's rows are not adjacent.
+      var recFor = Object.create(null);
+      pairs.forEach(function (pair) { recFor[pair.item.id] = pair.rec; });
+      var isChore = function (item) { return item.kind === "chore"; };
+      var doneItems = pairs.map(function (pair) { return pair.item; });
+
+      P.groupByCourse(doneItems.filter(function (i) { return !isChore(i); })).forEach(function (grp) {
+        var section = collapsibleGroup(groupKey("completed", null, courseGroup(grp.course_name)),
+          grp.course_name || "Other school work", grp.items.length);
+        grp.items.forEach(function (item) {
+          section.body.appendChild(completedCard(item, recFor[item.id], { hideCourse: !!grp.course_name }));
+        });
+        wrap.appendChild(section.section);
+      });
+
+      // Shared Chores §6.2 — a sibling-claimed row is a chore this child no
+      // longer has to do, so it belongs inside the chore section and inside
+      // its count, exactly where the child looks to check the chores are
+      // accounted for. Its card is still the read-only one: no note, no Undo.
+      var doneChores = doneItems.filter(isChore);
+      if (doneChores.length || claimedElsewhere.length) {
+        var chores = collapsibleGroup(groupKey("completed", null, CHORES_GROUP),
+          "Chores", doneChores.length + claimedElsewhere.length);
+        doneChores.forEach(function (item) {
+          chores.body.appendChild(completedCard(item, recFor[item.id]));
+        });
+        claimedElsewhere.forEach(function (item) {
+          chores.body.appendChild(claimedCard(item));
+        });
+        wrap.appendChild(chores.section);
+      }
       return wrap;
     }
 
@@ -654,7 +839,7 @@
     // field like grade) — no reorder controls, no block picker; this is a
     // list, not a plan. Shares itemCard's rendering conventions for the
     // fields it shows.
-    function completedCard(item, rec) {
+    function completedCard(item, rec, opts) {
       var kind = item.kind === "chore" ? "chore" : "activity";
       var blockName = P.effectiveBlock(item);
       var card = node("div", "card");
@@ -668,7 +853,7 @@
       if (typeText) tagrow.appendChild(node("span", "type-tag", typeText));
       if (tagrow.childNodes.length) main.appendChild(tagrow);
 
-      if (kind === "activity" && item.course_name) {
+      if (kind === "activity" && item.course_name && !(opts && opts.hideCourse)) {
         main.appendChild(node("div", "course-sub", item.course_name));
       }
       main.appendChild(node("div", "title", item.title));
@@ -794,15 +979,19 @@
       return !navigator.onLine || (state.sync && state.sync.error === "offline");
     }
 
-    function itemCard(item, kind, blockName, group) {
+    function itemCard(item, kind, blockName, group, opts) {
       var card = node("div", "card");
       card.style.setProperty("--lane-color", "var(--" + blockName + ")");
 
       var top = node("div", "card-top");
       var main = node("div", "card-main");
 
-      // course_name label (FR-12) — above the title, activities only, only when present.
-      if (kind === "activity" && item.course_name) {
+      // course_name label (FR-12) — above the title, activities only, only
+      // when present, and only outside a course collapse: inside one the
+      // section header names the course, and FR-13 amends FR-12 to say the
+      // card must not repeat it (the same move the Lesson Recipe slice §9.1
+      // made when the lesson title became a group header).
+      if (kind === "activity" && item.course_name && !(opts && opts.hideCourse)) {
         main.appendChild(node("div", "course-sub", item.course_name));
       }
 
