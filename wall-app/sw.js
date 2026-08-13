@@ -1,0 +1,91 @@
+// Wall App service worker — shell-only cache (TDS_Slice_Wall_Display_App.md
+// §10.2). Cache-first for the precached shell, network-only for /api/*, never
+// cache an API response — same discipline as child-app/sw.js, re-implemented
+// rather than shared (CLAUDE.md §I.A). It exists so a wifi blip during a
+// reload does not white-screen a tablet meant to run for months, and for no
+// other reason.
+//
+// Bump CACHE_NAME on any shell file change. Settings' "Reload app" button
+// (settings-ui.js) unregisters and re-registers this worker for exactly the
+// case where a device is stuck on a stale cache with no CLI to clear it from
+// (CLAUDE.md §0).
+//
+// v1: Phase 2 — shell, store, admin PIN, first-run wizard, pairing, ambient
+// tiles from the live roster with no plan data behind them yet.
+const CACHE_NAME = "wall-display-shell-v1";
+
+const APP_SHELL = [
+  "./",
+  "./manifest.json",
+  "./css/wall.css",
+  "./js/pin-core.js",
+  "./js/store.js",
+  "./js/api.js",
+  "./js/setup.js",
+  "./js/ambient-ui.js",
+  "./js/settings-ui.js",
+  "./js/app.js",
+  "./icons/icon-192.png",
+  "./icons/icon-512.png",
+  "./icons/icon-maskable-512.png",
+];
+
+self.addEventListener("install", (event) => {
+  self.skipWaiting();
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) =>
+      // Per-file, not cache.addAll(): one missing asset must not abort
+      // caching of the rest of the shell.
+      Promise.all(APP_SHELL.map((url) => cache.add(url).catch(() => {})))
+    )
+  );
+});
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil(
+    caches
+      .keys()
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))))
+      .then(() => self.clients.claim())
+  );
+});
+
+// Same fold as child-app/sw.js's shellPath(): Cloudflare's asset server 307s
+// "/wall-app/index.html" onto "/wall-app/", and caching a redirected response
+// makes the very next navigation a network error. One spelling, the
+// directory path, in and out.
+const SHELL_PATHS = new Set(APP_SHELL.map((path) => new URL(path, self.location.href).pathname));
+
+function shellPath(pathname) {
+  return pathname.endsWith("/index.html") ? pathname.slice(0, -"index.html".length) : pathname;
+}
+
+self.addEventListener("fetch", (event) => {
+  const request = event.request;
+  if (request.method !== "GET") return;
+
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return;
+
+  // Network-only, never cached — an API response cached here is a completion
+  // the wall could show as applied when it was never sent (§6.4).
+  if (url.pathname.startsWith("/api/")) return;
+
+  const path = shellPath(url.pathname);
+  if (!SHELL_PATHS.has(path)) return;
+
+  const canonical = new URL(path, self.location.href).href;
+
+  event.respondWith(
+    caches.match(canonical).then((cached) => {
+      if (cached) return cached;
+      return fetch(canonical).then((response) => {
+        if (response.ok && response.type === "basic") {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(canonical, clone));
+        }
+        return response;
+      });
+    })
+  );
+});
