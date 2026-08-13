@@ -604,11 +604,11 @@ reordered to interleave.
 
 | Document | Change |
 |---|---|
-| `SRS_Management_Module_03` | New **FR-P7** (recipe expansion). New **FR-P8** — per-Course `titlePatterns` and "Copy settings from" on the Course create form (§5.6.1, §5.7). New **FR-P9** — the count targets seed Stage 1, and the Course/Curriculum types seed the count-target rows (§5.2a). FR-P2 gains the pre-filled rows and the blank-count rule; FR-P4 unchanged in substance — the count target remains display-only and participates in no validation, seeding a form being a pre-fill, not enforcement. FR-4's Activity form loses `reference`, `blockHint`, and `sequenceNumber`. |
+| `SRS_Management_Module_03` | *(FR-P7/P8/P9 landed with their phases; the record-reduction half landed 2026-08-13 — §4's Activity entity and three-numbers table, §2.3/§2.7, §5, FR-4/FR-5/FR-6/FR-10, FR-P1, FR-P6 (retired), §8 rewritten as "Type-specific field reference", and §9's Activity/page-range/bulk-header rows.)* New **FR-P7** (recipe expansion). New **FR-P8** — per-Course `titlePatterns` and "Copy settings from" on the Course create form (§5.6.1, §5.7). New **FR-P9** — the count targets seed Stage 1, and the Course/Curriculum types seed the count-target rows (§5.2a). FR-P2 gains the pre-filled rows and the blank-count rule; FR-P4 unchanged in substance — the count target remains display-only and participates in no validation, seeding a form being a pre-fill, not enforcement. FR-4's Activity form loses `reference`, `blockHint`, and `sequenceNumber`. |
 | `SRS_Management_Module_12` | §4 both tables → 11 rows; Workbook `page-range`; Practice relabelled; Online Sim added. |
 | `TDS_Slice_M5_..._Rev7` | §1a table and prose; §174 acceptance item 2 ("10 rows") → 11. |
 | `TDS_Slice_M7_..._Rev1` | §37/§141 payload projection tables → one shape. |
-| `TDS_Slice_M8` | §39/§40/§142 CSV column validity per type. |
+| `TDS_Slice_M8` | §39/§40/§142 CSV column validity per type. **Landed 2026-08-13 as that slice's Amendment A1**, which turned out to be wider than one table: the locked column order (16 → 12), FR-P3's type filter, FR-P6 (retired with the field), §4.2's per-row checks, §4.4's written field set, and four acceptance items all described the pre-reduction CSV. |
 | `TDS_Slice_Child_Feedback_Loop` | §4.1/§4.3 — `sequence_no` sorting and the `canReorder` gate, both deleted. |
 | `CLAUDE.md` | §VII gains "Ordinal in title, `reference` repealed" and "One page-range type per Lesson". |
 

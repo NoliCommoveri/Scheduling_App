@@ -609,6 +609,21 @@ button.secondary {
   margin-bottom: 1.5rem;
 }
 
+.bulk-import-hint {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+  color: #555;
+}
+
+/* Import and the template download sit on one line where there is room and
+   stack at 320px rather than squeezing — same rule the row actions follow. */
+.bulk-import-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
 .bulk-import-result ul {
   margin: 0.5rem 0 0;
   padding-left: 1.25rem;
