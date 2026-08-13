@@ -173,23 +173,50 @@ button {
 /* ---- ambient screen ------------------------------------------------------ */
 
 .ambient {
-  min-height: 100vh;
-  padding: 4vh 4vw;
+  height: 100vh;
+  padding: 3vh 4vw;
   display: flex;
   flex-direction: column;
-  gap: 2rem;
+  gap: 1.5rem;
+  overflow: hidden; /* §10.2 — no page scroll; the panels below scroll internally instead */
 }
 
 .ambient-topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 1.5rem;
 }
 
 .ambient-brand {
   font-size: 1.4rem;
   font-weight: 600;
   letter-spacing: 0.02em;
+}
+
+.ambient-clock {
+  font-size: 1.6rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-left: auto;
+  margin-right: 1.5rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.ambient-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.ambient-panels {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 3fr 2fr;
+  gap: 1.25rem;
 }
 
 .gear-btn {
@@ -203,20 +230,21 @@ button {
 }
 
 .ambient-tiles {
+  flex: 0 0 auto;
   display: flex;
   flex-wrap: wrap;
-  gap: 1.5rem;
+  gap: 1.25rem;
   align-content: flex-start;
 }
 
 .child-tile {
-  min-width: 220px;
-  min-height: 140px;
-  flex: 1 1 220px;
+  min-width: 200px;
+  min-height: 96px;
+  flex: 1 1 200px;
   background: var(--panel);
   border: none;
   border-radius: var(--radius);
-  padding: 1.5rem;
+  padding: 1rem 1.25rem;
   text-align: left;
   cursor: pointer;
   display: flex;
@@ -240,6 +268,143 @@ button {
   color: var(--text-dim);
   font-size: 1.2rem;
   padding: 2rem 0;
+}
+
+/* ---- events strip -------------------------------------------------------- */
+
+.ambient-events {
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: 1.25rem 1.5rem;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.ambient-events h2,
+.ambient-events h3,
+.done-today h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+
+.events-upcoming {
+  margin-top: 1.25rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--panel-2);
+}
+
+.upcoming-day {
+  margin-bottom: 0.75rem;
+}
+
+.upcoming-day-label {
+  font-size: 0.95rem;
+  color: var(--text-dim);
+  margin-bottom: 0.3rem;
+}
+
+.event-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.4rem 0;
+  font-size: 1.1rem;
+}
+
+.event-time {
+  color: var(--accent);
+  font-weight: 600;
+  min-width: 5.5rem;
+}
+
+.event-title {
+  flex: 1;
+}
+
+.event-span,
+.event-notes {
+  color: var(--text-dim);
+  font-size: 0.9rem;
+}
+
+.events-empty {
+  color: var(--text-dim);
+}
+
+/* ---- Done Today ------------------------------------------------------------ */
+
+.done-today {
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: 1.25rem 1.5rem;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.done-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.done-row {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 0.4rem 0;
+  font-size: 1.1rem;
+  border-top: 1px solid var(--panel-2);
+}
+
+.done-row:first-child {
+  border-top: none;
+}
+
+.done-time {
+  color: var(--text-dim);
+  min-width: 5.5rem;
+}
+
+.done-title {
+  flex: 1;
+}
+
+.done-child {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.done-empty {
+  color: var(--text-dim);
+}
+
+/* ---- staleness stamp ------------------------------------------------------- */
+
+.stale-stamp {
+  color: var(--text-dim);
+  font-size: 0.9rem;
+  text-align: right;
+}
+
+.stale-stamp.amber {
+  color: var(--accent);
+}
+
+/* ---- night dimming (§10.2 — CSS, not device brightness) -------------------- */
+
+.night-overlay {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 3s ease;
+}
+
+.ambient.dimmed .night-overlay {
+  opacity: 0.82;
 }
 
 /* ---- settings overlay ---------------------------------------------------- */

@@ -1,8 +1,8 @@
 // api.js — fetch wrappers for the wall's one bearer credential.
 // Phase 2: pairing and the roster read (TDS_Slice_Wall_Display_App.md §13).
-// The plan/completions/rewards/claim calls join this file in Phase 3/4b —
-// the shape (one wall token, childId per call, 401 -> unpaired) is set here
-// so later phases only add routes, not a second convention.
+// Phase 3 adds the plan read. Completions/rewards/claim calls join in
+// Phase 4b — the shape (one wall token, childId per call, 401 -> unpaired)
+// is set here so later phases only add routes, not a second convention.
 
 (function (g) {
   "use strict";
@@ -54,10 +54,21 @@
     return request("/api/wall/children").then(function (res) { return res.children || []; });
   }
 
+  // §5.1/§5.2 — handlePlan's body: { assignments, from, to, truncated?, limit? }.
+  // `since`, when given, is the incremental watermark (max updated_at from
+  // the last successful fetch of this child's window); omit for a full fetch.
+  function getPlan(childId, from, to, since) {
+    var qs = "childId=" + encodeURIComponent(childId) +
+      "&from=" + encodeURIComponent(from) + "&to=" + encodeURIComponent(to);
+    if (since != null) qs += "&since=" + encodeURIComponent(since);
+    return request("/api/wall/plan?" + qs);
+  }
+
   g.WallApi = {
     UnpairedError: UnpairedError,
     pair: pair,
     getChildren: getChildren,
+    getPlan: getPlan,
     request: request,
   };
 })(typeof window !== "undefined" ? window : globalThis);
