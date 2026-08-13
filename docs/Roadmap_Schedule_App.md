@@ -76,7 +76,42 @@ their own later release, unsequenced. What remains open is what the child sees a
 Still open and *not* blocking Feature D: §11.1 (subject as a grouping level), §11.2 (two-way
 messaging), §11.3 (Undo's PIN gate), §11.5 (retiring the Subjects tab), §11.6 (historical
 Completed browsing), §11.8 (verifying the device timezone), §11.9 (midnight rollover while the app
-is open).
+is open). **§11.9 is answered** for the app that cannot avoid it — see the Wall Display slice §5.3;
+the Child App item stays open.
+
+**`TDS_Slice_Shared_Chores.md`** — server-arbitrated claims on a shared `claim_group`. **Landed**
+(migration 0007). `CLAUDE.md` 2.1 carries its §14 amendment.
+
+**`TDS_Slice_Wall_Display_App.md`** — a third app, `wall-app/`: an always-on tablet showing the
+family's events and each child's chore progress, with chore completion behind a per-child PIN.
+Design revised 2026-08-13 after review; `CLAUDE.md` 2.2 carries its §16 amendment. **Not started.**
+
+| Phase | Contents | Est. | Status |
+|---|---|---|---|
+| **0** | The TDS, the `CLAUDE.md` 2.2 amendment, this entry. Ray's sign-off on the three narrowings. | ~30 min | ✅ Done |
+| **1 — Worker** | Migration 0009 (`devices.scope`) + registry; `withWall`; the six `/api/wall/*` routes; the `/wall` redirect. No app yet. | ~2.5 h | ⬜ |
+| **2** | Shell, `store.js`, admin PIN, first-run wizard, display pairing, Settings. Tiles from the live roster. | ~2 h | ⬜ |
+| **3** | `api.js`, `poll.js`, the three pure cores; the ambient screen becomes real — events, counts, Done Today, staleness, rollover, night dim. | ~2.5 h | ⬜ |
+| **4a** | PIN pad, session/lockout, the PIN-less tile, the per-child chore list. Read-only. | ~1.5 h | ⬜ |
+| **4b** | Completion, earn entries, the retry queue, Undo (both paths), the claim path. | ~2 h | ⬜ |
+| **5** | Tests, then the on-device shakedown. | ~2 h | ⬜ |
+
+**Three narrowings signed off in-session, 2026-08-13**, each recorded where it is decided in the
+slice: wall writes are online-required with no outbox (§6.4); `child_id` is named in the request on
+`/api/wall/*` rather than derived from the token (§8.3); completed chore titles appear on the
+ambient screen, narrowing the slice's own §0.4 (§6.7).
+
+**One decision this slice reverses within a day of drafting:** the wall was first designed to hold
+one device token per child, paired individually. Ray rejected it — the wall pulls all active
+children from D1 instead. Slice §17 logs that and the correctness fixes found in the same review.
+
+**Deliberately not built** (slice §15): server-side earn idempotency, PINs in D1, streaks from the
+wall, a genuine "everyone" flag on events, per-child theming, a second display.
+
+**`TDS_Slice_Alexa_Voice_Bridge.md`** — spoken schedule queries and, gated, voice completion.
+Drafted 2026-08-13, **not started**, and its Phase 2 remains gated on §6.3's reward-crediting
+question. The Wall slice §9 answers part of that (the earn rule is stated once, in Wall §6.2) and
+§9.1 now recommends the two share one credential mechanism rather than inventing two.
 
 ---
 

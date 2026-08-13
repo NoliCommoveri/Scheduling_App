@@ -44,9 +44,13 @@ All five were put to Ray in-session on 2026-08-13 and answered; they are recorde
    PIN yet is shown but not openable (§4.6) — a roster that grows on its own must not open a hole
    on its own.
 
-4. **The ambient screen shows today's events in full, plus a progress count per child.** Chore
-   *titles* stay behind the PIN; "Ellie · 3 of 5" does not. A wall that shows nothing until someone
-   authenticates is a clock with extra steps.
+4. **The ambient screen shows today's events in full, plus a progress count per child.**
+   **Pending** chore titles stay behind the PIN; "Ellie · 3 of 5" does not. A wall that shows
+   nothing until someone authenticates is a clock with extra steps.
+
+   *Amended 2026-08-13:* **completed** chore titles also appear ungated, on the Done Today board
+   (§6.7). A pending list is a child's workload and a sibling's ammunition; a finished list is the
+   household's record of a day, which is the thing a wall display exists to show.
 
 5. **Shared (`claim_group`) chores are claimable from the wall.** Behind the PIN the wall knows
    exactly which child is tapping, so it calls `POST /api/wall/assignments/:id/claim` naming that
@@ -139,10 +143,12 @@ Rationale: the requirement is "all active children from D1, period" (Ray,
   room. A separate secret with a five-route allowlist costs almost nothing and
   keeps that non-negotiable intact.
 Consequence: `child_id` comes from the request, not the token, on the wall
-  routes only. This is a genuine narrowing of Online Revamp §4.2 and needs
-  Ray's sign-off (§16). It is contained by the route family: the wall routes
-  are the only ones that accept a wall token, and the device routes are
-  unchanged, so the Child App's guarantee is untouched.
+  routes only. This is a genuine narrowing of Online Revamp §4.2. It is
+  contained by the route family: the wall routes are the only ones that accept
+  a wall token, and the device routes are unchanged, so the Child App's
+  guarantee is untouched.
+Signed off: Ray, in-session 2026-08-13. Carried into CLAUDE.md 2.2 §III.E,
+  which states the four bounds (§8.3) a wall route may not drop.
 Locked for: this slice.
 ```
 
@@ -521,9 +527,10 @@ Rationale: CLAUDE.md §III.A's "local writes never block on the network" is a
   situation makes rare, and cost a whole subsystem plus a window in which a
   chore ticked at 4pm lands at 4:10pm — after the sibling standing at the same
   tablet has already been told it is theirs to do.
-Consequence: this is a genuine narrowing of a LOCKED decision and needs Ray's
-  sign-off (§16). It applies to the wall app only; nothing about the Child App
-  changes.
+Consequence: this is a genuine narrowing of a LOCKED decision. It applies to the
+  wall app only; nothing about the Child App changes.
+Signed off: Ray, in-session 2026-08-13. Carried into CLAUDE.md 2.2 §III.A as
+  "Narrowed exception 2".
 Locked for: this slice.
 ```
 
@@ -631,10 +638,9 @@ Consequence: this NARROWS §0.4, which put chore titles behind the PIN. Complete
   titles go on the ambient screen; pending ones stay gated. The distinction is
   deliberate rather than a loophole — a pending list is a child's workload and a
   sibling's ammunition, and a finished list is the household's record of a day.
-  If Ray wants completed titles gated too, this becomes a per-child panel inside
-  the signed-in view and §0.4 stands unamended; nothing else in this section
-  changes, including the pure core that feeds it.
-Locked for: this slice, pending Ray's confirmation of the §0.4 narrowing (§16).
+Signed off: Ray, in-session 2026-08-13, including the §0.4 narrowing. §0.4 now
+  reads "pending chore titles stay behind the PIN"; completed ones do not.
+Locked for: this slice.
 ```
 
 `completed-core.js` (§11) owns the selection, sort, and time-bucketing, DOM-free and IO-free, so
@@ -1080,13 +1086,10 @@ a second wall tablet; any reporting surface.
 
 ## 16. Amendments required before Phase 1
 
-**Neither amendment below is in the repository yet.** `CLAUDE.md` is still v2.1 and
-`docs/Roadmap_Schedule_App.md` §0 has no wall entry, so Phase 0 is **not** complete despite this
-document existing. This matters concretely: a session that runs the §IV.A pre-build audit and
-declares scope `wall-app/` is declaring a scope §I.A's two-column table does not contain, and §I.A
-says edits outside the declared scope are an error and a halt. Do these first.
+**✅ Both amendments landed 2026-08-13, and all three narrowings are signed off. Phase 0 is
+complete; Phase 1 is clear to start.** What follows is the record of what was changed and why.
 
-1. **`CLAUDE.md` → v2.2**, authorized by Ray in-session:
+1. **`CLAUDE.md` → v2.2** ✅, authorized by Ray in-session:
    - **§I.A** — the app-isolation table becomes three columns. The Wall App's scope is: read the
      active-child roster, chores and events; write completions, their earn entries, and claims;
      nothing else. Its credential is the **wall token**, not a device token. Runtime code sharing
@@ -1103,14 +1106,18 @@ says edits outside the declared scope are an error and a halt. Do these first.
      is what makes the first safe.
    - **§VII** — a locked-decision row: *Wall Display App — one household-scoped wall token, roster
      from `children.active`, local PINs, complete-only, online-required writes.*
-2. **`docs/Roadmap_Schedule_App.md` §0** — a slice entry with its phase table (§13).
+2. **`docs/Roadmap_Schedule_App.md` §0** ✅ — a slice entry with its phase table (§13), plus
+   entries for the Shared Chores and Alexa slices that were missing from the same list.
 3. **Ray's sign-off, itemized.** Three things in this document are narrowings of locked decisions
-   rather than applications of them, and each is called out where it is decided:
-   - §6.4 — the wall does not queue completions (narrows `CLAUDE.md` §III.A).
-   - §8.3 — `child_id` from the request on `/api/wall/*` (narrows Online Revamp §4.2).
-   - §6.7 — completed chore titles on the ambient screen (narrows this slice's own §0.4).
-     **Open**: if Ray prefers completed titles gated, §6.7's decision block says exactly what
-     changes, and it is a rendering change only.
+   rather than applications of them. Each was put to Ray individually on 2026-08-13 with its
+   alternatives, and each was approved as recommended:
+   - ✅ §6.4 — the wall does not queue completions (narrows `CLAUDE.md` §III.A). *Alternative
+     offered and declined: build an outbox on the wall.*
+   - ✅ §8.3 — `child_id` from the request on `/api/wall/*` (narrows Online Revamp §4.2).
+     *Alternatives offered and declined: a read-only wall with no write routes at all; reverting
+     to per-child pairing.*
+   - ✅ §6.7 — completed chore titles on the ambient screen (narrows this slice's own §0.4).
+     *Alternatives offered and declined: gating Done Today behind the PIN; building both surfaces.*
 4. **No SRS module** is written for v1: the surface is one ambient screen, one PIN pad, one chore
    list, and one Done Today board, and §5–§7 specify it more precisely than a new SRS module would.
    If the wall grows past this scope, it earns SRS modules then — recorded here so the omission is
