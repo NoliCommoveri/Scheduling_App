@@ -72,86 +72,77 @@
     };
   }
 
-  // Lesson-order sort within a course group: sequence_no ascending, id as tie-break.
-  function bySequenceNo(x, y) {
-    if (x.sequence_no !== y.sequence_no) return x.sequence_no - y.sequence_no;
-    return x.id < y.id ? -1 : (x.id > y.id ? 1 : 0);
-  }
-
-  // Child Feedback Loop §4.2 — School's three-pass sort, passes 2 and 3.
-  // `items` is already restricted to one kind and one block. Groups by
-  // course_name, in first-appearance order (same convention subjectsView
-  // already uses); course-less items fall into one unlabeled group, forced
-  // last so they never vanish from the list. Within a group, sorts by
-  // sequence_no when every item in it has one, else falls back to position.
-  function byCourseThenLesson(items) {
-    var pos = byPosition();
+  // Groups `list` by `keyFn`, in first-appearance order; a falsy key collapses
+  // every such row into one unlabeled group, forced last so it never vanishes.
+  // Shared by byCourseThenLesson's two passes below.
+  function groupByKey(list, keyFn) {
     var groups = [];
     var index = Object.create(null);
-    var noCourse = null;
-    items.forEach(function (r) {
-      var name = r.course_name;
-      if (!name) {
-        if (!noCourse) noCourse = { course_name: null, items: [] };
-        noCourse.items.push(r);
+    var unlabeled = null;
+    list.forEach(function (r) {
+      var key = keyFn(r);
+      if (!key) {
+        if (!unlabeled) unlabeled = { items: [] };
+        unlabeled.items.push(r);
         return;
       }
-      if (!(name in index)) {
-        index[name] = { course_name: name, items: [] };
-        groups.push(index[name]);
+      if (!(key in index)) {
+        index[key] = { items: [] };
+        groups.push(index[key]);
       }
-      index[name].items.push(r);
+      index[key].items.push(r);
     });
-    if (noCourse) groups.push(noCourse);
+    if (unlabeled) groups.push(unlabeled);
+    return groups;
+  }
 
+  // Child Feedback Loop §4.2, reworked by the Lesson Recipe slice §9.2 —
+  // School's three-pass sort, passes 2 and 3. `items` is already restricted to
+  // one kind and one block. Groups by course_name, then sub-groups each course
+  // by lessonTitle — both in first-appearance order, course-less/lesson-less
+  // rows each falling into their own trailing unlabeled group. Every lesson
+  // group, however it was reached, sorts by effectiveSortKey: sequence_no is
+  // gone (the slice's ordinal now lives in the title), so there is exactly one
+  // sort left, not a per-group choice between two.
+  function byCourseThenLesson(items) {
+    var pos = byPosition();
     var out = [];
-    groups.forEach(function (grp) {
-      var everySequenced = grp.items.every(function (r) { return typeof r.sequence_no === "number"; });
-      grp.items.sort(everySequenced ? bySequenceNo : pos);
-      out = out.concat(grp.items);
+    groupByKey(items, function (r) { return r.course_name; }).forEach(function (courseGrp) {
+      groupByKey(courseGrp.items, function (r) { return r.lessonTitle; }).forEach(function (lessonGrp) {
+        lessonGrp.items.sort(pos);
+        out = out.concat(lessonGrp.items);
+      });
     });
     return out;
   }
 
-  // Child Feedback Loop §4.3, decided — may the child hand-reorder this row?
+  // Child Feedback Loop §4.3, widened by the Lesson Recipe slice §9.2 — the
+  // rows a reorder may move `row` among.
   //
-  // No, if it carries a `sequence_no`. That is parent-authored curriculum order
-  // (Lesson 1, 2, 3…), and a child arrow fighting it is the wrong shape of
-  // control. It is also the case where the arrow does not work: byCourseThenLesson
-  // sorts a fully-sequenced course group with bySequenceNo, which ignores
-  // child_sort_order outright — so before this rule the arrow wrote a value,
-  // queued an outbox op, re-rendered, and moved nothing.
+  // Peers share this row's block, course, and lesson — exactly the unit
+  // byCourseThenLesson sorts together. An arrow reaching outside that unit
+  // would write an interpolated sort key against a neighbour the grouping
+  // cannot place next to `row`, so the write would land a key and move
+  // nothing. Chores have no course or lesson concept (§4.4), so for them it
+  // narrows to the block only.
   //
-  // Course-less and sequence_no-less rows keep their arrows: nothing
-  // authoritative is being overridden, and their group still sorts by position.
-  function canReorder(row) {
-    return typeof row.sequence_no !== "number";
-  }
-
-  // Child Feedback Loop §4.3, decided — the rows a reorder may move `row` among.
-  //
-  // Before §4.2 the arrows ranged over whatever list the view had rendered:
-  // a whole block+category group on Today, and every block at once in the
-  // filter views. Course grouping made that actively wrong — an interpolated
-  // key computed against a neighbour in a *different* course cannot move the
-  // row there, because byCourseThenLesson groups before it sorts, so the write
-  // either did nothing or landed the row somewhere unrelated inside its own
-  // course.
-  //
-  // Peers are therefore the rows sharing this row's block *and* course, which
-  // is exactly the set byCourseThenLesson sorts as a unit. Chores have no
-  // course concept (§4.4), so for them it narrows to the block only — which
-  // still fixes the cross-block reach the filter views always had.
+  // Every row is reorderable now: `sequence_no`, the parent-authored order
+  // this used to defer to, is gone with the column — the ordinal lives in the
+  // title, and the child's own order is the only order left to have an
+  // opinion about.
   //
   // Returns { peers, index }; index is -1 if `row` is not in `list`.
   function reorderPeers(list, row) {
     var block = effectiveBlock(row);
     var byCourse = row.kind !== "chore";
-    var course = row.course_name || null;
+    var course = byCourse ? (row.course_name || null) : null;
+    var lesson = byCourse ? (row.lessonTitle || null) : null;
     var peers = (list || []).filter(function (r) {
       if (r.kind !== row.kind) return false;
       if (effectiveBlock(r) !== block) return false;
-      return byCourse ? (r.course_name || null) === course : true;
+      if (!byCourse) return true;
+      if ((r.course_name || null) !== course) return false;
+      return (r.lessonTitle || null) === lesson;
     });
     return { peers: peers, index: peers.indexOf(row) };
   }
@@ -290,7 +281,6 @@
     filterView: filterView,
     eventsView: eventsView,
     subjectsView: subjectsView,
-    canReorder: canReorder,
     reorderPeers: reorderPeers
   };
 })(typeof window !== "undefined" ? window : globalThis);
