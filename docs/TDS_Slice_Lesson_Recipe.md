@@ -180,6 +180,40 @@ Adding Fractions · pages 10–17  [edit]
 - **Count types get a plain number box.** No reference, no sequence number, no per-row anything.
 - The submit button carries the **live total**, recomputed on every input event. A parent who types `120` instead of `12` sees "Propose 125 activities" before pressing. Deliberately a visible number rather than a confirmation dialog.
 
+#### 5.2a Where Stage 1 opens — the Lesson's own content plan
+
+Stage 1 does **not** open empty when the Lesson already carries
+`activityCountTargets[]` (FR-P2). The target list is exactly Stage 1's input — a type and a count
+per row — so requiring it to be retyped is the same data entered twice, once on the Lesson form and
+once here, minutes apart. `RecipeCore.buildCountTargetSeed` maps it in:
+
+| Target | Seeds |
+|---|---|
+| A `count`-structured type, `targetCount ≥ 1` | One count row, that count, in target order |
+| A `page-range`-structured type, `targetCount = N` | The singular page-range slot (D11), plus `N` split points spread evenly over the Lesson's budget, first-page mode |
+| `targetCount` of `0`, or a type no longer in `activityTypes` | Nothing |
+| A second page-range target | Nothing — D11 means the first one wins |
+
+The even split is `start + ⌊i · pages / N⌋` for `i` in `0…N−1`, which is strictly ascending
+whenever the budget holds at least one page per chunk and produces no front or back gap. With no
+budget set — or one too small to divide — the type is still pre-selected and the split box is left
+for the parent.
+
+**Every seeded value is form state like any other.** Rows are removable, counts and split points
+editable, "Copy from lesson" (§5.4) still overwrites the whole set, and nothing is written until
+Generate. The target itself is untouched by any of this: FR-P4 keeps it display-only, so this is a
+pre-fill, never a constraint. A recipe may deliberately generate more, fewer, or other types than
+the plan called for, and the §5.1 Content Plan panel goes on reporting current-vs-target either way.
+
+**Symmetrically, the target rows themselves open pre-populated.** A Lesson with no targets yet gets
+one blank-count row per type in `Course.titlePatterns` ∪ `Curriculum.suggestedActivityTypes[]`
+(`RecipeCore.suggestedTargetTypeKeys`, in `activityTypes` table order). Both sources are already
+statements about which types this material uses — an authored title pattern explicitly, the
+Curriculum's suggestions softly (Module 01 FR-3) — and neither was being read anywhere the parent
+authors a Lesson. The parent types numbers instead of re-picking types the Course already declared.
+A blank count stores nothing, so a suggested row the parent ignores leaves no target behind, and
+every other type remains one "Add target" away — the suggestion never becomes a whitelist.
+
 ### 5.3 The split rule
 
 N numbers give N chunks, in either mode. Let `B₀ = lesson.pageRangeStart`, `B₁ = lesson.pageRangeEnd`.
@@ -557,6 +591,12 @@ reordered to interleave.
 26. "Copy settings from" pre-fills patterns and metadata, leaves `name` and `courseCode` empty, creates no Lessons or Activities, and writes no `sourceTemplateId`.
 27. Editing the source Course after a settings copy changes nothing on the copy.
 28. A Course stamped to a child carries no `titlePatterns` on the instance record.
+29. A Lesson saved with targets Video 1 / Practice 3 / Quiz 1 opens Stage 1 with those three count rows already carrying those counts, and a live total of 5.
+30. A page-range target of 3 on a Lesson budgeted 800–810 opens Stage 1 with that type selected, `800, 803, 807` in the split box, first-page mode, and proposes three chunks with no gap warning.
+31. Seeded rows stay editable: removing one, or changing a count, changes the live total and the generated set; the Lesson's targets are unchanged by generating.
+32. A Lesson with no targets opens Stage 1 empty, exactly as before.
+33. The Add Lesson form opens with one blank-count target row per type in the Course's `titlePatterns` ∪ the Curriculum's `suggestedActivityTypes[]`, in `activityTypes` order, each still removable and each still leaving no target when left blank.
+34. A type in neither source is still addable from the target dropdown, and a Lesson that already has targets shows those, not the suggestions.
 
 ---
 
@@ -564,7 +604,7 @@ reordered to interleave.
 
 | Document | Change |
 |---|---|
-| `SRS_Management_Module_03` | New **FR-P7** (recipe expansion). New **FR-P8** — per-Course `titlePatterns` and "Copy settings from" on the Course create form (§5.6.1, §5.7). FR-P4 unchanged in substance — the count target remains display-only and participates in no validation. FR-4's Activity form loses `reference`, `blockHint`, and `sequenceNumber`. |
+| `SRS_Management_Module_03` | New **FR-P7** (recipe expansion). New **FR-P8** — per-Course `titlePatterns` and "Copy settings from" on the Course create form (§5.6.1, §5.7). New **FR-P9** — the count targets seed Stage 1, and the Course/Curriculum types seed the count-target rows (§5.2a). FR-P2 gains the pre-filled rows and the blank-count rule; FR-P4 unchanged in substance — the count target remains display-only and participates in no validation, seeding a form being a pre-fill, not enforcement. FR-4's Activity form loses `reference`, `blockHint`, and `sequenceNumber`. |
 | `SRS_Management_Module_12` | §4 both tables → 11 rows; Workbook `page-range`; Practice relabelled; Online Sim added. |
 | `TDS_Slice_M5_..._Rev7` | §1a table and prose; §174 acceptance item 2 ("10 rows") → 11. |
 | `TDS_Slice_M7_..._Rev1` | §37/§141 payload projection tables → one shape. |

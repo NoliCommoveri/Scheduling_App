@@ -254,6 +254,61 @@ const RecipeCore = (() => {
     return { entries, pageRangeTypeKey, pageRangeTitles };
   }
 
+  // FR-P2's opening row set. A Lesson's count targets should not start from a
+  // blank slate when the Course and its Curriculum have already said which
+  // types this material uses: a Course-level `titlePatterns` key is an
+  // explicit statement ("this Course generates Practice levels"), and the
+  // Curriculum's `suggestedActivityTypes[]` is the publisher-level equivalent
+  // — soft, never a whitelist (Module 01 FR-3), which is exactly what a
+  // pre-filled row is. Union, walked in the `activityTypes` table's own
+  // display order so the row order is stable and independent of which source
+  // named a type first.
+  function suggestedTargetTypeKeys({ titlePatterns, suggestedActivityTypes, activityTypes }) {
+    const named = new Set([...Object.keys(titlePatterns || {}), ...(suggestedActivityTypes || [])]);
+    return (activityTypes || []).map((t) => t.activityTypeKey).filter((key) => named.has(key));
+  }
+
+  // First page of each of `chunks` even chunks of [start, end] — the split
+  // points a page-range count target implies. Returns [] when there is no
+  // budget to divide, or it cannot hold one page per chunk; the caller still
+  // pre-selects the type and lets the parent type the split themselves.
+  function evenSplitStarts(start, end, chunks) {
+    if (!Number.isInteger(start) || !Number.isInteger(end)) return [];
+    const pages = end - start + 1;
+    if (!Number.isInteger(chunks) || chunks < 1 || pages < chunks) return [];
+    const out = [];
+    for (let i = 0; i < chunks; i++) out.push(start + Math.floor((i * pages) / chunks));
+    return out;
+  }
+
+  // §5.2 — the Lesson's own content plan as the recipe's opening position.
+  // `activityCountTargets[]` (FR-P2) already carries the types and the counts;
+  // re-typing them into Stage 1 is the same data entered twice. A count-
+  // structured target seeds a count row verbatim; a page-range-structured one
+  // seeds the single page-range slot (D11) with its splits spread evenly over
+  // the Lesson's budget. Every seeded value stays editable, and the target
+  // itself is unchanged — FR-P4 keeps it display-only, so this pre-fills the
+  // form without the target ever becoming a constraint.
+  function buildCountTargetSeed(targets, ctx) {
+    const countRows = [];
+    let pageRangeTypeKey = null;
+    let splitNumbers = [];
+    for (const target of targets || []) {
+      const type = ctx.activityTypesByKey.get(target.activityTypeKey);
+      if (!type) continue; // a target naming a since-deleted type seeds nothing
+      const count = Number(target.targetCount);
+      if (!Number.isInteger(count) || count < 1) continue; // a 0 target generates nothing
+      if (type.structurePattern === 'page-range') {
+        if (pageRangeTypeKey) continue; // D11 — one page-range type; the first target wins
+        pageRangeTypeKey = target.activityTypeKey;
+        splitNumbers = evenSplitStarts(ctx.budgetStart, ctx.budgetEnd, count);
+      } else {
+        countRows.push({ activityTypeKey: target.activityTypeKey, count });
+      }
+    }
+    return { countRows, pageRangeTypeKey, splitNumbers, splitMode: 'first' };
+  }
+
   // §5.7 — the fields "Copy settings from" pre-fills on the Course create
   // form. Configuration only, never Lessons/Activities/id/state — a form
   // pre-fill the parent can still edit before saving, not a link to the
@@ -277,6 +332,9 @@ const RecipeCore = (() => {
     buildProposalRows,
     finalizeProposal,
     buildCopyFromLessonSeed,
+    suggestedTargetTypeKeys,
+    evenSplitStarts,
+    buildCountTargetSeed,
     pickCourseSettingsToCopy,
   };
 })();
