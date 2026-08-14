@@ -888,11 +888,29 @@ const Courses = (() => {
   // reordered column rejects the file before a row is read, and the twelve
   // columns changed under anyone still holding a pre-reduction spreadsheet.
   // Handing out the exact header beats transcribing it from a document.
-  // Header row only: the template is itself a valid CSV that imports nothing.
-  function downloadCsvTemplate() {
+  // A second, example row rides along so `activityType`/`difficultyTier` —
+  // internal keys neither settings screen used to surface — have somewhere
+  // to be read off from. Its courseCode ("SAMPLE") never matches a real
+  // Course template, so importing the template unedited still writes nothing.
+  async function downloadCsvTemplate() {
+    const [activityTypes, tiers] = await Promise.all([
+      Storage.getAll('activityTypes'),
+      Tiers.listSorted(),
+    ]);
+    const exampleType = activityTypes.find((t) => t.activityTypeKey === 'quiz') || activityTypes[0];
+    const exampleTier = tiers[0];
+    const exampleRow = [
+      'SAMPLE', 'L01', 'Sample Lesson', '1',
+      exampleType ? exampleType.activityTypeKey : '',
+      'Sample Activity Title', 'false',
+      '', '',
+      exampleTier ? exampleTier.tierId : '',
+      '20', '',
+    ];
+    const lines = [CSV_COLUMNS.join(','), exampleRow.join(',')];
     // Same Blob-URL treatment reporting.js uses for its exports; revoked after.
     const url = URL.createObjectURL(
-      new Blob([CSV_COLUMNS.join(',') + '\n'], { type: 'text/csv;charset=utf-8' })
+      new Blob([lines.join('\n') + '\n'], { type: 'text/csv;charset=utf-8' })
     );
     const link = document.createElement('a');
     link.href = url;
@@ -912,7 +930,7 @@ const Courses = (() => {
       <input type="file" name="csvFile" accept=".csv,text/csv">
       <div class="bulk-import-actions">
         <button type="button" data-action="import">Import</button>
-        <button type="button" class="secondary" data-action="template">Download blank template</button>
+        <button type="button" class="secondary" data-action="template">Download template</button>
       </div>
       <div class="bulk-import-result" hidden></div>
     `;

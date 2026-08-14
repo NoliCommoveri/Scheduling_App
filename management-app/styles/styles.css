@@ -358,7 +358,7 @@ li > form {
   margin-bottom: 0;
 }
 
-.tier-id, .curriculum-type {
+.tier-id, .curriculum-type, .activity-type-key {
   font-size: 0.8rem;
   color: #666;
 }
