@@ -1,8 +1,12 @@
 // poll.js — cadence, the roster+plan fetch, since-merge, staleness
-// (TDS_Slice_Wall_Display_App.md §5.2). Not a `*-core.js` file — it does the
-// app's actual IO — so it isn't unit-tested per §11; `events-core.js`,
-// `chores-core.js` and `completed-core.js` hold all the logic worth testing
-// in isolation and this file just calls them via app.js/ambient-ui.js.
+// (TDS_Slice_Wall_Calendar_Redesign.md §10.1, superseding wall slice §5.2's
+// 60s/15min split with a flat 10-minute idle cadence — see cadenceMs below).
+// Not a `*-core.js` file — it does the app's actual IO — so it isn't
+// unit-tested per §11; `events-core.js`, `chores-core.js` and
+// `completed-core.js` hold all the logic worth testing in isolation and this
+// file just calls them via app.js/ambient-ui.js. `pollNow` is also how
+// nav-ui.js's interaction-triggered polls (§10.1: a tap, a view change, a
+// date change, a refresh) reach the network — it is not new to this file.
 //
 // State lives in one in-memory day map, keyed by assignment id (§5.2.1):
 // every row in the current [today-7, today+6] window, patched in place by
@@ -27,10 +31,13 @@
     return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
   }
 
-  // §5.2 — 60s between 06:00 and 22:00 local, 15 minutes overnight.
+  // §10.1 — a flat 10-minute idle cadence, day and night alike. Replaces
+  // the wall slice's 60s/15min split: interaction-triggered polls (pollNow,
+  // driven by nav-ui.js) are what keeps the board feeling responsive while
+  // someone is actually at the tablet, so the idle cadence no longer needs
+  // to be fast during the day to compensate.
   function cadenceMs() {
-    var hour = new Date().getHours();
-    return (hour >= 6 && hour < 22) ? 60 * 1000 : 15 * 60 * 1000;
+    return 10 * 60 * 1000;
   }
 
   var state = {

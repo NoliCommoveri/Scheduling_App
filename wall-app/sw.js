@@ -10,9 +10,16 @@
 // case where a device is stuck on a stale cache with no CLI to clear it from
 // (CLAUDE.md §0).
 //
-// v1: Phase 2 — shell, store, admin PIN, first-run wizard, pairing, ambient
-// tiles from the live roster with no plan data behind them yet.
-const CACHE_NAME = "wall-display-shell-v1";
+// v1: Phase 2 (superseded slice) — shell, store, admin PIN, first-run
+// wizard, pairing, ambient tiles from the live roster with no plan data
+// behind them yet.
+// v2: Wall Calendar Redesign §16 Phase 2 — the nav shell (nav-ui.js). Also
+// backfills poll.js, events-core.js, chores-core.js and completed-core.js,
+// which Phase 3 of the superseded slice added to index.html without ever
+// adding them here — a gap found on review of this file, not a v2 change in
+// its own right. Without it, a wifi blip during a reload left the tablet
+// unable to fetch render-critical scripts with no cached fallback.
+const CACHE_NAME = "wall-display-shell-v2";
 
 const APP_SHELL = [
   "./",
@@ -22,7 +29,12 @@ const APP_SHELL = [
   "./js/store.js",
   "./js/api.js",
   "./js/setup.js",
+  "./js/events-core.js",
+  "./js/chores-core.js",
+  "./js/completed-core.js",
+  "./js/poll.js",
   "./js/ambient-ui.js",
+  "./js/nav-ui.js",
   "./js/settings-ui.js",
   "./js/app.js",
   "./icons/icon-192.png",

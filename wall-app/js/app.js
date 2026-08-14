@@ -1,14 +1,17 @@
-// app.js — boot, view routing, and the day-rollover timer
-// (TDS_Slice_Wall_Display_App.md §11). Phase 2 scope was first-run wizard ->
-// ambient tiles, the admin-gated Settings panel, and the "unpaired" screen
-// (§3.2). Phase 3 replaces the one-shot roster fetch with poll.js's cadence
-// (§5.2) and adds the local-midnight rollover timer (§5.3).
+// app.js — boot, the nav shell, and the day-rollover timer.
+// TDS_Slice_Wall_Display_App.md §11 (boot states) and
+// TDS_Slice_Wall_Calendar_Redesign.md §16 Phase 2: the ambient board
+// (ambient-ui.js) still renders as the day view's content, but it now lives
+// inside nav-ui.js's persistent shell rather than owning the whole screen.
+// Week/Month and any date other than today show a placeholder until Phase 3
+// (day view for any date) and Phase 8 (week/month) land.
 
 (function (g) {
   "use strict";
 
   var pollUnsub = null;
   var midnightTimer = null;
+  var navCtrl = null;
 
   function boot() {
     var root = document.getElementById("app");
@@ -33,28 +36,41 @@
     if (pollUnsub) { pollUnsub(); pollUnsub = null; }
     g.Poll.stop();
     g.AmbientUi.stop();
+    if (navCtrl) { navCtrl.destroy(); navCtrl = null; }
     if (midnightTimer) { clearTimeout(midnightTimer); midnightTimer = null; }
   }
 
   function startAmbient(root) {
     teardownAmbient();
 
-    root.innerHTML = "";
+    var lastPollState = null;
+    var firstLoadRetried = false;
+
+    navCtrl = g.NavUi.mount(root, {
+      onStateChange: function () { renderContent(); },
+      onRefresh: function () { g.Poll.pollNow(); },
+      onSettings: function () { openSettings(root); },
+    });
+
     var loading = document.createElement("div");
     loading.className = "ambient-loading";
     loading.textContent = "Loading…";
-    root.appendChild(loading);
+    navCtrl.contentEl.appendChild(loading);
 
-    var firstLoadRetried = false;
+    function showPlaceholder(text) {
+      g.AmbientUi.stop();
+      navCtrl.contentEl.innerHTML = "";
+      var ph = document.createElement("div");
+      ph.className = "wall-placeholder";
+      ph.textContent = text;
+      navCtrl.contentEl.appendChild(ph);
+    }
 
-    pollUnsub = g.Poll.onUpdate(function (state) {
-      if (state.lastError instanceof g.WallApi.UnpairedError) {
-        teardownAmbient();
-        showUnpaired(root);
-        return;
-      }
+    function renderContent() {
+      if (!lastPollState) return;
+      var navState = navCtrl.getState();
 
-      if (!state.lastSuccessAt && state.lastError) {
+      if (!lastPollState.lastSuccessAt && lastPollState.lastError) {
         // First fetch failed outright — nothing to render yet. §5.4's
         // "keep the last render" only applies once there has been one; this
         // is the one case with nothing to fall back to.
@@ -62,21 +78,36 @@
           firstLoadRetried = true;
           setTimeout(function () { g.Poll.pollNow(); }, 5000);
         }
-        root.innerHTML = "";
-        var msg = document.createElement("div");
-        msg.className = "ambient-error";
-        msg.textContent = "Could not reach the server. Retrying…";
-        root.appendChild(msg);
+        showPlaceholder("Could not reach the server. Retrying…");
         return;
       }
 
-      g.AmbientUi.render(root, state, {
-        onSettings: function () { openSettings(root); },
-        onTileTap: function (/* child */) {
-          // Phase 4a wires the PIN pad and per-child chore list. Until then
-          // a tile tap is a no-op — there is nothing behind it yet.
-        },
-      });
+      if (navState.view === "day" && navState.date === lastPollState.today) {
+        g.AmbientUi.render(navCtrl.contentEl, lastPollState, {
+          onTileTap: function (/* child */) {
+            // Phase 4a of the superseded slice wired the PIN pad and
+            // per-child chore list. Never built; tapping a tile is a no-op.
+          },
+        });
+        return;
+      }
+
+      if (navState.view === "day") {
+        showPlaceholder("Viewing other days arrives in the next build phase.");
+      } else {
+        var label = navState.view.charAt(0).toUpperCase() + navState.view.slice(1);
+        showPlaceholder(label + " view arrives in a later build phase.");
+      }
+    }
+
+    pollUnsub = g.Poll.onUpdate(function (state) {
+      if (state.lastError instanceof g.WallApi.UnpairedError) {
+        teardownAmbient();
+        showUnpaired(root);
+        return;
+      }
+      lastPollState = state;
+      renderContent();
     });
 
     g.Poll.start();
@@ -115,6 +146,9 @@
     var now = new Date();
     var next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
     midnightTimer = setTimeout(function () {
+      // Calendar redesign §4.1/§10.3 — a rollover always lands back on
+      // day/today, even if the sidebar had wandered to another view or date.
+      if (navCtrl) navCtrl.resetToToday();
       g.Poll.rollover();
       scheduleMidnightRollover();
     }, next.getTime() - now.getTime());

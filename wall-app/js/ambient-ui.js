@@ -1,9 +1,16 @@
-// ambient-ui.js — the always-on screen (TDS_Slice_Wall_Display_App.md §4.1,
-// §0.4, §5.4, §6.7, §7, §10.2). Phase 3: real tiles (n of m from
-// chores-core.js), today's events plus a "Coming up" strip (events-core.js),
-// the Done Today panel (completed-core.js), a staleness stamp, a 15-second
-// clock tick, and CSS night dimming. Tap-to-open PIN pad and the per-child
-// chore list are Phase 4a — a tile tap is still a no-op here.
+// ambient-ui.js — the day board content: tiles (n of m from chores-core.js),
+// today's events plus a "Coming up" strip (events-core.js), the Done Today
+// panel (completed-core.js), and a staleness stamp (TDS_Slice_Wall_Display_
+// App.md §4.1, §0.4, §5.4, §6.7, §7). This is the "ambient board still
+// rendering underneath" the new shell (TDS_Slice_Wall_Calendar_Redesign.md
+// §16, Phase 2) — replaced outright in Phase 3.
+//
+// The topbar (brand/clock/gear) and night-dim overlay this file used to own
+// moved to nav-ui.js in Phase 2: dimming is a shell-wide concern now that
+// there is chrome outside the board to dim, and Settings is reached from the
+// sidebar rather than a gear button. Tap-to-open PIN pad and the per-child
+// chore list are Phase 4a of the superseded slice and were never built —
+// a tile tap is still a no-op here.
 
 (function (g) {
   "use strict";
@@ -47,18 +54,8 @@
     return formatClock(new Date(ms)).toLowerCase();
   }
 
-  // A touch anywhere clears the night overlay for the rest of this page
-  // load (§10.2) — reset only by an actual reload, not by the next render.
-  var dimSuppressed = false;
   var clockTimer = null;
   var current = { state: null, opts: {} };
-
-  function isNight(d, dimStartHour, dimEndHour) {
-    var h = d.getHours();
-    if (dimStartHour === dimEndHour) return false;
-    if (dimStartHour < dimEndHour) return h >= dimStartHour && h < dimEndHour;
-    return h >= dimStartHour || h < dimEndHour; // wraps midnight, e.g. 21 -> 6
-  }
 
   function eventRowHtml(row, date) {
     var p = row.payload;
@@ -138,21 +135,7 @@
   function build(root, state, opts) {
     root.innerHTML = "";
 
-    var shell = el(
-      '<div class="ambient">' +
-        '<div class="ambient-topbar">' +
-          '<div class="ambient-brand">Family Wall Display</div>' +
-          '<div class="ambient-clock"></div>' +
-          '<button class="gear-btn" aria-label="Settings">&#9881;</button>' +
-        '</div>' +
-        '<div class="ambient-body"></div>' +
-        '<div class="night-overlay"></div>' +
-      '</div>'
-    );
-
-    shell.querySelector(".gear-btn").addEventListener("click", function () {
-      if (opts.onSettings) opts.onSettings();
-    });
+    var shell = el('<div class="ambient"><div class="ambient-body"></div></div>');
 
     var body = shell.querySelector(".ambient-body");
     var tilesWrap = el('<div class="ambient-tiles"></div>');
@@ -185,28 +168,15 @@
     body.appendChild(panels);
     body.appendChild(el(staleStamp(state)));
 
-    shell.addEventListener("pointerdown", function () {
-      dimSuppressed = true;
-      updateLiveBits(root);
-    });
-
     root.appendChild(shell);
   }
 
-  // Runs on the 15s tick, and once right after every build(): the clock, the
-  // night overlay, and (indirectly) the staleness class all change without
-  // needing a full poll/re-render.
+  // Runs on the 15s tick, and once right after every build(): the staleness
+  // stamp changes without needing a full poll/re-render. Clock and night-dim
+  // are nav-ui.js's job now (Phase 2) — this file only owns the board.
   function updateLiveBits(root) {
     var shell = root.querySelector(".ambient");
     if (!shell) return;
-    var now = new Date();
-
-    var clock = shell.querySelector(".ambient-clock");
-    if (clock) clock.textContent = formatClock(now);
-
-    var settings = g.Store.getSettings();
-    var night = !dimSuppressed && isNight(now, settings.dimStartHour, settings.dimEndHour);
-    shell.classList.toggle("dimmed", night);
 
     var state = current.state;
     if (state && state.lastSuccessAt) {
