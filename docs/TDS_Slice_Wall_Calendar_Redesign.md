@@ -2,7 +2,8 @@
 
 ## Scope: Wall Calendar — the Wall Display App becomes a shared family calendar with 15-minute chore placement, block collapse, week and month views
 
-**Status:** design only. No code written under this slice yet. **Awaiting Ray's sign-off on §18.**
+**Status:** design only. No code written under this slice yet. **§18 signed off by Ray, 2026-08-14 —
+Phase 0 complete, Phase 1a clear to start.** Revised 2026-08-14 after a design review; see §20.
 **Date:** 2026-08-14.
 **Depends on:** `TDS_Slice_Online_Revamp.md` (controlling design), `TDS_Slice_Wall_Display_App.md`
 (the app this rewrites), `TDS_Slice_Shared_Chores.md` (claim arbitration).
@@ -84,7 +85,7 @@ of which exceeds the `CLAUDE.md` §V.A ceiling.
 | §0.3, §4.1–4.4, §4.6 — per-child PINs, the PIN pad, tile lockouts | **REPEALED** (§0.4). Never built — Phase 4a of that slice does not exist in the tree, so this costs nothing to remove. `wall.pins` becomes a dead localStorage key. |
 | §4.5 — the admin PIN on Settings | **Survives.** |
 | §0.4 — pending chore titles behind the PIN | **REPEALED** with the gate that enforced it. Every title is on the shared board. |
-| §0.5, §6.3 — shared chores claimable from the wall | **Survives**, with the column-tap replacing the PIN as the thing that names the claimant (§8.2). |
+| §0.5, §6.3 — shared chores claimable from the wall | **Survives**, with the column-tap replacing the PIN as the thing that names the claimant (§8.2). The claim route gains one field so the completion sheet's time survives it — §8.3.1, the only change to an existing wall route in this slice. |
 | §5.1.1 — the on-today rule (deferment + overdue roll-forward) | **Survives, and widens.** The same rule now answers "on *this* day" for any rendered date, not just today. §4.5. |
 | §5.1 — `kind='activity'` ignored entirely | **REPEALED, read-side only.** School blocks read activities. The wall still writes nothing to an activity row, ever. §5. |
 | §5.2 — 60s/15min poll cadence | **Replaced** by §10. |
@@ -137,9 +138,27 @@ Ray intends to possibly add a pseudo-child named `Parents`, so parent commitment
 the kids can see. **This needs no special-casing anywhere in this slice** — it is an ordinary
 `children` row, so it gets a column, a placement namespace, and a chore list like any other.
 
-Two ordinary consequences ride along, neither of them this slice's problem to solve: the row appears
-in Management App reporting, and chores assigned to it append `reward_entries` like anyone else's.
-Recorded here so that neither is discovered later as a surprise.
+**A shared chore will not span into it, and this needs no flag** — stated because the opposite is a
+reasonable thing to assume, and the fix someone would reach for is a schema change that is not
+needed. Spanning is driven by *participation*, and participation is an explicit per-chore choice: the
+Chore form's participant checkboxes and its `each`/`claim` radio (`chores.js:482-497`). A chore
+spans the Parents column only if Parents is ticked on that chore. The same holds under §3.1.2's
+child-less placement row, which spans whatever that day's rows say the participants are — and
+Parents has a row only if it is one.
+
+Nothing else auto-enrols it either. Every path that could reach a pseudo-child — shared-chore
+participants, event assignment, course assignment, pacing, device pairing — is an explicit pick.
+
+The residual cost is noise, not correctness, and it is worth seeing in full before adding a column
+to avoid it:
+
+- an extra option in roughly six pickers (reporting filter, assignments, events, course instances,
+  pacing, devices);
+- inclusion in any *all-children* aggregate in reporting;
+- `reward_entries` appended like anyone else's, if a chore assigned to it carries a reward category.
+
+**Deferred rather than solved: a "not a real child" flag.** §17.10 records what it would cost and
+the one thing that is easy to build backwards.
 
 ### 2.3 No gate in front of the board
 
@@ -187,6 +206,77 @@ The **subject** is whichever stable identity the row class has:
 | School block | `course_name` | An activity's `source_id` is the *activity's* id and differs every day, so it cannot key a standing arrangement. `course_name` is the only course identity on the row (`packet.js:521`). §5.2 states the cost of that honestly. |
 | Event | — | Events are not placeable. They carry their own freeform `payload.time` and are family-wide. §7.1. |
 
+#### 3.1.1 Identity is minted, never a name — and the placement key relies on that
+
+Worth stating outright, because the obvious worry is a real one and the answer is already built:
+**two chores, or two occurrences of one chore, may share a title and are still distinct.** A Chore
+record carries a minted id (`c.id` → `source_id`, `packet.js:544`); an occurrence carries a minted
+6-character token (`chores.js:416`, and `buildInstancesFromLabels` re-rolls until a row's own ids
+are distinct, `chores.js:269-278`). The label a parent types is stored *beside* that id, never as
+it. Ids are minted once on Add and never reassigned, so **renaming an occurrence does not move its
+placement**.
+
+So `source_id` + `instance_key` is a genuinely stable handle across every child and every date —
+the same tuple Commit already uses as its duplicate guard (`keyOf`, `packet.js:103`), which is good
+corroboration that it is the row class's real identity rather than a convenient one.
+
+The one place in this slice where a **name** is load-bearing is the school block's `course_name`
+(§5.2), and the cost of that is stated there. Chores are not exposed to it.
+
+#### 3.1.2 Shared chores: `each` places per child, `claim` places once
+
+`TDS_Slice_Shared_Chores.md` §0.4 gives a Chore two allocations, and they want **different**
+placement behaviour. The distinction was missing from this slice's first draft and is load-bearing,
+because §4.2's "a shared chore spans the columns it is up for" is only true of one of them:
+
+| Allocation | Rows per occurrence | Placement | Rendering |
+|---|---|---|---|
+| `each` (including one child, and multi-child) | one per participant, independently completed and earned | **one placement per child**, keyed as above | a separate chip in each child's column. Two children may legitimately do their own dishes at different times, so the per-child key is not a limitation here — it is the point. |
+| `claim` | one row per participant, linked by `claim_group` | **one placement, no child** — see below | drawn once, spanning the columns of the children it is up for (§4.2, §8.2) |
+
+A `claim` chore's placement is stored as a **single child-less row**: `child_id = ''`, the household
+sentinel `migrations/0009` already established for the wall's own `devices` row, with the subject key
+unchanged (`source_id` + `instance_key`).
+
+```
+[DECISION] A claim chore holds one placement, not one per participant
+Decided: `child_id = ''` on the placement row. One drag writes one row.
+Rationale: the alternative — a placement row per participant, written by one
+  PUT each — is wrong three ways. It is not atomic, so a partial failure leaves
+  two children's copies of one chore at different times on a chip that is
+  supposed to be drawn once. It goes stale: change a claim chore's participants
+  in the Management App and the departed child's placement is an orphan while
+  the joining child has none, so the chore reappears in their tray as though it
+  had never been placed. And it stores N copies of a fact that has exactly one
+  value, which is the shape §3.2(b) already rejected for `assignments`.
+  A child-less row has none of those problems: it spans whatever that day's
+  rows say the participants are, and self-corrects when they change.
+Why NOT `claim_group` as the key, which is the other obvious candidate: it is
+  minted per DAY (`index.js:1018`, keyed `source_id`/`date`/`instance_key`), so
+  it cannot anchor a standing arrangement, and it is NULL on every `each` row.
+  It is the right way to RECOGNISE a shared chore at render time; it is not an
+  identity a placement can hold.
+Consequence: `PUT /api/wall/slots` must accept the sentinel, which means its
+  active-child validation is conditional rather than unconditional. §12 states
+  the exact rule, and it is narrow: the sentinel is accepted ONLY on
+  `subject_kind = 'chore'`, and `wall_slots` is a wall-owned table outside the
+  child-scoping scheme entirely (`CLAUDE.md` §III.E), so this widens nothing on
+  `assignments`.
+Consequence: an `each` chore and a `claim` chore never collide in the table
+  even at the same subject key, because one writes `child_id = <uuid>` and the
+  other `child_id = ''`. If a parent changes a chore's allocation, the old
+  placement is simply not found and the chore returns to the tray — visible,
+  not silent.
+Approved by Ray in-session, 2026-08-14, on the review that found the gap. It
+  softens one validation on a wall-owned table and nothing on `assignments`;
+  §18.6 is the check that says so.
+Locked for: this slice.
+```
+
+At render time the wall reads the allocation from the row it already has:
+`claim_group IS NOT NULL` means look up the child-less placement, otherwise look up the child's own.
+No new fetch, no new column.
+
 ### 3.2 Where placements live
 
 ```
@@ -222,6 +312,12 @@ Locked for: this slice, pending §18 sign-off.
 ```sql
 -- migrations/0010_wall_slots.sql
 CREATE TABLE IF NOT EXISTS wall_slots (
+  -- '' = the household sentinel, and it means "this placement belongs to a
+  -- `claim` chore's whole group rather than to one child" (§3.1.2). The same
+  -- sentinel `migrations/0009` uses for the wall's own `devices` row, and for
+  -- the same reason: a real id is always a server-minted UUID, so '' can never
+  -- collide with one. NOT NULL rather than nullable, per the instance_key note
+  -- below — a nullable key component disables every comparison that uses it.
   child_id      TEXT    NOT NULL,
   subject_kind  TEXT    NOT NULL,          -- 'chore' | 'school'
   subject_key   TEXT    NOT NULL,          -- chore: source_id; school: course_name
@@ -282,11 +378,31 @@ Deferred, not forgotten: §17.1 sketches the per-day override if it is ever
 Locked for: this slice.
 ```
 
-### 3.4 Chores with no placement yet
+### 3.4 Chores — and courses — with no placement yet
 
 A chore the wall has never been told a time for is **not hidden and not guessed at**. It goes in an
 **unscheduled tray** at the top of its child's column — a compact, always-visible strip reading
 `Not scheduled · 3`, expanding to the list, each item draggable into the grid.
+
+**Unplaced courses sit in the same tray, and this is what makes a school block creatable at all.**
+§5.1 defines a school block as a *placement* whose subject is a course — so without an entry in the
+tray there is no gesture anywhere in the app that brings the first one into existence, and a child's
+school work would be invisible on the wall rather than merely unplaced. The tray therefore lists two
+item classes, visually distinguished the way their chips are (§11.1):
+
+- **one entry per unplaced chore**, as above;
+- **one entry per course that has non-rescinded activities for that child on the rendered date and
+  no `subject_kind = 'school'` placement** — labelled with the course name and its activity count
+  (`Algebra · 4`), draggable into the grid exactly as a chore is. Dropping it writes the school
+  placement, and from the next render it is a block (§5).
+
+Grouping the day's activities by `course_name` is `school-core.js`'s job either way (§5.3), so the
+tray's course list is the same computation with the placed courses filtered out — no new fetch and
+no new pure module.
+
+A course whose block is placed leaves the tray, like a chore. A course with no activities that day
+is not in the tray at all: there is nothing to schedule, and an empty-set entry would be an
+invitation to place a block that would render as empty (§5.3).
 
 The alternative — deriving a slot from `block_hint` (morning → 9:00 and so on) — was rejected. It
 would put chores on the grid at times nobody chose, and since a placement is a standing default
@@ -319,7 +435,7 @@ Cost, counted: essentially nothing.
     ASSIGNMENT_CREATE_FIELDS (`index.js:67`) and ASSIGNMENT_PATCH_FIELDS
     (`index.js:83`), and the Commit insert already writes it (`index.js:909`).
   - So there is NO migration and NO Worker work. Activities have been filling
-    this column since the revamp (`packet.js:526`); chores simply never set it.
+    this column since the revamp (`packet.js:527`); chores simply never set it.
   What remains is two small Management App changes: the authoring field, and
   one line in `assignmentFromChore` mirroring the activity path.
 Fallback: 15 minutes where the column is NULL, which is the pacing engine's own
@@ -393,7 +509,7 @@ The Management App work, in full:
 | Change | File | Size |
 |---|---|---|
 | `expectedDurationMin` on the chore form, in `validateFields` (positive integer, or absent) and `buildRecord` | `management-app/js/chores.js` | small |
-| Pass it through to the assignment row, mirroring `packet.js:526` | `management-app/js/packet.js` | one line |
+| Pass it through to the assignment row, mirroring `packet.js:527` | `management-app/js/packet.js` | one line |
 | The bulk-import CSV column — see below | `management-app/js/chores-csv-core.js` | small |
 | FR + validation row for the new field | `docs/SRS_Management_Module_06_Chore_Authoring.md` | doc |
 
@@ -501,7 +617,7 @@ because it is the more specific statement of the same fact.
 
 The wall slice's §5.1.1 rule is kept in full and **generalized from "today" to "the rendered date"**:
 `effectiveDueDate(row) = row.deferred_to || row.date` (`planner-core.js:48`), plus the overdue
-roll-forward for still-pending required rows (`planner-core.js:154`). A chore the child deferred to
+roll-forward for still-pending required rows (`onToday`, `planner-core.js:179`). A chore the child deferred to
 tomorrow on their own tablet is absent from the wall's today, and yesterday's un-done bins are
 present on it.
 
@@ -534,6 +650,11 @@ Locked for: this slice.
 
 The block shows: the course name, the count (`3 of 5 done`), and the day's activity titles listed
 beneath at a smaller size. It is a window onto the course, not a control for it.
+
+**A block is created by dragging the course out of the unscheduled tray** (§3.4), which is the only
+gesture that creates one — read-only means it cannot be *ticked*, not that it cannot be *placed*.
+Un-placing it (§12's `DELETE /api/wall/slots`) returns the course to the tray; it never deletes
+anything of the course's own, because the wall owns nothing of the course's own.
 
 ### 5.2 The `course_name` key, and what it costs
 
@@ -716,6 +837,47 @@ Everything else about the write path is unchanged from the wall slice: the pre-c
 writing (§6.1), `X-Outbox-Protocol: 2`, the earn entry following the completion, and
 `wall.pendingEarns` with its three-answer table.
 
+#### 8.3.1 The claim route cannot currently carry the sheet's time — and must
+
+**This is the one place where "existing wall routes are unchanged" (§12) is false, and it fails
+silently rather than loudly.** A `claim` chore is completed through the claim route, not
+`/api/wall/completions` — `/api/completions` refuses a `claim_group` row outright (`index.js:1508`),
+which is exactly the design `TDS_Slice_Shared_Chores.md` §5.7 intends. But that route:
+
+- accepts only `grade` and `completionNote` (`CLAIM_BODY_KEYS`, `index.js:1524`), rejecting anything
+  else with a 400 — so a sheet that sent `completedAt` would break the tick outright; and
+- stamps `completed_at = ?1` from its own `Date.now()` (`index.js:1587`), with the comment above
+  `CLAIM_BODY_KEYS` recording `status` and `completedAt` as "the route's own to set".
+
+Left alone, the wall would ask *when* on a shared chore, accept the answer, and quietly discard it.
+Worse than discarding it: the **earn** route already accepts a client `earnedAt` (`index.js:1663`)
+and would honour the sheet, so the ledger and the assignment row would actively disagree about when
+the work happened — the precise opposite of §8.3's stated consequence.
+
+The shared chores are also the ones where this matters most. "Either of you can do the bins" is
+exactly the chore that gets done at six and ticked at eight.
+
+**The fix, and its bound:**
+
+1. `CLAIM_BODY_KEYS` gains `completedAt`, and the claim's step-4 UPDATE binds it where present,
+   falling back to `now` when absent — so the Child App's existing claim calls, which send neither,
+   are unaffected.
+2. `validateCompletionValue` already validates `completedAt` (`validation.js:81-84`) and is already
+   applied to every claim body key, so the value check comes for free.
+3. **The not-in-the-future bound is enforced server-side, not only in the sheet.** §8.3 disables the
+   confirm button above `Date.now()`; that is a UI courtesy, and the rule belongs where every other
+   completion rule lives. It applies to both routes, so it is one check in `validateCompletionValue`
+   rather than two at the call sites.
+
+**What does not change:** `status`, `claimed_by` and `claimed_at` stay the route's own to set. The
+arbitration statement is untouched — this adds a value to the write that follows a *won* claim, not
+to the race that decides it. Column ownership is unmoved: `completed_at` is already child-writable
+(`ASSIGNMENT_COMPLETION_FIELDS`, `index.js:87`), and this makes the claim route agree with the
+completions route about a column both already write.
+
+This is Worker work, so it belongs in **Phase 1a**, not in Phase 6 where the sheet is built — the
+route must accept the field before the UI can send it (§16).
+
 ### 8.4 Done means done, not gone
 
 ```
@@ -774,9 +936,16 @@ Consequence: school blocks do not trigger it. A chore during a school block is
 Locked for: this slice.
 ```
 
-Because a placement is a standing default (§3.3), the warning is evaluated against the *placements*,
-not against a particular day's rows — so it fires once, at the drag, rather than reappearing every
-morning.
+Because a placement is a standing default (§3.3), the warning fires **once, at the drag**, rather
+than reappearing every morning.
+
+It is nonetheless computed **from the rendered day's rows, not from the placements alone**, and the
+first draft of this section had that backwards. Two of the three inputs the check needs are not in
+`wall_slots` and cannot be: whether a chore is private (`claim_group IS NULL`) is a column on the
+assignment row, and the resolved duration is row 3 of §3.5.1's chain, which reads
+`expected_duration_min` from the row as well. §14.5's "an override that shortens a chip can *clear*
+a warning" is only meaningful against resolved durations. So: **evaluated at the drag, against that
+day's rows, using the resolved duration** — one moment, full information.
 
 ---
 
@@ -959,6 +1128,19 @@ Locked for: this slice.
 D1 write, no effect on §10's arithmetic. Sound is the one feature in this slice that is genuinely
 free.
 
+**"Still pending" means pending as far as the wall knows, and at a 10-minute cadence (§10.1) that
+can be up to ten minutes out of date.** A chore finished on a child's own tablet at 15:55 can still
+chime here at 16:00 — a noise announcing work already done, which is the failure mode most likely to
+get the sound switched off for good. The cadence and the chime were decided in the same session
+without being checked against each other; this is that check.
+
+**Resolution: one poll immediately before a chime fires, not a faster cadence.** `remind-core.js`
+knows the next chime instant, so `app.js` schedules the ordinary poll to land just ahead of it and
+re-evaluates against the result. Cost is nil to a few extra ticks a day — far below §10.1's
+arithmetic — and it buys the one moment where freshness is audible. If the poll fails, the chime
+still fires on the last known state: a spurious chime is a smaller failure than a missing one, and
+§10.4's staleness stamp is already the honest signal that the board is behind.
+
 **Synthesis, not assets.** An `OscillatorNode` through a `GainNode` with a short attack-decay
 envelope — two distinct tones, one rising (start), one brief and higher (confirmation). No files to
 precache, nothing for the service worker to version, and no CDN, which §10.2's network-only-for-API
@@ -1028,21 +1210,53 @@ by 20 seconds of inactivity — a menu left open on a wall display is a broken w
 | Route | Method | Body / query | Notes |
 |---|---|---|---|
 | `/api/wall/slots` | GET | `?from=&to=` | Every placement, household-wide, plus any `wall_slot_days` overrides inside the window. Small: one row per chore per child, and overrides are rare. |
-| `/api/wall/slots` | PUT | `{ childId, subjectKind, subjectKey, instanceKey?, startMin?, durationMin? }` | Upsert of the standing placement. Validates `childId` against `children WHERE active = 1`; `startMin % 15 === 0` and `0 ≤ startMin < 1440`; `durationMin` a positive multiple of 15 with `startMin + durationMin ≤ 1440`, or `null` to clear the standing override. |
+| `/api/wall/slots` | PUT | `{ childId, subjectKind, subjectKey, instanceKey?, startMin?, durationMin? }` | Upsert of the standing placement. Validates `childId` per the sentinel rule below; `startMin % 15 === 0` and `0 ≤ startMin < 1440`; `durationMin` a positive multiple of 15 with `startMin + durationMin ≤ 1440`, or `null` to clear the standing override. |
 | `/api/wall/slots` | DELETE | `{ childId, subjectKind, subjectKey, instanceKey? }` | Un-place; the chore returns to the tray. Also deletes that subject's `wall_slot_days` rows — an override of a placement that no longer exists is unreachable garbage. |
 | `/api/wall/slots/day` | PUT | `{ childId, subjectKind, subjectKey, instanceKey?, date, durationMin }` | §3.5.2's "just this one". Same validation, plus a well-formed `date`. |
 | `/api/wall/slots/day` | DELETE | `{ childId, subjectKind, subjectKey, instanceKey?, date }` | Clears the per-day override; the chip falls back down the chain. |
 | `/api/wall/events` | GET | `?from=&to=` | §7.2. Household-scoped, deduped, 62-day cap. |
 
-Existing wall routes are unchanged. `withWall` gates all four; a `scope='child'` token is 401 on
-them and a wall token stays 401 on the device routes (wall slice §8.2).
+`withWall` gates every route above; a `scope='child'` token is 401 on them and a wall token stays 401
+on the device routes (wall slice §8.2).
+
+**The `childId` rule on all four slots routes**, stated once because it is the only place this slice
+softens a validation:
+
+> `childId` is either a member of `children WHERE active = 1`, **or** the empty-string sentinel —
+> and the sentinel is accepted only when `subjectKind === 'chore'` (§3.1.2). Anything else is a 400.
+> A school placement is always per child, so `''` is meaningless there and is refused rather than
+> stored.
+
+This is not a fourth exception to `CLAUDE.md` §III.E, and the reason is the one §III.E already
+records: `wall_slots` and `wall_slot_days` sit **outside** the child-scoping scheme entirely. No
+`assignments` access happens on these routes, so there is no `AND child_id = ?` clause to preserve
+and no child-owned column to attribute. The four bounds govern routes that act for a named child
+against the assignment table; these act against a table the wall owns.
+
+**One existing route does change, and §8.3.1 is why.** The claim route's `CLAIM_BODY_KEYS`
+(`index.js:1524`) gains `completedAt`, and its step-4 UPDATE binds it where present and falls back
+to `now` where absent. That is the whole change: `status`, `claimed_by`, `claimed_at` and the
+arbitration statement are untouched, the Child App's existing calls send neither key and are
+unaffected, and `completed_at` is a column both completion routes already write
+(`ASSIGNMENT_COMPLETION_FIELDS`, `index.js:87`). `validateCompletionValue` additionally gains the
+not-in-the-future bound for `completedAt`, which applies to both routes at once.
 
 `updated_by` on `wall_slots` is `wall:<deviceId>`, matching wall slice §8.4's provenance shape.
 
 **Column ownership on `assignments` is untouched by this slice.** `/api/wall/completions` continues
-to reuse `ASSIGNMENT_COMPLETION_FIELDS` verbatim, and no new route writes an assignment column of
-any kind. That sentence is the whole safety argument for §18.1's amendment and should be checked
-against the diff rather than taken on trust.
+to reuse `ASSIGNMENT_COMPLETION_FIELDS` verbatim, and **no new route writes an assignment column of
+any kind** — all five write either `wall_slots`, `wall_slot_days`, or nothing.
+
+The one existing-route change (§8.3.1) does not dent that argument, and it is worth being precise
+rather than reassuring about why: `completed_at` is **already** child-writable and **already**
+written by that exact statement. The change lets the caller supply the value instead of the route
+minting it — the same latitude `/api/wall/completions` has had since the wall slice, and the same
+latitude the earn route already has for `earned_at`. No column moves between owners, and the
+parent-owned block is not approached. `expected_duration_min` in particular remains unwritten by any
+wall route, which §14.15 asserts directly.
+
+That is the whole safety argument for §18.1's amendment and should be checked against the diff
+rather than taken on trust.
 
 ---
 
@@ -1064,8 +1278,10 @@ wall-app/
     ├── nav-ui.js          hamburger, sidebar, date stepper, Today
     ├── events-core.js     PURE — union, dedupe, span labels                    (unchanged)
     ├── chores-core.js     PURE — the on-day rule, generalized past "today"
-    ├── slots-core.js      PURE — placement lookup, carry-forward, collisions
-    ├── school-core.js     PURE — course grouping and the completion rollup
+    ├── slots-core.js      PURE — placement lookup (per-child and claim-group),
+    │                             carry-forward, duration chain, collisions
+    ├── school-core.js     PURE — course grouping, the completion rollup, and the
+    │                             tray's unplaced-course list (§3.4)
     ├── remind-core.js     PURE — which chores are due to chime, and when (§11.5)
     ├── sound.js           WebAudio: the two tones, the unlock gesture, quiet hours
     ├── day-ui.js          the grid, columns, blocks, now-line, tray, drag
@@ -1094,7 +1310,14 @@ App or the Management App**, mirroring included.
 1. **On-day rule generalized (§4.5)** — deferment and overdue roll-forward on today, and
    *no* roll-forward when the rendered date is in the past.
 2. **Placement lookup (§3.1)** — a chore matches on `source_id` + `instance_key`; three instances of
-   one chore hold three distinct placements; an unmatched chore reports as unplaced.
+   one chore hold three distinct placements; an unmatched chore reports as unplaced. **Two
+   occurrences sharing a label still resolve to different placements** (§3.1.1), which is the
+   property minted ids exist to give and the one a reader is most likely to doubt.
+   - **(2a) Shared placement (§3.1.2)** — an `each` chore for two children resolves each child's own
+     placement independently, and the two may differ; a `claim` chore resolves the single child-less
+     row for every participant, so one drag places it for all of them; changing a `claim` chore's
+     participants leaves the placement intact and the new participant placed rather than in the
+     tray; a `claim` and an `each` placement at the same subject key do not collide in the table.
 3. **Carry-forward (§3.3)** — one placement answers for every future date the chore recurs on.
 4. **The duration precedence chain (§3.5.1)** — a per-day override beats a standing override beats
    `expected_duration_min` beats 15 minutes; clearing the per-day override falls back exactly one
@@ -1107,11 +1330,22 @@ App or the Management App**, mirroring included.
 6. **School rollup (§5.3)** — complete only when every non-rescinded activity for that course and
    date is complete; waived counts as resolved; **no activities that day renders empty, not
    complete**; rows for another course or another child do not contribute.
+   - **(6a) The unscheduled tray (§3.4)** — it holds both classes: an unplaced chore, and a course
+     with activities that day and no school placement. A course whose block is placed leaves the
+     tray; a course with no activities that day is never in it. This is the test that would have
+     caught a school block being undiscoverable, so it asserts the tray's *contents*, not its count.
 7. **Events dedupe (§7)** — unchanged behaviour, re-asserted against the new month window: three
    children's rows for one event on one day collapse to one; a multi-day event yields one entry per
    day with the right span label.
 8. **Completion time (§8.3)** — the sheet's time lands in `completed_at` and in the earn's
    `earned_at`; a future time is refused; a backdated one is accepted.
+   - **(8a) Completion time on a SHARED chore (§8.3.1)** — the same assertion through the claim
+     route, which is a different code path and was the one that silently dropped the value: a
+     `completedAt` in a claim body lands on the row; an absent one still falls back to `now`, so the
+     Child App's existing calls are unchanged; a future one is refused **server-side**, not merely
+     disabled in the sheet; and the completion's `completed_at` equals the earn's `earned_at` for a
+     claim chore, which is the disagreement §8.3.1 exists to prevent. A losing claim writes no
+     `completed_at` at all.
 9. **Done-in-place (§8.4)** — a completed row keeps its placement position in the rendered model and
    is not filtered out of it.
 10. Earn shape and the `pendingEarns` three-answer classification — unchanged from wall slice §12.10
@@ -1121,6 +1355,11 @@ App or the Management App**, mirroring included.
     nothing; a `startMin` or `durationMin` that is not a multiple of 15, is negative, or overruns
     midnight is rejected; `DELETE /api/wall/slots` also clears that subject's `wall_slot_days` rows;
     `/api/wall/events` refuses a window over 62 days.
+    - **(11a) The sentinel `childId` (§12)** — `''` is accepted on a `subjectKind = 'chore'` PUT and
+      stores one row; `''` on a `subjectKind = 'school'` PUT is a 400; the sentinel is **not**
+      treated as a wildcard by any read, i.e. a GET returns it as its own row rather than expanding
+      it per child. An archived or unknown non-empty `childId` is still refused, so the softening
+      reaches exactly one value.
 12. **Time formatting (§11.3)** — `formatTime` renders 09:05 and 21:05 correctly in both modes,
     including the two that catch naive implementations: midnight (`00:00` / `12:00 am`) and noon
     (`12:00` / `12:00 pm`). An event's freeform `payload.time` passes through **unmodified** in both
@@ -1166,16 +1405,16 @@ No phase exceeds the `CLAUDE.md` §V.A 2–3 hour ceiling. Each ends with a §VI
 | Phase | Contents | Est. |
 |---|---|---|
 | **0** | This TDS; the `CLAUDE.md` v2.3 amendment (§18); the Module 06 and Roadmap entries. ✅ Signed off 2026-08-14. | done |
-| **1a — Worker** | Migration 0010 (`wall_slots`, `wall_slot_days`) + registry; `GET/PUT/DELETE /api/wall/slots`; `PUT/DELETE /api/wall/slots/day`; `GET /api/wall/events`; tests §14.11–12. No app changes. | ~2 h |
+| **1a — Worker** | Migration 0010 (`wall_slots`, `wall_slot_days`) + registry; `GET/PUT/DELETE /api/wall/slots`; `PUT/DELETE /api/wall/slots/day`; `GET /api/wall/events`; the §12 sentinel `childId` rule; **§8.3.1's `completedAt` on the claim route** and its server-side not-in-the-future bound; tests §14.8a, §14.11, §14.11a, §14.15. No app changes. | ~2.5 h |
 | **1b — Management App** | §3.5's chore duration: the authoring field, `validateFields`, `buildRecord`, the `assignmentFromChore` passthrough, the CSV column, and the Module 06 A2 amendment. **Declares `management-app/` in scope** — the only phase that does. | ~1.5 h |
 | **2 — Shell & nav** | Hamburger, sidebar, view routing, date stepper, land-on-today, centre refresh, 10-minute cadence, interaction-triggered polls, rollover reset. Ambient board still rendering underneath. | ~2 h |
 | **3 — Day view, read-only** | Column-per-child grid over 06:00–23:00 with early/late strips, sticky headers and gutter, now-line and scroll-to-now, events band, 15-minute rows, unscheduled tray, and the §11.3 time formatter with its Settings control. `chores-core.js` generalization, `slots-core.js` lookup. Replaces `ambient-ui.js`. | ~2.5 h |
 | **4 — Block mode** | Collapse/expand into the four blocks, block hours, unplaced-chore placement by `block_hint`. | ~1.5 h |
-| **5 — Placement writes** | Drag-and-drop and tap-to-place, 15-minute snapping, the slots API, carry-forward, collision warnings. | ~2.5 h |
+| **5 — Placement writes** | Drag-and-drop and tap-to-place, 15-minute snapping, the slots API, carry-forward, collision warnings (§9 — at the drag, against that day's rows), and §3.1.2's split: per-child placements for `each`, the single child-less row for `claim`. | ~2.5 h |
 | **5b — Duration adjust** | §3.5.2's fork: the adjust control, "just this one" vs "this and future", "use the assigned time", the overridden-chip marker, and the precedence chain in `slots-core.js`. | ~1.5 h |
-| **6 — Completion** | The completion sheet (who by column, when by stepper), the earn entry, `pendingEarns`, Undo both paths, the claim path and "got there first", done-in-place styling. | ~2.5 h |
-| **6b — Sound** | `remind-core.js` and `sound.js`: the two synthesized tones, the start-time chime, the audio unlock and its indicator, quiet hours, the per-child toggle, and Settings' Test sound. | ~1.5 h |
-| **7 — School blocks** | `school-core.js`, course grouping, the read-only block, the rollup. | ~1.5 h |
+| **6 — Completion** | The completion sheet (who by column, when by stepper), the earn entry, `pendingEarns`, Undo both paths, the claim path and "got there first" — **sending the sheet's time on both paths**, which Phase 1a made possible — and done-in-place styling. | ~2.5 h |
+| **6b — Sound** | `remind-core.js` and `sound.js`: the two synthesized tones, the start-time chime and its §11.5 pre-chime poll, the audio unlock and its indicator, quiet hours, the per-child toggle, and Settings' Test sound. | ~1.5 h |
+| **7 — School blocks** | `school-core.js`, course grouping, the read-only block, the rollup, **and the tray's course entries (§3.4) — the gesture that creates a block at all**. | ~2 h |
 | **8 — Week & month** | Sunday-first seven-day columns; the month grid on `/api/wall/events`; the §11.4 colour picker in Settings, with colours carried across all three views. | ~2.5 h |
 | **9 — Polish & shakedown** | The §11 look pass, remaining tests, `CACHE_NAME` bump, and the on-device shakedown (wall slice §10.3). | ~2 h |
 
@@ -1227,6 +1466,34 @@ that is `TDS_Slice_Alexa_Voice_Bridge.md`'s job.
 **17.9 Also not built.** Placement of events or activities; recurring-event authoring; a second wall
 tablet; drag-to-resize a chip's duration (duration comes from the assignment or the 15-minute
 default); any reporting surface; streaks from the wall (wall slice §15.3, unchanged).
+
+**17.10 A "not a real child" flag on `children`.** Raised by Ray, 2026-08-14, for the `Parents`
+pseudo-child (§2.2). **Not built, and not needed for what prompted it** — a shared chore spans only
+the columns it is a participant on, so a pseudo-child is excluded by not ticking it, with no schema
+change at all. What a flag would buy is the residual noise §2.2 lists: six pickers and the
+all-children reporting aggregates.
+
+What it would cost, if that noise ever becomes the reason to build it:
+
+- The child **record** is JSON in `records` (`children.js:47`), so the field itself needs no
+  migration.
+- But D1's `children` is a flat projection — `id, name, active, updated_at` (`migrations/0001:21`),
+  written at `index.js:702` — and the wall reads its roster from that projection. So the flag has to
+  reach D1: one migration, one line in the projection writer.
+- Then ~6–10 Management App surfaces have to respect it, or it hides the row in one picker and not
+  the other five. It belongs behind a `Children.schedulableOnly()` helper, following the pattern
+  `Children.activeOnly` already set — the comment at `children.js:326-330` gives the reason directly:
+  eight hand-rolled copies of the check are eight chances to write one backwards and quietly hide a
+  real child.
+
+**And one thing that is easy to build backwards, recorded now because it will not be obvious then:
+this flag is inside-out compared to `active`.** The pseudo-child should be **visible on the wall**
+and hidden nearly everywhere else — so the wall is the one surface that does *not* filter on it,
+while `active` is filtered on everywhere including the wall. A flag copied from `active`'s shape
+would hide `Parents` from the only place Ray wants to see it.
+
+Because it touches the schema and the Management App, this is its own slice under `CLAUDE.md` §V.A,
+not an addition to this one.
 
 ---
 
@@ -1295,7 +1562,23 @@ the reason this slice could be short.
 
 A slice entry with §16's phase table.
 
-### 18.6 No SRS module for the wall itself
+### 18.6 The 2026-08-14 review changes need no further `CLAUDE.md` amendment
+
+Checked rather than assumed, because two of them touch things §18.2 had to get signed off:
+
+- **The child-less placement row (§3.1.2)** lives in `wall_slots`, which v2.3 §III.E already places
+  *outside* the child-scoping scheme. The sentinel changes which rows that wall-owned table holds; it
+  does not reach `assignments`, so no bound moves.
+- **`completedAt` on the claim route (§8.3.1)** writes a column that is already child-writable and
+  already written by that same statement — the caller supplies the value instead of the route
+  minting it. §I.A's write list is unchanged, and §IV.B's placement-write row still holds verbatim.
+- **Courses in the tray (§3.4)** is a read of activity rows, which §18.2's third narrowing already
+  authorized, and a write to `wall_slots`, which its first one did.
+
+The §IV.B check to run against the diff is the one already written: *no `assignments` column touched
+outside `ASSIGNMENT_COMPLETION_FIELDS`* — and `completed_at` is in it.
+
+### 18.7 No SRS module for the wall itself
 
 Same call wall slice §16.4 made, for the same reason: §3–§11 specify this surface more precisely
 than an SRS module would. If the wall grows past a calendar, it earns one then. §18.3's Module 06
@@ -1321,6 +1604,39 @@ Nothing in this slice is now waiting on an answer.
 ---
 
 ## 20. Revision log
+
+### 2026-08-14 — design review, before Phase 1a
+
+The slice was read against the Worker, the migrations and both apps before any code was written.
+Three gaps would each have been found the hard way — one during the build, two after the tablet was
+on the wall — plus three smaller corrections. Nothing structural moved: the wall-owned table, the
+carry-forward default, the duration override sitting on top of the parent's estimate, and
+column-names-the-child all survive unchanged.
+
+| # | Found | Section |
+|---|---|---|
+| 1 | **A shared chore had nowhere to live.** §4.2 draws a shared chore once, spanning columns, but placements are keyed by `child_id` and the PUT takes one child — so it would have been placed for one participant and left in the other's tray, which is the duplication the column layout was supposed to end. Resolved by splitting `each` (per-child, unchanged) from `claim` (one child-less row on the household sentinel). | §3.1.2, §3.2, §12, §14.2a, §16 |
+| 2 | **A shared chore could not record the sheet's time.** The claim route stamps its own `Date.now()` and rejects any body key but `grade`/`completionNote`, so §8.3's promise was false on exactly the chores where it matters most — and the earn route *does* honour a client time, so the ledger and the row would have disagreed. Resolved by adding `completedAt` to `CLAIM_BODY_KEYS`, with the not-in-the-future bound moved server-side. | §8.3.1, §12, §14.8a, §16 |
+| 3 | **A school block could not be created.** §5.1 defines one as a placement of a course, but the tray held chores only and no phase described placing a course — so the feature had no way in and school work would have been invisible rather than unplaced. Resolved by putting unplaced courses in the same tray. | §3.4, §5.1, §14.6a, §16 |
+| 4 | §9 said collisions were evaluated against the placements; two of the three inputs it needs (private-vs-shared, and the resolved duration) live on the day's rows and cannot be in `wall_slots`. Corrected to at-the-drag, against that day's rows. | §9 |
+| 5 | The start-time chime read "still pending" from data up to ten minutes stale (§10.1), so it could announce work already done — the failure most likely to get sound switched off. One poll now lands just ahead of each chime. | §11.5 |
+| 6 | Three stale citations: the roll-forward is `planner-core.js:179` (`onToday`), not `:154`; the duration passthrough is `packet.js:527`, not `:526`; §20's ownership-test pointer is §14.15, not §14.12. | throughout |
+
+**Ray's question that sharpened #1**, 2026-08-14: *"I have multiple instances of a chore, sometimes
+sharing same name. do they get their own ids? how would you identify the other kid's copy?"* They do
+— occurrence ids are minted 6-character tokens, never the label (`chores.js:416`), so two
+occurrences called "Dishes" stay distinct and renaming one does not move its placement. §3.1.1
+records that, because it is the property the whole placement key rests on and the one a reader is
+most likely to doubt. The other kid's copy is found by `source_id` + `instance_key`; `claim_group`
+recognises a shared chore but cannot key a placement, being minted per day and NULL on every `each`
+row. That is what made the `each`/`claim` split visible.
+
+**And the follow-up that closed §2.2**, 2026-08-14: *"I was gonna write a fake kid — 'Parents' — and
+I dont want it spanning that one."* It will not, and no flag is needed: spanning follows
+participation, which is ticked per chore. §2.2 says so outright so that nobody later "fixes" it with
+a schema change; §17.10 records what a flag would cost if the reporting noise ever justifies one,
+including the thing that is easy to get backwards — the flag is inside-out compared to `active`,
+since `Parents` should be visible on the wall and hidden everywhere else.
 
 ### 2026-08-14 — sign-off, and two decisions taken during it
 
@@ -1364,7 +1680,7 @@ that was worked around.** `expected_duration_min` is parent-owned (`migrations/0
 `CLAUDE.md` §0 admits no credential class that widens column ownership. The obvious implementation
 of Ray's request — let the wall PATCH the estimate — is exactly the thing that rule forbids, and the
 override table is what the requirement looks like once it is built inside the rule instead of
-through it. §14.12 asserts it in a test rather than trusting the review.
+through it. §14.15 asserts it in a test rather than trusting the review.
 
 ---
 
