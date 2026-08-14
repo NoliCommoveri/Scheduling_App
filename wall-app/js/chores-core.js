@@ -1,17 +1,17 @@
-// chores-core.js — PURE. The on-today rule, tile counts, and shared/claimed
-// classification (TDS_Slice_Wall_Display_App.md §5.1.1). Mirrors
-// `planner-core.js:48` (`effectiveDueDate`) and `:154` (`onToday`) —
-// re-implemented, not shared, per CLAUDE.md §I.A.
+// chores-core.js — PURE. The on-day rule and shared/claimed classification
+// (TDS_Slice_Wall_Display_App.md §5.1.1, generalized past "today" by
+// TDS_Slice_Wall_Calendar_Redesign.md §4.5). Mirrors `planner-core.js:48`
+// (`effectiveDueDate`) and `:179` (`onToday`) — re-implemented, not shared,
+// per CLAUDE.md §I.A.
 //
-// The wall's `onToday` deliberately does NOT carry planner-core's
-// `isResolved` early-exit: §5.1's table needs `status='complete'` rows to
-// still count as "on today" (they're the `m` denominator and the undoable
-// set), where the child app's own Today list drops a resolved row instantly,
-// on any date. Dropping the overdue *roll-forward* once a row is no longer
-// `pending` is kept, though — a stale completed chore from a past due date
-// must not go on counting itself forever. The bound that keeps this from
-// actually being "forever" is the 7-day-back fetch window (§5.1.1): a row
-// due more than a week ago simply isn't in `rows` any more.
+// The wall's rule deliberately does NOT carry planner-core's `isResolved`
+// early-exit: a completed row must still count as "on this day" so §8.4's
+// done-in-place chip has a day to render on. Dropping the overdue
+// *roll-forward* once a row is no longer `pending` is kept, though — a
+// stale completed chore from a past due date must not go on counting itself
+// forever. The bound that keeps this from actually being "forever" is the
+// 7-day-back fetch window (poll.js): a row due more than a week ago simply
+// isn't in `rows` any more.
 
 (function (g) {
   "use strict";
@@ -34,12 +34,18 @@
     return parsePayload(row.payload).required !== false;
   }
 
-  // planner-core.js:154, minus the isResolved gate (see file header). Due
-  // today, whatever status — or still pending and overdue.
-  function onToday(row, today) {
+  // §4.5 — generalized past "today": `date` is the day being rendered,
+  // `today` is the actual current day. The overdue roll-forward only fires
+  // when the two coincide — rendering a PAST day must show exactly what was
+  // due that day, not everything still outstanding before it (otherwise
+  // scrolling back through the week would show the same overdue chore on
+  // every day at once), and rendering a future day never rolls anything
+  // forward onto it either.
+  function onDate(row, date, today) {
     var due = effectiveDueDate(row);
-    if (due === today) return true;
-    return due < today && isRequired(row) && row.status === "pending";
+    if (due === date) return true;
+    if (date !== today) return false;
+    return due < date && isRequired(row) && row.status === "pending";
   }
 
   // Rendering class for a chore row in this child's list (§5.1, last
@@ -52,28 +58,23 @@
     return row.claimed_by === childId ? "mine" : "claimed-by-sibling";
   }
 
-  // Today's chores for one child: the pending list (chore list order —
-  // Phase 4a) and the `n of m` tile count. `n` = still pending; `m` = n plus
-  // however many are already done today.
-  function todayForChild(rows, childId, today) {
-    var pending = [];
-    var completeCount = 0;
-    (rows || []).forEach(function (row) {
-      if (row.kind !== "chore" || row.child_id !== childId) return;
-      if (row.rescinded_at != null) return;
-      if (!onToday(row, today)) return;
-      if (row.status === "complete") { completeCount++; return; }
-      if (row.status !== "pending") return; // any other status — not counted either side
-      pending.push(row);
+  // One child's chore rows on one rendered date — the day view's raw
+  // material before slots-core.js splits it into placed vs. the unscheduled
+  // tray (§3.4). Complete rows are included, not dropped: §8.4 keeps a
+  // finished chore visible in its slot rather than removing it.
+  function choresForChild(rows, childId, date, today) {
+    return (rows || []).filter(function (row) {
+      if (row.kind !== "chore" || row.child_id !== childId) return false;
+      if (row.rescinded_at != null) return false;
+      return onDate(row, date, today);
     });
-    return { pending: pending, n: pending.length, m: pending.length + completeCount };
   }
 
   g.ChoresCore = {
     effectiveDueDate: effectiveDueDate,
     isRequired: isRequired,
-    onToday: onToday,
+    onDate: onDate,
     claimState: claimState,
-    todayForChild: todayForChild,
+    choresForChild: choresForChild,
   };
 })(typeof window !== "undefined" ? window : globalThis);

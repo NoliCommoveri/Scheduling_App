@@ -3,7 +3,7 @@
 //
 //   wall.token         — the one household-scoped bearer credential
 //   wall.pins          — [{ childId, pinSalt, pinHash, failCount, lockedUntil }]
-//   wall.settings       — { adminPinSalt, adminPinHash, dimStartHour, dimEndHour, shellVersion }
+//   wall.settings       — { adminPinSalt, adminPinHash, dimStartHour, dimEndHour, shellVersion, timeFormat }
 //   wall.pendingEarns   — [{ id, childId, assignmentId, category, amount, reason, earnedAt, attempts }]
 //
 // A child's PIN row survives archive/un-archive (§3.3) because nothing here
@@ -24,6 +24,9 @@
     dimStartHour: 21,
     dimEndHour: 6,
     shellVersion: null,
+    timeFormat: "24h", // §11.3 — '24h' | '12h'. Absent on an installed tablet's
+                        // stored object; this merge (getSettings, below) is
+                        // the whole migration.
   };
 
   function readJson(key, fallback) {

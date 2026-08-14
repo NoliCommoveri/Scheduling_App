@@ -2,9 +2,9 @@
 // (TDS_Slice_Wall_Calendar_Redesign.md §10.1, superseding wall slice §5.2's
 // 60s/15min split with a flat 10-minute idle cadence — see cadenceMs below).
 // Not a `*-core.js` file — it does the app's actual IO — so it isn't
-// unit-tested per §11; `events-core.js`, `chores-core.js` and
-// `completed-core.js` hold all the logic worth testing in isolation and this
-// file just calls them via app.js/ambient-ui.js. `pollNow` is also how
+// unit-tested per §14; `events-core.js`, `chores-core.js` and
+// `slots-core.js` hold all the logic worth testing in isolation and this
+// file just calls them via app.js/day-ui.js. `pollNow` is also how
 // nav-ui.js's interaction-triggered polls (§10.1: a tap, a view change, a
 // date change, a refresh) reach the network — it is not new to this file.
 //
@@ -13,6 +13,10 @@
 // each poll's `since=` delta. A row that comes back rescinded, or claimed by
 // a child other than the one it belongs to, is dropped from the map outright
 // — neither actionable nor countable, for anyone.
+//
+// Wall Calendar Redesign §12 adds `slots`/`slotDays`: one household-wide,
+// full-replace fetch per tick (placements have no per-child `since` to
+// delta against), riding alongside the plan fan-out in the same `tick()`.
 
 (function (g) {
   "use strict";
@@ -44,6 +48,8 @@
     today: null,
     children: [],
     rowsById: Object.create(null),
+    slots: [],
+    slotDays: [],
     lastSuccessAt: null,
     lastAttemptAt: null,
     lastError: null,
@@ -62,6 +68,8 @@
       today: state.today,
       children: state.children,
       rows: values(state.rowsById),
+      slots: state.slots,
+      slotDays: state.slotDays,
       lastSuccessAt: state.lastSuccessAt,
       lastAttemptAt: state.lastAttemptAt,
       lastError: state.lastError,
@@ -114,7 +122,15 @@
       Object.keys(sinceByChild).forEach(function (id) {
         if (!currentIds[id]) delete sinceByChild[id];
       });
-      return Promise.all(children.map(function (c) { return fetchChildPlan(c, full); }));
+      // Placements are household-wide and have no per-child `since` — one
+      // fetch alongside the plan fan-out, not one per child (§12).
+      return Promise.all(
+        children.map(function (c) { return fetchChildPlan(c, full); })
+          .concat([g.WallApi.getSlots().then(function (res) {
+            state.slots = res.slots;
+            state.slotDays = res.days;
+          })])
+      );
     }).then(function () {
       state.lastSuccessAt = Date.now();
       state.lastError = null;

@@ -1,8 +1,10 @@
 // api.js — fetch wrappers for the wall's one bearer credential.
 // Phase 2: pairing and the roster read (TDS_Slice_Wall_Display_App.md §13).
-// Phase 3 adds the plan read. Completions/rewards/claim calls join in
-// Phase 4b — the shape (one wall token, childId per call, 401 -> unpaired)
-// is set here so later phases only add routes, not a second convention.
+// Phase 3 (Wall Calendar Redesign) adds the placements read
+// (TDS_Slice_Wall_Calendar_Redesign.md §12). Completions/rewards/claim calls
+// join in a later phase — the shape (one wall token, childId per call, 401
+// -> unpaired) is set here so later phases only add routes, not a second
+// convention.
 
 (function (g) {
   "use strict";
@@ -64,11 +66,22 @@
     return request("/api/wall/plan?" + qs);
   }
 
+  // §12 — every placement, household-wide, plus any `wall_slot_days`
+  // overrides. `from`/`to` only bound the day-scoped overrides (`wall_slots`
+  // itself carries no date, §3.3); omitted here because Phase 3 has no
+  // write path yet and the set is "small" per §12 regardless.
+  function getSlots() {
+    return request("/api/wall/slots").then(function (res) {
+      return { slots: res.slots || [], days: res.days || [] };
+    });
+  }
+
   g.WallApi = {
     UnpairedError: UnpairedError,
     pair: pair,
     getChildren: getChildren,
     getPlan: getPlan,
+    getSlots: getSlots,
     request: request,
   };
 })(typeof window !== "undefined" ? window : globalThis);

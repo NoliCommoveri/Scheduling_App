@@ -21,18 +21,16 @@
     return t.content.firstElementChild;
   }
 
-  function pad2(n) { return n < 10 ? "0" + n : "" + n; }
-
   // Mirrors poll.js's own todayLocal/addDays rather than re-deriving them,
   // so the nav's idea of "today" can never drift from the poll's.
   function todayLocal() { return g.Poll.todayLocal(); }
   function addDays(iso, n) { return g.Poll.addDays(iso, n); }
 
+  // §11.3 — the topbar clock is one more thing the time-format setting
+  // governs, through the same helper the grid and its chips use.
   function formatClock(d) {
-    var h = d.getHours();
-    var ampm = h >= 12 ? "PM" : "AM";
-    var h12 = h % 12 || 12;
-    return h12 + ":" + pad2(d.getMinutes()) + " " + ampm;
+    var settings = g.Store.getSettings();
+    return g.TimeCore.formatDate(d, settings.timeFormat || "24h");
   }
 
   function dateLabel(iso) {

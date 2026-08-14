@@ -321,116 +321,76 @@ button {
   color: var(--text-dim);
 }
 
-/* ---- ambient screen (Day view content, Phase 3 replaces this) ------------ */
+/* ---- day view (Wall Calendar Redesign §4) --------------------------------
+   Plain flexbox, not CSS Grid — §4.3 forbids horizontal scroll entirely, so
+   the sticky header just needs `position: sticky; top: 0` inside the one
+   vertical scroll container; chip placement is `top`/`height` in px inside
+   each child's own `position: relative` column. --row-h is read back by
+   day-ui.js (getComputedStyle) so the JS and the CSS can never drift apart. */
 
-.ambient {
+:root {
+  --row-h: 18px;
+  --gutter-w: 56px;
+}
+
+.day-view {
   height: 100%;
-  padding: 0 4vw 3vh;
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-  overflow: hidden; /* §10.2 — no page scroll; the panels below scroll internally instead */
+  padding: 0 4vw 2vh;
 }
 
-.ambient-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1.25rem;
+.day-scroll {
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
-.ambient-panels {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: 3fr 2fr;
-  gap: 1.25rem;
-}
-
-.ambient-tiles {
-  flex: 0 0 auto;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1.25rem;
-  align-content: flex-start;
-}
-
-.child-tile {
-  min-width: 200px;
-  min-height: 96px;
-  flex: 1 1 200px;
-  background: var(--panel);
-  border: none;
-  border-radius: var(--radius);
-  padding: 1rem 1.25rem;
-  text-align: left;
-  cursor: pointer;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-}
-
-.child-tile-name {
-  font-size: 1.6rem;
-  font-weight: 700;
-}
-
-.child-tile-count {
-  font-size: 1.2rem;
-  color: var(--text-dim);
-}
-
-.ambient-empty,
-.ambient-loading,
-.ambient-error {
+.day-empty,
+.day-loading {
   color: var(--text-dim);
   font-size: 1.2rem;
   padding: 2rem 0;
 }
 
-/* ---- events strip -------------------------------------------------------- */
+.day-sticky-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  background: var(--bg);
+  padding: 0.5rem 0;
+}
 
-.ambient-events {
+.day-gutter-spacer {
+  flex: 0 0 var(--gutter-w);
+}
+
+.day-col-header {
+  flex: 1 1 0;
+  font-size: 1.3rem;
+  font-weight: 700;
+  text-align: center;
+  padding: 0.25rem 0.5rem;
+}
+
+/* ---- events band (family-wide, full width, §4.2) -------------------------- */
+
+.day-events-band {
   background: var(--panel);
   border-radius: var(--radius);
-  padding: 1.25rem 1.5rem;
-  min-height: 0;
-  overflow-y: auto;
-}
-
-.ambient-events h2,
-.ambient-events h3,
-.done-today h2 {
-  margin: 0 0 0.75rem;
-  font-size: 1.1rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-dim);
-}
-
-.events-upcoming {
-  margin-top: 1.25rem;
-  padding-top: 1.25rem;
-  border-top: 1px solid var(--panel-2);
-}
-
-.upcoming-day {
+  padding: 0.75rem 1.25rem;
   margin-bottom: 0.75rem;
 }
 
-.upcoming-day-label {
-  font-size: 0.95rem;
-  color: var(--text-dim);
-  margin-bottom: 0.3rem;
+.day-events-band.day-events-empty {
+  display: none;
 }
 
 .event-row {
   display: flex;
   align-items: baseline;
   gap: 0.75rem;
-  padding: 0.4rem 0;
-  font-size: 1.1rem;
+  padding: 0.3rem 0;
+  font-size: 1.05rem;
 }
 
 .event-time {
@@ -443,71 +403,182 @@ button {
   flex: 1;
 }
 
-.event-span,
-.event-notes {
+.event-span {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+
+/* ---- unscheduled tray (§3.4) ----------------------------------------------- */
+
+.day-tray-row {
+  display: flex;
+  margin-bottom: 0.5rem;
+}
+
+.day-tray-cell {
+  flex: 1 1 0;
+  padding: 0 0.5rem;
+}
+
+.day-tray-toggle {
+  width: 100%;
+  min-height: 44px;
+  border-radius: 10px;
+  border: 2px dashed var(--panel-2);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+.day-tray-list {
+  display: none;
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+  font-size: 0.95rem;
+  color: var(--text-dim);
+}
+
+.day-tray-cell.expanded .day-tray-list {
+  display: block;
+}
+
+.day-tray-list li {
+  padding: 0.2rem 0;
+}
+
+/* ---- early/late strips (§4.3 — never hidden, never clamped) --------------- */
+
+.day-strip {
+  margin: 0.25rem 0;
+}
+
+.day-strip-toggle {
+  width: 100%;
+  min-height: 40px;
+  text-align: left;
+  border-radius: 10px;
+  border: none;
+  background: var(--panel-2);
   color: var(--text-dim);
   font-size: 0.9rem;
+  padding: 0 1rem;
+  cursor: pointer;
 }
 
-.events-empty {
-  color: var(--text-dim);
+.day-strip-list {
+  display: none;
+  list-style: none;
+  margin: 0.3rem 0 0;
+  padding: 0 1rem;
 }
 
-/* ---- Done Today ------------------------------------------------------------ */
-
-.done-today {
-  background: var(--panel);
-  border-radius: var(--radius);
-  padding: 1.25rem 1.5rem;
-  min-height: 0;
-  overflow-y: auto;
+.day-strip.expanded .day-strip-list {
+  display: block;
 }
 
-.done-rows {
+.day-strip-list li {
   display: flex;
-  flex-direction: column;
-}
-
-.done-row {
-  display: flex;
-  align-items: baseline;
   gap: 1rem;
-  padding: 0.4rem 0;
-  font-size: 1.1rem;
-  border-top: 1px solid var(--panel-2);
+  padding: 0.25rem 0;
+  font-size: 0.95rem;
 }
 
-.done-row:first-child {
-  border-top: none;
+.strip-time {
+  color: var(--accent);
+  min-width: 4.5rem;
 }
 
-.done-time {
-  color: var(--text-dim);
-  min-width: 5.5rem;
-}
-
-.done-title {
+.strip-title {
   flex: 1;
 }
 
-.done-child {
-  color: var(--accent);
-  font-weight: 600;
+.strip-child {
+  color: var(--text-dim);
 }
 
-.done-empty {
+/* ---- the grid: gutter, columns, chips, now-line ---------------------------- */
+
+.day-grid-body {
+  position: relative;
+  display: flex;
+}
+
+.day-gutter {
+  flex: 0 0 var(--gutter-w);
+  position: relative;
+}
+
+.day-gutter-label {
+  position: absolute;
+  left: 0;
+  right: 0.5rem;
+  text-align: right;
+  transform: translateY(-0.6em);
+  font-size: 0.8rem;
   color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.day-column {
+  flex: 1 1 0;
+  position: relative;
+  border-left: 1px solid var(--panel-2);
+}
+
+.day-chip {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  background: var(--panel);
+  border-left: 4px solid var(--accent);
+  border-radius: 8px;
+  padding: 0 0.5rem;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.chip-time {
+  flex: 0 0 auto;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.chip-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.day-now-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--danger);
+  z-index: 1;
+  pointer-events: none;
 }
 
 /* ---- staleness stamp ------------------------------------------------------- */
 
-.stale-stamp {
+.day-stale-stamp {
   color: var(--text-dim);
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   text-align: right;
+  padding: 0.5rem 0 1rem;
 }
 
-.stale-stamp.amber {
+.day-stale-stamp.amber {
   color: var(--accent);
 }
 
@@ -570,4 +641,22 @@ button {
   color: var(--text-dim);
   font-size: 0.9rem;
   margin-top: 0.2rem;
+}
+
+.settings-toggle-group {
+  display: flex;
+  gap: 0.5rem;
+  flex: 0 0 auto;
+}
+
+.time-fmt-btn {
+  min-height: 48px;
+  padding: 0 1rem;
+  font-size: 0.95rem;
+}
+
+.time-fmt-btn.active {
+  background: var(--accent);
+  color: #1a1408;
+  border-color: var(--accent);
 }
