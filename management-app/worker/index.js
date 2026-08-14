@@ -23,6 +23,9 @@ import {
   randomPairCode,
   timingSafeEqual,
   validateMessage,
+  SLOT_SUBJECT_KINDS,
+  isValidStartMin,
+  isValidSlotDuration,
 } from './validation.js';
 
 const MAX_BATCH = 500;
@@ -30,6 +33,11 @@ const DEFAULT_SNAPSHOT_LIMIT = 2000;
 const MAX_SNAPSHOT_LIMIT = 5000;
 const PAIR_CODE_TTL_MS = 15 * 60 * 1000;
 const PAIR_CODE_MAX_FAILS = 10;
+
+// Wall Calendar Redesign §7.2 — a month view moving one month at a time never
+// approaches this; it exists so a malformed or malicious window can't ask for
+// an unbounded dedupe scan.
+const MAX_EVENTS_WINDOW_DAYS = 62;
 
 // Wall Display App §8.1. `devices.child_id` and `pair_codes.child_id` are both
 // NOT NULL (0001:96, 0001:110) and SQLite cannot drop that in place, so a wall
@@ -298,6 +306,38 @@ async function routeApi(request, env, ctx, url) {
         handleAssignmentClaimRelease(env, actor, wallClaimMatch[1])));
   }
 
+  // ---- Wall Calendar Redesign §12 — placements and the household events feed ----
+  //
+  // These five routes touch `wall_slots` / `wall_slot_days` only, never
+  // `assignments` — so `withWallChild`'s active-child lookup is the wrong
+  // tool here: §12's sentinel rule needs '' accepted on a chore placement,
+  // and `withWallChild` 404s an empty childId. `resolveSlotChildId` below is
+  // that rule's one enforcement point. `/api/wall/events` names no child at
+  // all, exactly like `/api/wall/children` (CLAUDE.md §III.E) — it is
+  // household-scoped by the `children.active = 1` join in its own query.
+  if (pathname === '/api/wall/slots' && method === 'GET') {
+    return withWall(request, env, ctx, () => handleWallSlotsGet(url, env));
+  }
+  if (pathname === '/api/wall/slots' && method === 'PUT') {
+    return withWall(request, env, ctx, (wall) => withJsonBody(request, (body) =>
+      handleWallSlotPut(env, wall, body)));
+  }
+  if (pathname === '/api/wall/slots' && method === 'DELETE') {
+    return withWall(request, env, ctx, (wall) => withJsonBody(request, (body) =>
+      handleWallSlotDelete(env, wall, body)));
+  }
+  if (pathname === '/api/wall/slots/day' && method === 'PUT') {
+    return withWall(request, env, ctx, (wall) => withJsonBody(request, (body) =>
+      handleWallSlotDayPut(env, wall, body)));
+  }
+  if (pathname === '/api/wall/slots/day' && method === 'DELETE') {
+    return withWall(request, env, ctx, (wall) => withJsonBody(request, (body) =>
+      handleWallSlotDayDelete(env, wall, body)));
+  }
+  if (pathname === '/api/wall/events' && method === 'GET') {
+    return withWall(request, env, ctx, () => handleWallEvents(url, env));
+  }
+
   return json({ error: 'Not found.' }, 404);
 }
 
@@ -423,6 +463,25 @@ async function withWallChild(env, wall, childId, handler) {
   ).bind(childId).first();
   if (!row) return json({ error: 'Not an active child.' }, 404);
   return await handler(wallActor(wall, row.id));
+}
+
+// Wall Calendar Redesign §12 — the one place this slice softens a validation,
+// and the softening is narrow. `wall_slots` / `wall_slot_days` sit outside
+// the child-scoping scheme entirely (CLAUDE.md §III.E), so this is not a
+// fourth bound on top of withWallChild's three — it is a different table's
+// own rule. Returns the resolved childId to store (the sentinel, or the
+// server's own copy of a real id) or null when the id is unusable.
+async function resolveSlotChildId(env, childId, subjectKind) {
+  if (childId === WALL_SENTINEL_CHILD_ID) {
+    // §3.1.2 — a `claim` chore's placement is one child-less row. A school
+    // placement is always per child, so the sentinel is meaningless there.
+    return subjectKind === 'chore' ? WALL_SENTINEL_CHILD_ID : null;
+  }
+  if (typeof childId !== 'string' || !childId) return null;
+  const row = await env.DB.prepare(
+    `SELECT id FROM children WHERE id = ?1 AND active = 1`
+  ).bind(childId).first();
+  return row ? row.id : null;
 }
 
 // Reads the body once. The wall routes need `childId` out of it before the rest
@@ -1372,6 +1431,205 @@ async function handleWallChildren(env) {
 }
 
 // ============================================================================
+// Wall Calendar Redesign §3, §12 — placements
+// ============================================================================
+
+// Shared by all four slot routes: the key that identifies a placement or a
+// per-day override, checked before anything touches the database.
+function parseSlotKey(body) {
+  if (!SLOT_SUBJECT_KINDS.has(body.subjectKind)) {
+    return { error: `subjectKind must be one of ${[...SLOT_SUBJECT_KINDS].join(', ')}.` };
+  }
+  if (typeof body.subjectKey !== 'string' || !body.subjectKey) {
+    return { error: 'subjectKey is required.' };
+  }
+  const instanceKey = typeof body.instanceKey === 'string' ? body.instanceKey : '';
+  return { subjectKind: body.subjectKind, subjectKey: body.subjectKey, instanceKey };
+}
+
+// §12 — every placement, household-wide, plus any wall_slot_days overrides
+// inside the window. `wall_slots` itself carries no date (§3.3 — a placement
+// is a standing default, not a per-day fact), so `from`/`to` bound only the
+// day-scoped overrides; omitting them returns every override there is, which
+// is "small" per §12 because overrides are rare.
+async function handleWallSlotsGet(url, env) {
+  const from = isValidDate(url.searchParams.get('from')) ? url.searchParams.get('from') : null;
+  const to = isValidDate(url.searchParams.get('to')) ? url.searchParams.get('to') : null;
+
+  const { results: slotRows } = await env.DB.prepare(
+    `SELECT * FROM wall_slots ORDER BY child_id, subject_kind, subject_key, instance_key`
+  ).all();
+
+  let daysSql = `SELECT * FROM wall_slot_days`;
+  const daysParams = [];
+  if (from && to) {
+    daysSql += ` WHERE date >= ?1 AND date <= ?2`;
+    daysParams.push(from, to);
+  }
+  daysSql += ` ORDER BY date, child_id, subject_kind, subject_key, instance_key`;
+  const { results: dayRows } = await env.DB.prepare(daysSql).bind(...daysParams).all();
+
+  // Two arrays, so capRows' single `truncated`/`limit` shape would collide if
+  // both were capped — named separately instead of reused generically.
+  const slotsCapped = slotRows.length > MAX_QUERY_ROWS;
+  const daysCapped = dayRows.length > MAX_QUERY_ROWS;
+  const body = {
+    slots: slotsCapped ? slotRows.slice(0, MAX_QUERY_ROWS) : slotRows,
+    days: daysCapped ? dayRows.slice(0, MAX_QUERY_ROWS) : dayRows,
+    from,
+    to,
+  };
+  if (slotsCapped) body.slotsTruncated = true;
+  if (daysCapped) body.daysTruncated = true;
+  return json(body);
+}
+
+// §12 — upsert of the standing placement. `startMin` is required: the column
+// is NOT NULL and this route is the only writer, so there is no prior value
+// to preserve on a partial body. `durationMin` absent or `null` clears the
+// standing override, which is what makes "Use the assigned time" (§3.5.2, a
+// later phase) a one-field write.
+async function handleWallSlotPut(env, wall, body) {
+  body = body || {};
+  const key = parseSlotKey(body);
+  if (key.error) return json({ error: key.error }, 400);
+  if (!isValidStartMin(body.startMin)) {
+    return json({ error: 'startMin must be a multiple of 15 minutes, 0-1425.' }, 400);
+  }
+  const durationMin = body.durationMin === undefined ? null : body.durationMin;
+  if (!isValidSlotDuration(durationMin)) {
+    return json({ error: 'durationMin must be a positive multiple of 15 minutes, or null.' }, 400);
+  }
+  if (durationMin !== null && body.startMin + durationMin > 1440) {
+    return json({ error: 'startMin + durationMin must not run past midnight.' }, 400);
+  }
+  const childId = await resolveSlotChildId(env, body.childId, key.subjectKind);
+  if (childId === null) {
+    return json({ error: 'childId must be an active child, or the shared sentinel on a chore.' }, 400);
+  }
+
+  const now = Date.now();
+  await env.DB.prepare(
+    `INSERT INTO wall_slots (child_id, subject_kind, subject_key, instance_key, start_min, duration_min, updated_at, updated_by)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+     ON CONFLICT (child_id, subject_kind, subject_key, instance_key)
+     DO UPDATE SET start_min = ?5, duration_min = ?6, updated_at = ?7, updated_by = ?8`
+  ).bind(childId, key.subjectKind, key.subjectKey, key.instanceKey, body.startMin, durationMin, now, `wall:${wall.deviceId}`).run();
+
+  return json({ ok: true });
+}
+
+// §12 — un-place; the chore returns to the tray. Also clears that subject's
+// `wall_slot_days` rows: an override of a placement that no longer exists is
+// unreachable garbage.
+async function handleWallSlotDelete(env, wall, body) {
+  body = body || {};
+  const key = parseSlotKey(body);
+  if (key.error) return json({ error: key.error }, 400);
+  const childId = await resolveSlotChildId(env, body.childId, key.subjectKind);
+  if (childId === null) {
+    return json({ error: 'childId must be an active child, or the shared sentinel on a chore.' }, 400);
+  }
+
+  const result = await env.DB.prepare(
+    `DELETE FROM wall_slots WHERE child_id = ?1 AND subject_kind = ?2 AND subject_key = ?3 AND instance_key = ?4`
+  ).bind(childId, key.subjectKind, key.subjectKey, key.instanceKey).run();
+  await env.DB.prepare(
+    `DELETE FROM wall_slot_days WHERE child_id = ?1 AND subject_kind = ?2 AND subject_key = ?3 AND instance_key = ?4`
+  ).bind(childId, key.subjectKind, key.subjectKey, key.instanceKey).run();
+
+  return json({ deleted: !!(result.meta && result.meta.changes > 0) });
+}
+
+// §3.5.2 — "just this one." Same key as a placement plus a date. `durationMin`
+// is required and non-null: a null row is meaningless, so clearing an
+// override is DELETE, never a PUT that writes null.
+async function handleWallSlotDayPut(env, wall, body) {
+  body = body || {};
+  const key = parseSlotKey(body);
+  if (key.error) return json({ error: key.error }, 400);
+  if (!isValidDate(body.date)) {
+    return json({ error: 'date must be a YYYY-MM-DD date.' }, 400);
+  }
+  if (body.durationMin === null || !isValidSlotDuration(body.durationMin)) {
+    return json({ error: 'durationMin must be a positive multiple of 15 minutes.' }, 400);
+  }
+  const childId = await resolveSlotChildId(env, body.childId, key.subjectKind);
+  if (childId === null) {
+    return json({ error: 'childId must be an active child, or the shared sentinel on a chore.' }, 400);
+  }
+
+  const now = Date.now();
+  await env.DB.prepare(
+    `INSERT INTO wall_slot_days (child_id, subject_kind, subject_key, instance_key, date, duration_min, updated_at, updated_by)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+     ON CONFLICT (child_id, subject_kind, subject_key, instance_key, date)
+     DO UPDATE SET duration_min = ?6, updated_at = ?7, updated_by = ?8`
+  ).bind(childId, key.subjectKind, key.subjectKey, key.instanceKey, body.date, body.durationMin, now, `wall:${wall.deviceId}`).run();
+
+  return json({ ok: true });
+}
+
+// §12 — clears the per-day override; the chip falls back down the chain.
+async function handleWallSlotDayDelete(env, wall, body) {
+  body = body || {};
+  const key = parseSlotKey(body);
+  if (key.error) return json({ error: key.error }, 400);
+  if (!isValidDate(body.date)) {
+    return json({ error: 'date must be a YYYY-MM-DD date.' }, 400);
+  }
+  const childId = await resolveSlotChildId(env, body.childId, key.subjectKind);
+  if (childId === null) {
+    return json({ error: 'childId must be an active child, or the shared sentinel on a chore.' }, 400);
+  }
+
+  const result = await env.DB.prepare(
+    `DELETE FROM wall_slot_days WHERE child_id = ?1 AND subject_kind = ?2 AND subject_key = ?3 AND instance_key = ?4 AND date = ?5`
+  ).bind(childId, key.subjectKind, key.subjectKey, key.instanceKey, body.date).run();
+
+  return json({ deleted: !!(result.meta && result.meta.changes > 0) });
+}
+
+// §7.2 — inclusive day count between two YYYY-MM-DD dates, used only to bound
+// /api/wall/events' window. Both strings are already isValidDate-checked, so
+// a plain UTC parse is safe (no timezone ambiguity in a date-only string).
+function inclusiveDaySpan(from, to) {
+  const ms = new Date(`${to}T00:00:00Z`).getTime() - new Date(`${from}T00:00:00Z`).getTime();
+  return Math.floor(ms / 86400000) + 1;
+}
+
+// §7.2 — a household-wide, deduped events feed. Names no child, exactly like
+// handleWallChildren above: bounded by the `children.active = 1` join, acts
+// for nobody, and reads no child-owned column that could be attributed to
+// one. Not a fourth exception to CLAUDE.md §III.E's four bounds — those
+// govern routes that act for a named child, and this route does not act.
+async function handleWallEvents(url, env) {
+  const from = url.searchParams.get('from');
+  const to = url.searchParams.get('to');
+  if (!isValidDate(from) || !isValidDate(to)) {
+    return json({ error: 'from and to are required YYYY-MM-DD dates.' }, 400);
+  }
+  if (to < from) return json({ error: 'to must not be before from.' }, 400);
+  if (inclusiveDaySpan(from, to) > MAX_EVENTS_WINDOW_DAYS) {
+    return json({ error: `Window may not exceed ${MAX_EVENTS_WINDOW_DAYS} days.` }, 400);
+  }
+
+  const { results } = await env.DB.prepare(
+    `SELECT MIN(a.id) AS id, a.source_id, a.date, a.title, a.payload
+       FROM assignments a
+       JOIN children c ON c.id = a.child_id AND c.active = 1
+      WHERE a.kind = 'event'
+        AND a.rescinded_at IS NULL
+        AND a.date BETWEEN ?1 AND ?2
+      GROUP BY COALESCE(a.source_id, a.id), a.date
+      ORDER BY a.date
+      LIMIT ${MAX_QUERY_ROWS + 1}`
+  ).bind(from, to).all();
+
+  return json({ ...capRows(results, 'events'), from, to });
+}
+
+// ============================================================================
 // Child — device credential (§5.5)
 // ============================================================================
 
@@ -1516,11 +1774,19 @@ async function handleCompletions(request, env, actor, body) {
   return json({ applied, rejected, deferred });
 }
 
-// Shared Chores §5.4 — the arbitrated claim. `grade` and `completionNote`
-// only: the rest of ASSIGNMENT_COMPLETION_FIELDS is the route's own to set
-// (status, completedAt) or belongs to the ordinary local-first path
-// (deferredTo, childBlockHint, childSortOrder — §5.4's field-list note).
-const CLAIM_BODY_KEYS = ['grade', 'completionNote'];
+// Shared Chores §5.4 — the arbitrated claim. `grade`, `completionNote` and
+// (Wall Calendar Redesign §8.3.1) `completedAt`: the rest of
+// ASSIGNMENT_COMPLETION_FIELDS is the route's own to set (status) or belongs
+// to the ordinary local-first path (deferredTo, childBlockHint,
+// childSortOrder — §5.4's field-list note).
+//
+// `completedAt` joins this list because the wall's completion sheet asks
+// *when* a chore was finished (§8.3), and without this the claim route
+// silently discarded that answer — stamping its own `Date.now()` regardless
+// — while the earn route next to it already honoured a client `earnedAt`,
+// so the reward ledger and the assignment row would have disagreed about
+// when the work happened. See §8.3.1 and §20 revision #2.
+const CLAIM_BODY_KEYS = ['grade', 'completionNote', 'completedAt'];
 
 async function handleAssignmentClaim(env, actor, id, body) {
   body = body || {};
@@ -1581,14 +1847,19 @@ async function handleAssignmentClaim(env, actor, id, body) {
   }
 
   // On a win only — first-time or an idempotent replay — record the
-  // completion on the caller's own row. §5.4 step 4.
+  // completion on the caller's own row. §5.4 step 4. Wall Calendar Redesign
+  // §8.3.1 — `completedAt` is now the caller's to supply (the sheet's chosen
+  // time), falling back to `now` when absent so the Child App's existing
+  // claim calls, which send neither key, are unaffected. `updated_at` stays
+  // the server's own clock — a provenance stamp, not a value the sheet owns.
   const updatedBy = actor.actorTag;
+  const completedAt = body.completedAt ?? now;
   await env.DB.prepare(
     `UPDATE assignments
         SET status = 'complete', completed_at = ?1, grade = ?2, completion_note = ?3,
-            updated_at = ?1, updated_by = ?4
-      WHERE id = ?5 AND child_id = ?6`
-  ).bind(now, body.grade ?? null, body.completionNote ?? null, updatedBy, id, actor.childId).run();
+            updated_at = ?4, updated_by = ?5
+      WHERE id = ?6 AND child_id = ?7`
+  ).bind(completedAt, body.grade ?? null, body.completionNote ?? null, now, updatedBy, id, actor.childId).run();
 
   const assignment = await env.DB.prepare(`SELECT * FROM assignments WHERE id = ?1`).bind(id).first();
   return json({ claimed: true, assignment });
