@@ -1,10 +1,9 @@
 // app.js — boot, the nav shell, and the day-rollover timer.
 // TDS_Slice_Wall_Display_App.md §11 (boot states) and
-// TDS_Slice_Wall_Calendar_Redesign.md §16 Phase 2: the ambient board
-// (ambient-ui.js) still renders as the day view's content, but it now lives
-// inside nav-ui.js's persistent shell rather than owning the whole screen.
-// Week/Month and any date other than today show a placeholder until Phase 3
-// (day view for any date) and Phase 8 (week/month) land.
+// TDS_Slice_Wall_Calendar_Redesign.md §16. Phase 2 put the ambient board
+// inside nav-ui.js's persistent shell; Phase 3 replaces that board with
+// `day-ui.js`'s real day view, for any rendered date, not just today. Week
+// and Month still show a placeholder until Phase 8.
 
 (function (g) {
   "use strict";
@@ -35,7 +34,7 @@
   function teardownAmbient() {
     if (pollUnsub) { pollUnsub(); pollUnsub = null; }
     g.Poll.stop();
-    g.AmbientUi.stop();
+    g.DayUi.stop();
     if (navCtrl) { navCtrl.destroy(); navCtrl = null; }
     if (midnightTimer) { clearTimeout(midnightTimer); midnightTimer = null; }
   }
@@ -53,12 +52,12 @@
     });
 
     var loading = document.createElement("div");
-    loading.className = "ambient-loading";
+    loading.className = "day-loading";
     loading.textContent = "Loading…";
     navCtrl.contentEl.appendChild(loading);
 
     function showPlaceholder(text) {
-      g.AmbientUi.stop();
+      g.DayUi.stop();
       navCtrl.contentEl.innerHTML = "";
       var ph = document.createElement("div");
       ph.className = "wall-placeholder";
@@ -82,22 +81,18 @@
         return;
       }
 
-      if (navState.view === "day" && navState.date === lastPollState.today) {
-        g.AmbientUi.render(navCtrl.contentEl, lastPollState, {
-          onTileTap: function (/* child */) {
-            // Phase 4a of the superseded slice wired the PIN pad and
-            // per-child chore list. Never built; tapping a tile is a no-op.
+      if (navState.view === "day") {
+        g.DayUi.render(navCtrl.contentEl, lastPollState, navState.date, {
+          onChipTap: function (/* row, child */) {
+            // The completion sheet is Phase 6. Tapping a chip is a no-op
+            // until then, same posture ambient-ui.js took with tile taps.
           },
         });
         return;
       }
 
-      if (navState.view === "day") {
-        showPlaceholder("Viewing other days arrives in the next build phase.");
-      } else {
-        var label = navState.view.charAt(0).toUpperCase() + navState.view.slice(1);
-        showPlaceholder(label + " view arrives in a later build phase.");
-      }
+      var label = navState.view.charAt(0).toUpperCase() + navState.view.slice(1);
+      showPlaceholder(label + " view arrives in a later build phase.");
     }
 
     pollUnsub = g.Poll.onUpdate(function (state) {

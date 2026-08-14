@@ -1,6 +1,8 @@
-// Tests for the Wall App's pure cores (TDS_Slice_Wall_Display_App.md §12).
-// Phase 2 landed pin-core.js only; Phase 3 adds events-core.js,
-// chores-core.js (which completed-core.js depends on) and completed-core.js.
+// Tests for the Wall App's pure cores. Phase 2 (TDS_Slice_Wall_Display_App.md
+// §12) landed pin-core.js only. Wall Calendar Redesign §14 Phase 3 adds
+// events-core.js, chores-core.js (generalized past "today", §4.5),
+// slots-core.js (§3.1/§3.5.1) and time-core.js (§11.3), and retires
+// completed-core.js — the Done Today board it backed is repealed (§8.4).
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,10 +10,10 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 const repo = new URL('../', import.meta.url);
-for (const file of ['pin-core.js', 'events-core.js', 'chores-core.js', 'completed-core.js']) {
+for (const file of ['pin-core.js', 'events-core.js', 'chores-core.js', 'slots-core.js', 'time-core.js']) {
   vm.runInThisContext(readFileSync(new URL(`wall-app/js/${file}`, repo), 'utf8'), { filename: file });
 }
-const { PinCore, EventsCore, ChoresCore, CompletedCore } = globalThis;
+const { PinCore, EventsCore, ChoresCore, SlotsCore, TimeCore } = globalThis;
 
 // ===========================================================  hashing (§12.8)
 
@@ -116,28 +118,39 @@ test('upcoming groups by day and omits days with nothing on them', () => {
   assert.equal(days[0].date, '2026-08-15');
 });
 
-// ===========================================================  chores-core (§5.1.1)
+// ===========================================================  chores-core (§4.5)
 
-test('a chore deferred to tomorrow is off today\'s list; one pending from yesterday rolls forward', () => {
+test('a chore deferred to tomorrow is off today\'s list; one pending from yesterday rolls forward onto today', () => {
   const deferred = { id: 'd1', child_id: 'c1', kind: 'chore', date: '2026-08-13', deferred_to: '2026-08-14', status: 'pending', payload: '{}' };
   const overdue = { id: 'o1', child_id: 'c1', kind: 'chore', date: '2026-08-12', status: 'pending', payload: '{}' };
-  assert.equal(ChoresCore.onToday(deferred, '2026-08-13'), false);
-  assert.equal(ChoresCore.onToday(overdue, '2026-08-13'), true);
+  assert.equal(ChoresCore.onDate(deferred, '2026-08-13', '2026-08-13'), false);
+  assert.equal(ChoresCore.onDate(overdue, '2026-08-13', '2026-08-13'), true);
 });
 
 test('a completed overdue chore does not keep rolling forward once it is done', () => {
   const row = { id: 'o1', child_id: 'c1', kind: 'chore', date: '2026-08-10', status: 'complete', payload: '{}' };
-  assert.equal(ChoresCore.onToday(row, '2026-08-13'), false);
+  assert.equal(ChoresCore.onDate(row, '2026-08-13', '2026-08-13'), false);
 });
 
-test('a chore due exactly today counts whether pending or complete', () => {
+test('a chore due exactly on the rendered date counts whether pending or complete', () => {
   const pending = { id: 'p1', child_id: 'c1', kind: 'chore', date: '2026-08-13', status: 'pending', payload: '{}' };
   const complete = { id: 'c1x', child_id: 'c1', kind: 'chore', date: '2026-08-13', status: 'complete', payload: '{}' };
-  assert.equal(ChoresCore.onToday(pending, '2026-08-13'), true);
-  assert.equal(ChoresCore.onToday(complete, '2026-08-13'), true);
+  assert.equal(ChoresCore.onDate(pending, '2026-08-13', '2026-08-13'), true);
+  assert.equal(ChoresCore.onDate(complete, '2026-08-13', '2026-08-13'), true);
 });
 
-test('todayForChild counts n (pending) and m (pending + complete) for one child only', () => {
+test('§4.5 — no roll-forward when the rendered date is in the past, even though today would show it', () => {
+  // A chore due 2026-08-10, still pending, actual today is 2026-08-13. It IS
+  // on today's board (roll-forward), but rendering *last Tuesday* (08-11)
+  // must not show it — otherwise scrolling back through the week would show
+  // the same overdue chore on every day at once.
+  const row = { id: 'o1', child_id: 'c1', kind: 'chore', date: '2026-08-10', status: 'pending', payload: '{}' };
+  assert.equal(ChoresCore.onDate(row, '2026-08-13', '2026-08-13'), true);
+  assert.equal(ChoresCore.onDate(row, '2026-08-11', '2026-08-13'), false);
+  assert.equal(ChoresCore.onDate(row, '2026-08-10', '2026-08-13'), true); // its own due date, any day
+});
+
+test('choresForChild filters to one child\'s non-rescinded chores on the rendered date, complete included', () => {
   const rows = [
     { id: 'p1', child_id: 'c1', kind: 'chore', date: '2026-08-13', status: 'pending', payload: '{}' },
     { id: 'p2', child_id: 'c1', kind: 'chore', date: '2026-08-13', status: 'complete', payload: '{}' },
@@ -145,9 +158,8 @@ test('todayForChild counts n (pending) and m (pending + complete) for one child 
     { id: 'p4', child_id: 'c1', kind: 'chore', date: '2026-08-13', status: 'pending', rescinded_at: 1, payload: '{}' },
     { id: 'p5', child_id: 'c1', kind: 'activity', date: '2026-08-13', status: 'pending', payload: '{}' }, // not a chore
   ];
-  const counts = ChoresCore.todayForChild(rows, 'c1', '2026-08-13');
-  assert.equal(counts.n, 1);
-  assert.equal(counts.m, 2);
+  const list = ChoresCore.choresForChild(rows, 'c1', '2026-08-13', '2026-08-13');
+  assert.deepEqual(list.map((r) => r.id), ['p1', 'p2']);
 });
 
 test('claimState: open, mine, and claimed-by-sibling', () => {
@@ -159,37 +171,107 @@ test('claimState: open, mine, and claimed-by-sibling', () => {
   assert.equal(ChoresCore.claimState(sibling, 'c1'), 'claimed-by-sibling');
 });
 
-// ===========================================================  completed-core (§6.7)
+// ===========================================================  slots-core (§3.1, §3.5.1)
 
-test('Done Today lists complete chores across children, newest first', () => {
-  const rows = [
-    { id: 'a', child_id: 'c1', kind: 'chore', date: '2026-08-13', status: 'complete', completed_at: 1000, title: 'Feed the cat', payload: '{}' },
-    { id: 'b', child_id: 'c2', kind: 'chore', date: '2026-08-13', status: 'complete', completed_at: 2000, title: 'Take bins out', payload: '{}' },
+test('a chore matches its placement on source_id + instance_key; an unmatched chore is unplaced', () => {
+  const slots = [
+    { child_id: 'c1', subject_kind: 'chore', subject_key: 'chore-1', instance_key: '', start_min: 480, duration_min: null },
   ];
-  const byId = { c1: { id: 'c1', name: 'Talia' }, c2: { id: 'c2', name: 'Ellie' } };
-  const done = CompletedCore.doneToday(rows, '2026-08-13', byId);
-  assert.deepEqual(done.map((r) => r.id), ['b', 'a']);
-  assert.equal(done[0].childName, 'Ellie');
+  const idx = SlotsCore.indexSlots(slots);
+  const placed = { child_id: 'c1', source_id: 'chore-1', instance_key: '' };
+  const unplaced = { child_id: 'c1', source_id: 'chore-2', instance_key: '' };
+  assert.equal(SlotsCore.placementFor(idx, placed).start_min, 480);
+  assert.equal(SlotsCore.placementFor(idx, unplaced), null);
 });
 
-test('a complete row with no completed_at is included, not hidden, and sorts last', () => {
-  const rows = [
-    { id: 'a', child_id: 'c1', kind: 'chore', date: '2026-08-13', status: 'complete', completed_at: 1000, title: 'Feed the cat', payload: '{}' },
-    { id: 'b', child_id: 'c1', kind: 'chore', date: '2026-08-13', status: 'complete', completed_at: null, title: 'Mystery chore', payload: '{}' },
+test('three instances of one chore hold three distinct placements; two sharing a label still resolve separately (§3.1.1)', () => {
+  const slots = [
+    { child_id: 'c1', subject_kind: 'chore', subject_key: 'dishes', instance_key: 'brk', start_min: 480, duration_min: null },
+    { child_id: 'c1', subject_kind: 'chore', subject_key: 'dishes', instance_key: 'lun', start_min: 720, duration_min: null },
+    { child_id: 'c1', subject_kind: 'chore', subject_key: 'dishes', instance_key: 'din', start_min: 1080, duration_min: null },
   ];
-  const done = CompletedCore.doneToday(rows, '2026-08-13', {});
-  assert.equal(done.length, 2);
-  assert.equal(done[1].id, 'b');
-  assert.equal(done[1].completedAt, null);
+  const idx = SlotsCore.indexSlots(slots);
+  const brk = SlotsCore.placementFor(idx, { child_id: 'c1', source_id: 'dishes', instance_key: 'brk' });
+  const lun = SlotsCore.placementFor(idx, { child_id: 'c1', source_id: 'dishes', instance_key: 'lun' });
+  assert.equal(brk.start_min, 480);
+  assert.equal(lun.start_min, 720);
+  assert.notEqual(brk.start_min, lun.start_min);
 });
 
-test('Done Today excludes activities, events, rescinded rows, and chores not due today', () => {
-  const rows = [
-    { id: 'act', child_id: 'c1', kind: 'activity', date: '2026-08-13', status: 'complete', completed_at: 1, title: 'Math', payload: '{}' },
-    { id: 'evt', child_id: 'c1', kind: 'event', date: '2026-08-13', status: 'complete', completed_at: 1, title: 'Party', payload: '{}' },
-    { id: 'resc', child_id: 'c1', kind: 'chore', date: '2026-08-13', status: 'complete', completed_at: 1, rescinded_at: 2, title: 'Old', payload: '{}' },
-    { id: 'stale', child_id: 'c1', kind: 'chore', date: '2026-08-01', status: 'complete', completed_at: 1, title: 'Long done', payload: '{}' },
+test('§3.1.2 — an each chore resolves each child\'s own placement independently', () => {
+  const slots = [
+    { child_id: 'ellie', subject_kind: 'chore', subject_key: 'homework', instance_key: '', start_min: 480, duration_min: null },
+    { child_id: 'talia', subject_kind: 'chore', subject_key: 'homework', instance_key: '', start_min: 600, duration_min: null },
   ];
-  const done = CompletedCore.doneToday(rows, '2026-08-13', {});
-  assert.deepEqual(done, []);
+  const idx = SlotsCore.indexSlots(slots);
+  const ellieRow = { child_id: 'ellie', source_id: 'homework', instance_key: '', claim_group: null };
+  const taliaRow = { child_id: 'talia', source_id: 'homework', instance_key: '', claim_group: null };
+  assert.equal(SlotsCore.placementFor(idx, ellieRow).start_min, 480);
+  assert.equal(SlotsCore.placementFor(idx, taliaRow).start_min, 600);
+});
+
+test('§3.1.2 — a claim chore resolves the single child-less row for every participant; changing participants leaves it intact', () => {
+  const slots = [
+    { child_id: '', subject_kind: 'chore', subject_key: 'cat', instance_key: '', start_min: 990, duration_min: null },
+  ];
+  const idx = SlotsCore.indexSlots(slots);
+  const ellieRow = { child_id: 'ellie', source_id: 'cat', instance_key: '', claim_group: 'grp-1' };
+  const taliaRow = { child_id: 'talia', source_id: 'cat', instance_key: '', claim_group: 'grp-1' };
+  assert.equal(SlotsCore.placementFor(idx, ellieRow).start_min, 990);
+  assert.equal(SlotsCore.placementFor(idx, taliaRow).start_min, 990);
+  // A new participant (never in the group before) still finds the one
+  // household placement — nothing keys it to a specific child.
+  const newcomer = { child_id: 'ravi', source_id: 'cat', instance_key: '', claim_group: 'grp-1' };
+  assert.equal(SlotsCore.placementFor(idx, newcomer).start_min, 990);
+});
+
+test('§3.1.2 — a claim and an each placement at the same subject key do not collide', () => {
+  const slots = [
+    { child_id: '', subject_kind: 'chore', subject_key: 'dishes', instance_key: '', start_min: 600, duration_min: null },
+    { child_id: 'ellie', subject_kind: 'chore', subject_key: 'dishes', instance_key: '', start_min: 900, duration_min: null },
+  ];
+  const idx = SlotsCore.indexSlots(slots);
+  const claimRow = { child_id: 'ellie', source_id: 'dishes', instance_key: '', claim_group: 'grp-2' };
+  const eachRow = { child_id: 'ellie', source_id: 'dishes', instance_key: '', claim_group: null };
+  assert.equal(SlotsCore.placementFor(idx, claimRow).start_min, 600);
+  assert.equal(SlotsCore.placementFor(idx, eachRow).start_min, 900);
+});
+
+test('§3.5.1 — the duration chain: per-day beats standing beats the parent\'s estimate beats 15', () => {
+  const withEstimate = { source_id: 'bins', instance_key: '', expected_duration_min: 30 };
+  const noEstimate = { source_id: 'trash', instance_key: '', expected_duration_min: null };
+  assert.equal(SlotsCore.resolveDurationMin(noEstimate, null, null), 15); // row 4 — nothing else to go on
+  assert.equal(SlotsCore.resolveDurationMin(withEstimate, null, null), 30); // row 3 — the parent's estimate
+  assert.equal(SlotsCore.resolveDurationMin(withEstimate, { duration_min: null }, null), 30); // a cleared standing override still falls to the estimate
+  assert.equal(SlotsCore.resolveDurationMin(withEstimate, { duration_min: 45 }, null), 45); // row 2 — standing override
+  assert.equal(SlotsCore.resolveDurationMin(withEstimate, { duration_min: 45 }, { duration_min: 10 }), 10); // row 1 — per-day wins
+});
+
+test('§3.5.1 — clearing the per-day override falls back exactly one step, not to the bottom', () => {
+  const row = { source_id: 'bins', instance_key: '', claim_group: null, expected_duration_min: 30 };
+  const withStanding = SlotsCore.resolveDurationMin(row, { duration_min: 45 }, null);
+  assert.equal(withStanding, 45); // not 30 or 15 — the standing override still applies
+});
+
+test('isOverridden is true with either override present, false with neither', () => {
+  assert.equal(SlotsCore.isOverridden(null, null), false);
+  assert.equal(SlotsCore.isOverridden({ duration_min: null }, null), false);
+  assert.equal(SlotsCore.isOverridden({ duration_min: 45 }, null), true);
+  assert.equal(SlotsCore.isOverridden(null, { duration_min: 10 }), true);
+});
+
+// ===========================================================  time-core (§11.3)
+
+test('formatMinutes renders 09:05 and 21:05 in both modes', () => {
+  assert.equal(TimeCore.formatMinutes(9 * 60 + 5, '24h'), '09:05');
+  assert.equal(TimeCore.formatMinutes(9 * 60 + 5, '12h'), '9:05 am');
+  assert.equal(TimeCore.formatMinutes(21 * 60 + 5, '24h'), '21:05');
+  assert.equal(TimeCore.formatMinutes(21 * 60 + 5, '12h'), '9:05 pm');
+});
+
+test('formatMinutes handles midnight and noon, the two that catch naive implementations', () => {
+  assert.equal(TimeCore.formatMinutes(0, '24h'), '00:00');
+  assert.equal(TimeCore.formatMinutes(0, '12h'), '12:00 am');
+  assert.equal(TimeCore.formatMinutes(12 * 60, '24h'), '12:00');
+  assert.equal(TimeCore.formatMinutes(12 * 60, '12h'), '12:00 pm');
 });

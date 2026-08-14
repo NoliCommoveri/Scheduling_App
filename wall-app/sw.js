@@ -19,7 +19,10 @@
 // adding them here — a gap found on review of this file, not a v2 change in
 // its own right. Without it, a wifi blip during a reload left the tablet
 // unable to fetch render-critical scripts with no cached fallback.
-const CACHE_NAME = "wall-display-shell-v2";
+// v3: §16 Phase 3 — the real day view (day-ui.js) replaces the ambient
+// board outright. `ambient-ui.js` and `completed-core.js` are deleted
+// (§13); `time-core.js` and `slots-core.js` are new.
+const CACHE_NAME = "wall-display-shell-v3";
 
 const APP_SHELL = [
   "./",
@@ -29,11 +32,12 @@ const APP_SHELL = [
   "./js/store.js",
   "./js/api.js",
   "./js/setup.js",
+  "./js/time-core.js",
   "./js/events-core.js",
   "./js/chores-core.js",
-  "./js/completed-core.js",
+  "./js/slots-core.js",
   "./js/poll.js",
-  "./js/ambient-ui.js",
+  "./js/day-ui.js",
   "./js/nav-ui.js",
   "./js/settings-ui.js",
   "./js/app.js",

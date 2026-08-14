@@ -1,8 +1,9 @@
 // settings-ui.js — the admin gate and the Settings panel
 // (TDS_Slice_Wall_Display_App.md §4.5). Phase 2 scope: the PIN gate itself,
-// re-pairing the display, and the shell reload button §10.2 requires. Child
-// PIN management and the failed-earns list join in Phase 4b, once there are
-// child PINs and earns to manage.
+// re-pairing the display, and the shell reload button §10.2 requires. Wall
+// Calendar Redesign Phase 3 adds the time-format control (§11.3). Failed
+// earns join in a later phase, once there are earns to manage; per-child PIN
+// management does not join at all — repealed, §2.3.
 
 (function (g) {
   "use strict";
@@ -59,10 +60,22 @@
 
   function renderPanel(root, onClose) {
     root.innerHTML = "";
+    var settings = g.Store.getSettings();
+    var is24h = settings.timeFormat !== "12h";
     var body = el(
       '<div class="settings-overlay">' +
         '<div class="settings-panel">' +
           '<h2>Settings</h2>' +
+          '<div class="settings-row">' +
+            '<div>' +
+              '<div class="settings-row-title">Time format</div>' +
+              '<div class="settings-row-help">Governs every clock, chip time, and the grid gutter (§11.3).</div>' +
+            '</div>' +
+            '<div class="settings-toggle-group">' +
+              '<button class="btn ghost time-fmt-btn" id="timeFmt24" data-fmt="24h">24-hour</button>' +
+              '<button class="btn ghost time-fmt-btn" id="timeFmt12" data-fmt="12h">12-hour</button>' +
+            '</div>' +
+          '</div>' +
           '<div class="settings-row">' +
             '<div>' +
               '<div class="settings-row-title">Re-pair this display</div>' +
@@ -82,6 +95,21 @@
       '</div>'
     );
     root.appendChild(body);
+
+    var fmtBtns = body.querySelectorAll(".time-fmt-btn");
+    function paintFmtButtons() {
+      fmtBtns.forEach(function (btn) {
+        btn.classList.toggle("active", btn.dataset.fmt === (is24h ? "24h" : "12h"));
+      });
+    }
+    paintFmtButtons();
+    fmtBtns.forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        is24h = btn.dataset.fmt === "24h";
+        g.Store.setSettings({ timeFormat: is24h ? "24h" : "12h" });
+        paintFmtButtons();
+      });
+    });
 
     body.querySelector("#settingsDone").addEventListener("click", function () { onClose(); });
 
