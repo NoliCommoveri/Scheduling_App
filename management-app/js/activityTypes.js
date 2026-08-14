@@ -85,6 +85,7 @@ const ActivityTypes = (() => {
       const item = document.createElement('li');
       item.innerHTML = `
         <span class="activity-type-label">${escapeHtml(type.label)}</span>
+        <span class="activity-type-key">${escapeHtml(type.activityTypeKey)}</span>
         <span class="activity-type-patterns">${type.capturePattern} / ${type.structurePattern}</span>
         <button data-action="rename">Rename</button>
         <button data-action="delete">Delete</button>
