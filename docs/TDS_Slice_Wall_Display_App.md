@@ -2,7 +2,22 @@
 
 ## Scope: Wall Display App — a third, always-on browser app that shows family events to the room and gates each child's chores behind a PIN
 
-**Status:** design only. No code written under this slice yet.
+> ## ⚠️ Superseded in part (2026-08-14) — read this first
+>
+> **`docs/TDS_Slice_Wall_Calendar_Redesign.md` is the controlling design for the Wall App.**
+> Phases 1–3 of this slice were built; Phase 4a (the PIN pad and the per-child chore list) never
+> was, and is now repealed rather than deferred.
+>
+> Most of this document still holds — the wall token, the roster read live from `children.active`,
+> online-required writes, the earn rule, the on-today rule, Undo's two paths, the Fire tablet
+> constraints. What is **repealed** is the per-child PIN gate (§0.3, §0.4, §4), the Done Today board
+> (§6.7), the 60-second poll cadence (§5.2), and the exclusion of activity rows from the read path
+> (§5.1). What is **replaced** is the ambient screen, which becomes a day/week/month calendar.
+>
+> **`TDS_Slice_Wall_Calendar_Redesign.md` §1.2 is the authoritative map** of what in here survives,
+> what is repealed, and what is replaced. Read it before building from any section below.
+
+**Status:** Phases 1–3 landed. Phase 4a repealed, 4b and 5 superseded — see the banner above.
 **Date:** 2026-08-13. **Revised 2026-08-13** after review — see §17 for what changed and why.
 **Depends on:** `TDS_Slice_Online_Revamp.md` (controlling design), `TDS_Slice_Shared_Chores.md` (claim arbitration), `TDS_Slice_Alexa_Voice_Bridge.md` (§9 here is written to keep that slice buildable).
 **Amends:** `CLAUDE.md` §0/§I.A/§I.B/§III.A/§III.E/§VII → v2.2 (§16). `docs/Roadmap_Schedule_App.md` §0.

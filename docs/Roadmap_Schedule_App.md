@@ -84,17 +84,19 @@ the Child App item stays open.
 
 **`TDS_Slice_Wall_Display_App.md`** — a third app, `wall-app/`: an always-on tablet showing the
 family's events and each child's chore progress, with chore completion behind a per-child PIN.
-Design revised 2026-08-13 after review; `CLAUDE.md` 2.2 carries its §16 amendment. **Not started.**
+Design revised 2026-08-13 after review; `CLAUDE.md` 2.2 carries its §16 amendment.
+**Phases 1–3 landed. Phase 4 onward is superseded** by `TDS_Slice_Wall_Calendar_Redesign.md` —
+see the entry below and that slice's §1.2.
 
 | Phase | Contents | Est. | Status |
 |---|---|---|---|
 | **0** | The TDS, the `CLAUDE.md` 2.2 amendment, this entry. Ray's sign-off on the three narrowings. | ~30 min | ✅ Done |
-| **1 — Worker** | Migration 0009 (`devices.scope`) + registry; `withWall`; the six `/api/wall/*` routes; the `/wall` redirect. No app yet. | ~2.5 h | ⬜ |
-| **2** | Shell, `store.js`, admin PIN, first-run wizard, display pairing, Settings. Tiles from the live roster. | ~2 h | ⬜ |
-| **3** | `api.js`, `poll.js`, the three pure cores; the ambient screen becomes real — events, counts, Done Today, staleness, rollover, night dim. | ~2.5 h | ⬜ |
-| **4a** | PIN pad, session/lockout, the PIN-less tile, the per-child chore list. Read-only. | ~1.5 h | ⬜ |
-| **4b** | Completion, earn entries, the retry queue, Undo (both paths), the claim path. | ~2 h | ⬜ |
-| **5** | Tests, then the on-device shakedown. | ~2 h | ⬜ |
+| **1 — Worker** | Migration 0009 (`devices.scope`) + registry; `withWall`; the six `/api/wall/*` routes; the `/wall` redirect. No app yet. | ~2.5 h | ✅ Landed |
+| **2** | Shell, `store.js`, admin PIN, first-run wizard, display pairing, Settings. Tiles from the live roster. | ~2 h | ✅ Landed |
+| **3** | `api.js`, `poll.js`, the three pure cores; the ambient screen becomes real — events, counts, Done Today, staleness, rollover, night dim. | ~2.5 h | ✅ Landed |
+| **4a** | PIN pad, session/lockout, the PIN-less tile, the per-child chore list. Read-only. | ~1.5 h | ❌ Repealed — the redesign drops per-child gating entirely |
+| **4b** | Completion, earn entries, the retry queue, Undo (both paths), the claim path. | ~2 h | ↪ Superseded — redesign Phase 6 |
+| **5** | Tests, then the on-device shakedown. | ~2 h | ↪ Superseded — redesign Phase 9 |
 
 **Three narrowings signed off in-session, 2026-08-13**, each recorded where it is decided in the
 slice: wall writes are online-required with no outbox (§6.4); `child_id` is named in the request on
@@ -107,6 +109,41 @@ children from D1 instead. Slice §17 logs that and the correctness fixes found i
 
 **Deliberately not built** (slice §15): server-side earn idempotency, PINs in D1, streaks from the
 wall, a genuine "everyone" flag on events, per-child theming, a second display.
+
+**`TDS_Slice_Wall_Calendar_Redesign.md`** — the Wall App becomes a shared family calendar: day,
+week and month views behind a sidebar; one column per active child with a frozen time gutter and
+sticky name headers; chores placed on a 15-minute grid, with placements stored in wall-owned tables
+and carried forward to every future day; the four canonical blocks as a collapsed mode; read-only
+school blocks that aggregate a course; and completion that asks *when* it was done. Designed
+2026-08-14, **signed off the same day**; `CLAUDE.md` 2.3 carries its §18 amendment.
+
+| Phase | Contents | Est. | Status |
+|---|---|---|---|
+| **0** | The TDS, the `CLAUDE.md` 2.3 amendment, the Module 06 A2 amendment, this entry. Ray's sign-off on the three narrowings. | ~1 h | ✅ Done |
+| **1a — Worker** | Migration 0010 (`wall_slots`, `wall_slot_days`) + registry; the slots, slots/day and events routes. No app changes. | ~2 h | ⬜ |
+| **1b — Management App** | Chore duration authoring (Module 06 FR-9), the `assignmentFromChore` passthrough, the CSV column. The only phase declaring `management-app/` in scope. | ~1.5 h | ⬜ |
+| **2** | Hamburger, sidebar, view routing, date stepper, land-on-today, centre refresh, the 10-minute cadence, rollover reset. | ~2 h | ⬜ |
+| **3** | The day view read-only: column-per-child grid, sticky headers, now-line, events band, unscheduled tray. Replaces `ambient-ui.js`. | ~2.5 h | ⬜ |
+| **4** | Block mode — collapse/expand into morning/afternoon/evening/night. | ~1.5 h | ⬜ |
+| **5** | Placement writes: drag-and-drop, 15-minute snapping, carry-forward, collision warnings. | ~2.5 h | ⬜ |
+| **5b** | Duration adjust — "just this one" vs "this and future", and the precedence chain. | ~1.5 h | ⬜ |
+| **6** | Completion: the sheet (who by column, when by stepper), earns, Undo both paths, the claim path, done-in-place. | ~2.5 h | ⬜ |
+| **7** | School blocks — course grouping, the read-only block, the completion rollup. | ~1.5 h | ⬜ |
+| **8** | Week and month views; child colours carried across all three. | ~2.5 h | ⬜ |
+| **9** | The look pass, remaining tests, `CACHE_NAME` bump, on-device shakedown. | ~2 h | ⬜ |
+
+**Three narrowings signed off in-session, 2026-08-14:** the wall writes tables of its own (§3.2);
+per-child PIN gating is repealed, so any child can tick any child's chore (§2.3); the wall reads
+activity rows, read-only, for school blocks (§5.1).
+
+**One constraint held rather than bending.** Ray asked for durations adjustable at the wall.
+`expected_duration_min` is parent-owned, and `CLAUDE.md` §0 admits no credential that widens column
+ownership — so the wall writes an override in its own table and a four-step precedence chain
+resolves the two (§3.5.1). The obvious implementation was the forbidden one.
+
+**Deliberately not built** (slice §17): per-day *start-time* overrides; parent-side scheduling;
+configurable block hours; more than four columns; a course-instance id on activity rows; drag-to-
+resize; streaks from the wall.
 
 **`TDS_Slice_Alexa_Voice_Bridge.md`** — spoken schedule queries and, gated, voice completion.
 Drafted 2026-08-13, **not started**, and its Phase 2 remains gated on §6.3's reward-crediting

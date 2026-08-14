@@ -3,6 +3,43 @@
 *Written against Domain Model §2.6 (Chore — primary source, including `daysOfWeek[]`), §2.3 (Difficulty Tier & Reward Category), §2.10 (Generated Packet — recurrence expansion and fixed merge order), §3.5a (Chore as received, Child App side, including `daysOfWeek[]`), §4.2 (Completion CSV — chore rows), Architecture Evaluation §4/§5/§8, Documentation Roadmap §3.*
 
 *Amended 2026-08-13 — see Amendment A1 below. Affected passages are marked *(A1)*.*
+*Amended 2026-08-14 — see Amendment A2 below. Affected passages are marked *(A2)*.*
+
+---
+
+## 0b. Amendment A2 — estimated duration, 2026-08-14
+
+**A Chore may now carry an estimated duration**, the same field an Activity has carried since the
+pacing engine was built. `docs/TDS_Slice_Wall_Calendar_Redesign.md` §3.5 is the design; Ray asked
+for it in-session on 2026-08-14, and the reason is that the Wall App's new calendar draws a chore
+as a block of time and had nothing to size it with.
+
+The architectural cost is close to zero, and that is a fact about the schema rather than a claim:
+
+- `assignments.expected_duration_min` **already exists** (`migrations/0001:46`).
+- `expectedDurationMin` is **already** in the Worker's `ASSIGNMENT_CREATE_FIELDS` and
+  `ASSIGNMENT_PATCH_FIELDS` (`management-app/worker/index.js:67`, `:83`), and the Commit insert
+  already writes it (`:909`).
+- Activities have been filling that column since the revamp (`packet.js:526`). Chores simply never
+  set it.
+
+So this module gains an optional field, `packet.js`'s `assignmentFromChore` gains one line, and
+nothing else in the system changes. No migration, no Worker route, no new store, no schema version
+bump — the same shape A1's claim took, and true for the same reason.
+
+**Blank means blank, not zero.** An absent duration is omitted from the record entirely (§4/FR-9),
+exactly as `notes` and `blockHint` are. Consumers that need a number apply their own fallback; the
+Wall App's is 15 minutes, matching the pacing engine's own (`packet.js:43`).
+
+**The Wall App may override this value but may never write it.** `expected_duration_min` is a
+parent-owned column, and `CLAUDE.md` §0 admits no credential class that widens column ownership.
+The wall stores its overrides in tables it owns. Stated here because this module is where a reader
+would reasonably wonder who else can edit the number it authors: nobody.
+
+What changed in this document: **§2.2** and **FR-8**'s column list grow from nine columns to ten;
+**§2.8** is added; **FR-9** is added to §4; **§5** gains an `expectedDurationMin` row and its
+`Bulk import` row is restated for ten columns; **§8** gains criterion 9 and criterion 7 is restated.
+Nothing else in this module changed.
 
 ---
 
@@ -47,7 +84,7 @@ Lets the parent author and maintain standalone, per-child recurring Chores — h
 
 **2.2 — Bulk CSV import is offered, alongside manual CRUD, and carries the flat fields only.** *(A1 — reverses this section's original "no bulk import" assumption; see §0.)* Chores are authorable one at a time in the form (FR-1) or in bulk from a CSV (FR-8). The two paths are not parallel implementations: the importer produces the same field object the create form produces, hands it to the same validation, and writes it through the same record builder, so every rule in §5 applies identically to both and no Chore can be imported that could not have been typed.
 
-The CSV is **one row per Chore**, nine locked columns, exact-header-match gate, all-or-nothing commit — the same treatment `TDS_Slice_M8_Management_App.md` §1/§4 established for Lessons and Activities. Multi-valued cells (participants, days, occurrence labels) use `|` as their separator, chosen because `,` is the field delimiter and `/` occurs inside a canonical `choreType` (`Kitchen/Dining`, §2.6).
+The CSV is **one row per Chore**, ten locked columns *(A2 — was nine)*, exact-header-match gate, all-or-nothing commit — the same treatment `TDS_Slice_M8_Management_App.md` §1/§4 established for Lessons and Activities. Multi-valued cells (participants, days, occurrence labels) use `|` as their separator, chosen because `,` is the field delimiter and `/` occurs inside a canonical `choreType` (`Kitchen/Dining`, §2.6).
 
 **Two of the Chore's fields are not importable:** `childDays` (§4/FR-1's per-participant day override) and per-occurrence `blockHint`. Both are nested — a map and an object member — and a flat row cannot carry them without inventing a sub-syntax for the two fields a household has the fewest of. They stay in the edit form. A bulk-created Chore gives every participant the same `daysOfWeek`; a parent wanting a split adds it afterwards. See `docs/TDS_Slice_Chore_Bulk_Import.md` §1.
 
@@ -61,6 +98,18 @@ The CSV is **one row per Chore**, nine locked columns, exact-header-match gate, 
 
 - **The enum itself is closed and shared.** `choreType` is one of eleven canonical chore categories — `Pet Care`, `Car Care`, `Kitchen/Dining`, `Bathroom`, `Living/Main Area`, `Playroom`, `Bedroom`, `Parent's Room`, `Porch`, `Floors`, `Miscellaneous` — the *same* set enforced by `packet_schema.json`'s `choreEntry.choreType` and named in Interchange Contract §1b and Domain Model §2.6. It is **not** a free-text label and **not** parent-extensible. A packet carrying any other value fails whole-packet validation on the child device (Child SRS Module 2 §5), so authoring outside this set would produce chores that silently break every export. Do not add a value, rename one, or reintroduce the superseded two-value `housework`/`outside` pair — that set predates the per-area categories and is dead.
 - **A given Chore's classification is freely editable within the enum.** Unlike Activity Type's `capturePattern`/`structurePattern` (immutable once set, Module 3 §2.5/FR-A3), no downstream interpretation depends on a *Chore* keeping the same `choreType` — it is a categorization label, not a behavioral switch. The parent may reclassify a Chore to any other canonical value at any time, with no effect on already-recorded completions.
+
+**2.8 — `expectedDurationMin` is an estimate, not a schedule.** *(A2 — new; see §0b.)* It says how
+long the parent thinks a Chore takes, in whole minutes, and it is used for **display sizing and
+planning only**. It does not constrain when the chore may be completed, does not feed the pacing
+engine (which schedules school work, not chores — Module 5), and is never validated against a
+Chore's `instances` count or against anything else on the record. A Chore with three occurrences a
+day and a 10-minute estimate means each occurrence is estimated at 10 minutes; the field is
+per-occurrence, matching how an Activity's estimate has always been read.
+
+It is deliberately **not** constrained to a multiple of anything. The Wall App draws it on a
+15-minute grid and rounds *up* for rendering, but rounding the authored value to fit a drawing
+would put a number the parent did not type into a column other consumers read.
 
 **2.7 — Every Chore occurrence is required; this module never authors a `required` field.** Domain Model §2.6 and Interchange Contract §1b: `required: true` is stamped by Packet Generation (Management SRS Module 08) on every occurrence it emits, system-set rather than parent-facing. This module's Create/Edit forms (FR-1/FR-2) never expose a requiredness toggle — there is no optional-chore state to author.
 
@@ -87,12 +136,19 @@ The CSV is **one row per Chore**, nine locked columns, exact-header-match gate, 
 
 **FR-8 — Bulk import Chores via CSV.** *(A1 — new; see §0 and `docs/TDS_Slice_Chore_Bulk_Import.md`.)* The parent selects a CSV file and imports it, creating one Chore per data row. A **Download blank template** action sits beside Import and emits the locked header row, which is itself a valid file that writes nothing.
 
-- **Locked columns, in this order:** `children`, `title`, `choreType`, `daysOfWeek`, `allocation`, `difficultyTier`, `instances`, `blockHint`, `notes`. Required non-blank: `children`, `title`, `choreType`, `daysOfWeek`, `difficultyTier`. The header is validated as a whole-file gate before any data row is read — a missing, extra, renamed or reordered column rejects the file with a message naming the nine.
+- **Locked columns, in this order:** `children`, `title`, `choreType`, `daysOfWeek`, `allocation`, `difficultyTier`, `instances`, `blockHint`, `notes`, `expectedDurationMin` *(A2 — appended; the file is now ten columns)*. Required non-blank: `children`, `title`, `choreType`, `daysOfWeek`, `difficultyTier`. The header is validated as a whole-file gate before any data row is read — a missing, extra, renamed or reordered column rejects the file with a message naming the ten. **A CSV saved against the nine-column header is rejected until re-exported from the template action**, which is the accepted cost of the exact-match gate that makes the format unambiguous; the blank-template download is the fix and it is one click.
 - **`children`** names participants by **name**, matched case-insensitively against *active* Children only, or by literal `CHI-…` record id as an escape hatch (the only way to name an archived Child). A name matching no active Child, or matching two or more, is a row failure — an ambiguous name is reported with the ids to disambiguate with, never guessed at.
 - **`difficultyTier`** is the `tierId` (e.g. `D01`), matching both the stored field and the Lesson/Activity CSV's identical rule. **`choreType`** is the canonical value spelled and cased exactly (§2.6); the comparison is exact so a wrong-cased value fails loudly rather than writing a value the child device would later reject.
 - **`instances`** carries occurrence **labels** only, `|`-separated (`Breakfast|Lunch|Dinner`); the ids are minted at write time, never authored, which is what makes §5's uniqueness and no-`-` rules unfailable from this path. Blank means one unlabeled occurrence — the property is omitted entirely, not written as an empty list.
 - **All-or-nothing.** Every per-row check and the §5 validation run before any write. One or more failures ⇒ nothing is written, existing Chores are untouched, and the parent gets a reason for *every* failing row, not just the first, so a spreadsheet is fixed in one pass. On success the summary reports how many Chores were created and across how many Children.
 - **No idempotency is claimed.** Re-importing the same file creates a second full set of Chores — a Chore has no natural key to deduplicate on, and the module has never had one.
+
+**FR-9 — Author an estimated duration.** *(A2 — new; see §0b and §2.8.)* The Create and Edit forms
+offer an optional `expectedDurationMin`: whole minutes, positive, no upper bound enforced beyond
+§5's sanity limit. Left blank, the property is **omitted from the record entirely** — never written
+as `0`, `null`, or an empty string — and downstream consumers apply their own fallback. Editing it
+affects only future recurrence generation, never a due date already delivered, exactly as every
+other Chore field does (§2.5, FR-2).
 
 **FR-7 — One or more participants, one allocation rule.** *Repealed and replaced, `TDS_Slice_Shared_Chores.md` §0.1/§2.2.* A Chore names one or more participating Children (`childIds`) and an `allocation` of `each` or `claim`. "Breakfast Dishes" is one Chore record regardless of how many children do it: `each` gives every participant their own row per occurrence, to complete and earn on independently (optionally on different days per participant, via `childDays`); `claim` gives every participant a linked row, of which the first completion takes the reward and resolves the rest (server-arbitrated; a `claim` Chore cannot also use `childDays`, §4.3 of the TDS slice). A single-participant Chore is simply `childIds` with one entry and `allocation: 'each'` — not a distinct case. This aligns with Family Event, which has always supported multiple `childId`s (Domain Model §2.7); a shared Chore no longer needs duplicate records the way a shared Family Event never did.
 
@@ -109,8 +165,9 @@ The CSV is **one row per Chore**, nine locked columns, exact-header-match gate, 
 | `blockHint` | Optional; if set, one of `morning` \| `afternoon` \| `evening` \| `night`. Any other value is not rejected here but is not honored by the child device — it displays under `morning` (Interchange Contract §1d). |
 | `daysOfWeek[]` | Required; non-empty subset of {Sun, Mon, Tue, Wed, Thu, Fri, Sat}; no duplicates. One day selected behaves as "weekly"; all seven behaves as "daily"; any other combination (e.g., six days, excluding Saturday) is equally valid — there is no separate "daily" code path (§2.1). |
 | `difficultyTier` | Required; must resolve to an existing row in Module 2's table. |
+| `expectedDurationMin` | *(A2)* Optional. When present: an integer, `> 0`, `≤ 1440` (a chore longer than a day is a data-entry error, not a chore). Not constrained to any multiple (§2.8). Blank omits the property rather than writing a falsy value. |
 | Delete | Requires explicit confirmation; irreversible; does not touch already-delivered content or child-side history (§2.5). |
-| Bulk import | *(A1)* Offered (FR-8). Nine locked columns, exact header match as a whole-file gate, `\|` as the list separator in multi-valued cells, all-or-nothing commit. Every row is validated by the rules above — the importer builds the same field object the form does and shares its validation, so this table is the single definition of a valid Chore for both paths. `childDays` and per-occurrence `blockHint` are not importable (§2.2); `instances` ids are minted, never authored. |
+| Bulk import | *(A1; column count restated by A2)* Offered (FR-8). **Ten** locked columns, exact header match as a whole-file gate, `\|` as the list separator in multi-valued cells, all-or-nothing commit. Every row is validated by the rules above — the importer builds the same field object the form does and shares its validation, so this table is the single definition of a valid Chore for both paths. `childDays` and per-occurrence `blockHint` are not importable (§2.2); `instances` ids are minted, never authored. |
 
 ## 6. Permissions
 
@@ -132,5 +189,6 @@ No *additional* per-action PIN. The Management App's `launchPin` (Domain Model �
 4. Deleting a Chore requires an explicit confirmation step and does not alter any Activity Record already produced against it.
 5. Creating a Chore with an empty `daysOfWeek[]` is rejected; creating one with a single day succeeds and behaves as a "weekly" chore.
 6. A Chore can be authored against two or more Children as a single record (§4/FR-7); removing a participant, or deleting the Child, stops future generation for them without touching the record's other participants or anything already delivered.
-7. *(A1 — inverted; was "No UI path in this module offers a bulk/CSV import option".)* The Chores view offers a bulk CSV import with a blank-template download beside it. A file whose header deviates from the nine locked columns in any way is rejected before a single data row is read; a file with one valid and one invalid row writes **nothing**, confirmed by a Chore count before and after.
+7. *(A1 — inverted; was "No UI path in this module offers a bulk/CSV import option". Column count restated by A2.)* The Chores view offers a bulk CSV import with a blank-template download beside it. A file whose header deviates from the **ten** locked columns in any way is rejected before a single data row is read — including a file carrying the previous nine-column header; a file with one valid and one invalid row writes **nothing**, confirmed by a Chore count before and after.
 8. *(A1)* A row naming a Child by a name two active Children share is rejected with both `CHI-…` ids in the message, and the same file with an id substituted imports cleanly; a row naming an archived Child by name is rejected, by id succeeds. No imported Chore ever carries a `childDays` property, and an imported Chore's key set is identical to that of a hand-authored Chore of the same shape.
+9. *(A2)* A Chore created with `expectedDurationMin` blank has **no such property** on its record — verified by key set, not by value — and one created with `25` carries `25`, which reaches `assignments.expected_duration_min` unchanged on the next Commit. A value of `0`, `-5`, `1441`, or `abc` is rejected at entry and, from the CSV path, fails that row without writing any row in the file.
