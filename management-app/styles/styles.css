@@ -3,6 +3,9 @@
   --color-text: #2b2b2b;
   --color-border: #ccc;
   --color-accent: #3a6b58;
+  /* The nav's second row and the open hub tab above it — one step darker than
+     the accent, so the two rows read as one bar with a foreground. */
+  --color-accent-dark: #2e5546;
   --color-error: #a13a3a;
   --color-success: #2f7a3d;
 }
@@ -25,18 +28,66 @@ body {
   color: var(--color-text);
 }
 
+/* Two rows: four hub buttons, and the pages of whichever hub is showing.
+   The second row is always populated — it defaults to the hub owning the
+   current page — so the bar's height does not jump as you navigate. */
 #app-nav {
+  background: var(--color-accent);
+}
+
+.nav-hubs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  padding: 0.5rem 1rem 0;
+}
+
+/* Reset the app's default button skin (a filled accent pill): in here the
+   accent IS the background, so a hub reads as a tab instead. The base rule's
+   min-height (~44px touch target) and nowrap are kept — "Assign & Review"
+   must not break across two lines. */
+.nav-hub {
+  background: transparent;
+  border-radius: 4px 4px 0 0;
+  padding: 0.5rem 0.75rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+/* Open — this hub's pages are the ones in the row below. */
+.nav-hub.is-open {
+  background: var(--color-accent-dark);
+}
+
+/* Active — the current page lives in this hub. Distinct from open, because
+   clicking another hub browses it without navigating: the marker says where
+   you are while the fill says what you are looking at. */
+.nav-hub.is-active::before {
+  content: "● ";
+  font-size: 0.7em;
+  vertical-align: 0.15em;
+}
+
+.nav-sub {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem 1rem;
-  padding: 0.75rem 1rem;
-  background: var(--color-accent);
+  padding: 0.6rem 1rem;
+  background: var(--color-accent-dark);
 }
 
 #app-nav a {
   color: #fff;
   text-decoration: none;
   font-weight: 600;
+}
+
+/* Scoped through #app-nav, not just `.nav-sub a.is-current`: the rule above
+   is an ID selector, which outranks any number of classes and would keep the
+   underline off. */
+#app-nav .nav-sub a.is-current {
+  text-decoration: underline;
+  text-underline-offset: 0.25em;
 }
 
 #app-root {
