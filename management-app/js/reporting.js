@@ -424,9 +424,10 @@ const Reporting = (() => {
     section.innerHTML = `<h3>Detail (${rows.length} ${rows.length === 1 ? 'row' : 'rows'})</h3>`;
     section.appendChild(table(
       'report-detail',
-      ['Date', 'Kind', 'Title', 'Course', 'Status', 'Done', 'Grade', 'Note', 'Moved to'],
+      ['Date', 'Kind', 'Title', 'Activity Type', 'Course', 'Status', 'Done', 'Grade', 'Note', 'Moved to'],
       rows.map((row) => [
         escapeHtml(row.date), escapeHtml(row.kind), escapeHtml(row.title),
+        escapeHtml(row.activity_type || ''),
         escapeHtml(row.course_name || ''), statusCell(row),
         escapeHtml(formatTimestamp(row.completed_at)),
         row.grade == null ? '' : escapeHtml(row.grade),
