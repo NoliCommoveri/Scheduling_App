@@ -991,7 +991,8 @@ const Packet = (() => {
 
       shown.forEach((a) => {
         const row = document.createElement('div');
-        row.innerHTML = `<span>${escapeHtml(a.title)} <code>${escapeHtml(a.id)}</code></span> `;
+        const typeLabel = session.maps.typeLabel.get(a.activityType) || a.activityType;
+        row.innerHTML = `<span>${escapeHtml(typeLabel)} &middot; ${escapeHtml(a.title)} <code>${escapeHtml(a.id)}</code></span> `;
         const btn = document.createElement('button');
         btn.textContent = 'Pull forward →';
         btn.addEventListener('click', () => {
@@ -1062,7 +1063,8 @@ const Packet = (() => {
   function activityRow(root, date, it) {
     const li = document.createElement('li');
     li.className = it.committed ? 'item-activity is-committed' : 'item-activity';
-    li.innerHTML = `<span>📘 ${escapeHtml(it.record.title)} <code>${escapeHtml(it.id)}</code> <em>${it.origin}${it.blockHint ? ' · ' + it.blockHint : ''}</em>${committedTag(it)}</span> `;
+    const typeLabel = session.maps.typeLabel.get(it.record.activityType) || it.record.activityType;
+    li.innerHTML = `<span>📘 ${escapeHtml(typeLabel)} &middot; ${escapeHtml(it.record.title)} <code>${escapeHtml(it.id)}</code> <em>${it.origin}${it.blockHint ? ' · ' + it.blockHint : ''}</em>${committedTag(it)}</span> `;
     if (it.committed) return li;
     li.appendChild(makeBtn('Relocate', () => {
       const to = window.prompt('Relocate to date (YYYY-MM-DD):', date);

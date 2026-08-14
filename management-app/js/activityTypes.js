@@ -83,13 +83,23 @@ const ActivityTypes = (() => {
 
     types.forEach((type) => {
       const item = document.createElement('li');
+      // Same .list-row/.row-text/.row-actions split as Chores (chores.js) —
+      // stacks text above actions under the 26rem mobile breakpoint instead
+      // of letting Rename/Delete wrap in among the label and pattern spans.
+      item.className = 'list-row';
       item.innerHTML = `
-        <span class="activity-type-label">${escapeHtml(type.label)}</span>
-        <span class="activity-type-key">${escapeHtml(type.activityTypeKey)}</span>
-        <span class="activity-type-patterns">${type.capturePattern} / ${type.structurePattern}</span>
-        <button data-action="rename">Rename</button>
-        <button data-action="delete">Delete</button>
-        <span class="activity-type-error" hidden></span>
+        <div class="row-text">
+          <span class="row-title activity-type-label">${escapeHtml(type.label)}</span>
+          <span class="row-meta row-meta-inline">
+            <span class="activity-type-key">${escapeHtml(type.activityTypeKey)}</span>
+            <span class="activity-type-patterns">${type.capturePattern} / ${type.structurePattern}</span>
+          </span>
+        </div>
+        <div class="row-actions">
+          <button data-action="rename">Rename</button>
+          <button data-action="delete">Delete</button>
+        </div>
+        <span class="row-error activity-type-error" hidden></span>
       `;
 
       item.querySelector('[data-action="rename"]').addEventListener('click', async () => {
