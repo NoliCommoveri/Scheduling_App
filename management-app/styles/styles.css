@@ -673,19 +673,17 @@ button.secondary {
 }
 
 /* ---- Pacing Configuration (Module 05) ---- */
-.pacing-list {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-/* <details>/<summary> — same convention as .course-subject-group; the
+/* One card, on the Assigned Course page for the Course it paces — .pacing-list
+   went with the standalone Pacing page whose column it wrapped, so the margin
+   here does what that column's gap used to.
+   <details>/<summary> — same convention as .course-subject-group; the
    browser owns open/closed state, so it defaults closed by omitting the
    `open` attribute. */
 .pacing-card {
   border: 1px solid var(--color-border);
   border-radius: 6px;
   padding: 1rem;
+  margin: 1rem 0;
   background: #fff;
 }
 

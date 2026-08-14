@@ -4,6 +4,12 @@
  * daysFor() per participating Child. No store, no writes, nothing this file
  * is the sole anything of.
  *
+ * NO LONGER A ROUTE (2026-08-14). This was a top-level nav item whose first
+ * act was to refuse to render until you picked a child from a dropdown — it
+ * was a child page wearing a nav link. It now renders inside the Children
+ * detail page, where the child is already chosen, so the selector is gone
+ * along with the link. Entry point is renderInto(container, childId).
+ *
  * Deliberately days-of-week, not dates: a Pacing Profile says "this Course
  * runs on these weekdays," not which specific Activity lands on which
  * calendar date — that placement is Propose's job (packet.js), driven by the
@@ -26,12 +32,12 @@ const Weekly = (() => {
   };
   const NO_SUBJECT = 'No subject'; // same fallback courses.js's subject grouping uses
 
-  let filterChildId = '';
   // Open/closed state for the day buckets and the subject/type buckets
   // nested inside them — kept outside the DOM, same convention as openTypes
-  // (chores.js) and openCards (pacing.js), so it survives the render() a
-  // child-filter change triggers. Nested keys are `${day}::${subject|type}`
-  // since the same subject/type can appear under more than one day.
+  // (chores.js) and openCards (pacing.js), so it survives the re-render an
+  // edit elsewhere on the Child page triggers. Nested keys are
+  // `${day}::${subject|type}` since the same subject/type can appear under
+  // more than one day.
   const openDays = new Set();
   const openSubjectGroups = new Set();
   const openChoreTypeGroups = new Set();
@@ -161,40 +167,17 @@ const Weekly = (() => {
     return wrap;
   }
 
-  async function render(root) {
-    root.innerHTML = '';
-    const children = Children.activeOnly(await Storage.getAll('children'));
-
-    const heading = document.createElement('h1');
-    heading.textContent = 'Weekly Overview';
-    root.appendChild(heading);
-
+  // Appends this child's week to `container`. Appends rather than replaces:
+  // the caller owns the page and has already put a heading above this.
+  async function renderInto(container, childId) {
     const intro = document.createElement('p');
     intro.textContent =
-      'What a normal week looks like for one child, from Pacing Profiles and active Chores — ' +
-      'not any particular week\'s generated plan. Courses group by subject, Chores by type, ' +
-      'the same as their own pages.';
-    root.appendChild(intro);
+      'What a normal week looks like, from Pacing and active Chores — not any particular ' +
+      'week\'s generated plan. Courses group by subject, Chores by type, the same as their ' +
+      'own pages.';
+    container.appendChild(intro);
 
-    const filterForm = document.createElement('form');
-    const options = ['<option value="">(select a child)</option>']
-      .concat(children.map((c) => `<option value="${c.id}" ${c.id === filterChildId ? 'selected' : ''}>${escapeHtml(c.name)}</option>`))
-      .join('');
-    filterForm.innerHTML = `<label>Child<select name="childId">${options}</select></label>`;
-    filterForm.childId.addEventListener('change', () => {
-      filterChildId = filterForm.childId.value;
-      render(root);
-    });
-    root.appendChild(filterForm);
-
-    if (!filterChildId) {
-      const hint = document.createElement('p');
-      hint.textContent = 'Select a child to see their week.';
-      root.appendChild(hint);
-      return;
-    }
-
-    const week = await buildWeek(filterChildId);
+    const week = await buildWeek(childId);
 
     const groupsEl = document.createElement('div');
     groupsEl.className = 'weekday-groups';
@@ -224,8 +207,8 @@ const Weekly = (() => {
       }
       groupsEl.appendChild(details);
     }
-    root.appendChild(groupsEl);
+    container.appendChild(groupsEl);
   }
 
-  return { render };
+  return { renderInto };
 })();

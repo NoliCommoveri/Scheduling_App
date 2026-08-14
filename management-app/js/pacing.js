@@ -10,11 +10,10 @@ const Pacing = (() => {
   const BLOCKS = ['morning', 'afternoon', 'evening', 'night']; // Interchange Contract §1d
   const MODES = ['activityCount', 'minutesBudget'];
 
-  let filterChildId = '';
-  // Which per-course pacing cards are expanded — kept outside the DOM (like
-  // filterChildId) so it survives the full re-render every filter change and
-  // form submit triggers. Closed by default (§UX: one full pacing form per
-  // course, all open, was a scroll per child).
+  // Which per-course pacing cards are expanded — kept outside the DOM so it
+  // survives the full re-render a form submit triggers. Keyed by instance id
+  // even though only one card is on screen at a time now: the state is what
+  // makes "I opened Pacing, saved, and it stayed open" true.
   const openCards = new Set();
 
   function escapeHtml(str) {
@@ -163,62 +162,26 @@ const Pacing = (() => {
 
   // ---- Rendering ----
 
-  async function listInstances(childId) {
-    const courses = childId
-      ? await Storage.getAllByIndex('courses', 'by_childId', childId)
-      : await Storage.getAll('courses');
-    return courses.filter((c) => c.state === 'instance');
+  // Appends this Course's pacing card to `container`, and calls `onSaved`
+  // after a successful save so the caller can re-render its own page (the
+  // summary line carries progress counts that a save can move).
+  //
+  // There is no Pacing page any more. A Pacing Profile is 1:1 with a Course
+  // Instance and keyed by its id, so the standalone page was a list of every
+  // instance with a child filter bolted on — a second, worse index of the
+  // Assigned Courses page. The form now sits on the course it paces.
+  async function renderInto(container, instance, onSaved) {
+    container.appendChild(await buildInstanceCard(instance, onSaved));
   }
 
-  async function render(root) {
-    root.innerHTML = '';
-    const [children, instances] = await Promise.all([
-      Storage.getAll('children'),
-      listInstances(filterChildId),
-    ]);
-
-    const heading = document.createElement('h1');
-    heading.textContent = 'Pacing Configuration';
-    root.appendChild(heading);
-
-    const filterForm = document.createElement('form');
-    const filterOptions = ['<option value="">(all children)</option>']
-      .concat(
-        children.map(
-          (c) => `<option value="${c.id}" ${c.id === filterChildId ? 'selected' : ''}>${escapeHtml(c.name)}</option>`
-        )
-      )
-      .join('');
-    filterForm.innerHTML = `<label>Filter by child<select name="filterChildId">${filterOptions}</select></label>`;
-    filterForm.filterChildId.addEventListener('change', () => {
-      filterChildId = filterForm.filterChildId.value;
-      render(root);
-    });
-    root.appendChild(filterForm);
-
-    if (instances.length === 0) {
-      const empty = document.createElement('p');
-      empty.textContent = 'No Courses assigned yet. Assign one to a Child from Assigned Courses first.';
-      root.appendChild(empty);
-      return;
-    }
-
-    const list = document.createElement('div');
-    list.className = 'pacing-list';
-    for (const inst of instances) {
-      list.appendChild(await buildInstanceCard(root, inst, children));
-    }
-    root.appendChild(list);
-  }
-
-  async function buildInstanceCard(root, instance, children) {
+  async function buildInstanceCard(instance, onSaved) {
     const [profile, progress] = await Promise.all([getProfile(instance.id), progressFor(instance.id)]);
-    const child = children.find((c) => c.id === instance.childId);
 
-    // Collapsed <details> bucket per course, same convention as
-    // .course-subject-group in courses.js. Open/closed state lives in
-    // openCards, not on the element, so it survives the render() a filter
-    // change or a form submit does.
+    // Collapsed <details> bucket, same convention as .course-subject-group in
+    // courses.js. Open/closed state lives in openCards, not on the element,
+    // so it survives the re-render a form submit does. Closed by default: one
+    // full pacing form open on every visit was a scroll past to reach the
+    // Lessons beneath it.
     const card = document.createElement('details');
     card.className = 'pacing-card';
     card.open = openCards.has(instance.id);
@@ -228,15 +191,15 @@ const Pacing = (() => {
     });
 
     // FR-8 progress (read-only) folded into the summary line — "n of N sent" —
-    // so the whole roster's status reads at a glance without opening every
-    // course.
+    // so the course's status reads without opening the form. The course and
+    // child names are not repeated here: the page this card sits on is that
+    // course's own, and both are already in its header.
     const summary = document.createElement('summary');
     summary.textContent =
-      `${instance.name} — ${child ? child.name : '(unknown child)'} · ` +
-      `${progress.sent} of ${progress.total} Activities sent` +
+      `Pacing — ${progress.sent} of ${progress.total} Activities sent` +
       ` · ${progress.pending} pending` +
       (progress.excluded ? ` · ${progress.excluded} excluded` : '') +
-      (profile ? '' : ' · no Pacing Profile yet');
+      (profile ? '' : ' · no Pacing set yet');
     card.appendChild(summary);
 
     const form = document.createElement('form');
@@ -323,7 +286,7 @@ const Pacing = (() => {
       errorEl.hidden = true;
       okEl.hidden = false;
       okEl.textContent = 'Saved.';
-      render(root);
+      if (onSaved) onSaved();
     });
 
     card.appendChild(form);
@@ -338,7 +301,7 @@ const Pacing = (() => {
   }
 
   return {
-    render,
+    renderInto,
     saveProfile,
     getProfile,
     ensureDefaultProfile,

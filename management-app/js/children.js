@@ -306,6 +306,15 @@ const Children = (() => {
     openCourses.textContent = instances.length ? 'Open assigned Courses' : 'Assign a Course';
     openCourses.addEventListener('click', () => Instances.openForChild(child.id));
     root.appendChild(openCourses);
+
+    // The week-shape rollup used to be a top-level nav item whose first act
+    // was to make you pick a child. Here the child is already picked, so it
+    // renders straight out — this is the page that was always being asked
+    // for. Read-only; weekly.js writes nothing.
+    const weekHeading = document.createElement('h2');
+    weekHeading.textContent = 'Weekly Overview';
+    root.appendChild(weekHeading);
+    await Weekly.renderInto(root, child.id);
   }
 
   return {

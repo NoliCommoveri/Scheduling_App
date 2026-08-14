@@ -715,6 +715,12 @@ const Instances = (() => {
     root.appendChild(editForm);
     void frozen;
 
+    // Pacing sits on the course it paces rather than on a page of its own —
+    // a Profile is 1:1 with a Course Instance and keyed by its id, so a
+    // standalone Pacing page could only ever be a second index of this one.
+    // pacing.js still owns every write to `pacingProfiles`.
+    await Pacing.renderInto(root, instance, () => render(root));
+
     const lessonHeading = document.createElement('h2');
     lessonHeading.textContent = 'Lessons';
     root.appendChild(lessonHeading);
