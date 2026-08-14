@@ -4,8 +4,9 @@
 
 **Status:** in build. **§18 signed off by Ray, 2026-08-14 — Phase 0 complete.** Phase 1a
 (`wall_slots`/`wall_slot_days` migration + Worker routes), Phase 1b (§3.5's chore duration in
-the Management App), Phase 2 (shell & nav), and Phase 3 (day view, read-only) are complete;
-Phase 4 (block mode) is clear to start. Revised 2026-08-14 after a design review; see §20.
+the Management App), Phase 2 (shell & nav), Phase 3 (day view, read-only), and Phase 4 (block
+mode) are complete; Phase 5 (placement writes) is clear to start. Revised 2026-08-14 after a
+design review; see §20.
 **Date:** 2026-08-14.
 **Depends on:** `TDS_Slice_Online_Revamp.md` (controlling design), `TDS_Slice_Wall_Display_App.md`
 (the app this rewrites), `TDS_Slice_Shared_Chores.md` (claim arbitration).
@@ -1410,8 +1411,8 @@ No phase exceeds the `CLAUDE.md` §V.A 2–3 hour ceiling. Each ends with a §VI
 | **1a — Worker** | Migration 0010 (`wall_slots`, `wall_slot_days`) + registry; `GET/PUT/DELETE /api/wall/slots`; `PUT/DELETE /api/wall/slots/day`; `GET /api/wall/events`; the §12 sentinel `childId` rule; **§8.3.1's `completedAt` on the claim route** and its server-side not-in-the-future bound; tests §14.8a, §14.11, §14.11a, §14.15. No app changes. | ~2.5 h |
 | **1b — Management App** | §3.5's chore duration: the authoring field, `validateFields`, `buildRecord`, the `assignmentFromChore` passthrough, the CSV column, and the Module 06 A2 amendment. **Declares `management-app/` in scope** — the only phase that does. | ~1.5 h |
 | **2 — Shell & nav** | Hamburger, sidebar, view routing, date stepper, land-on-today, centre refresh, 10-minute cadence, interaction-triggered polls, rollover reset. Ambient board still rendering underneath. | ~2 h |
-| **3 — Day view, read-only** | Column-per-child grid over 06:00–23:00 with early/late strips, sticky headers and gutter, now-line and scroll-to-now, events band, 15-minute rows, unscheduled tray, and the §11.3 time formatter with its Settings control. `chores-core.js` generalization, `slots-core.js` lookup. Replaces `ambient-ui.js`. | ~2.5 h |
-| **4 — Block mode** | Collapse/expand into the four blocks, block hours, unplaced-chore placement by `block_hint`. | ~1.5 h |
+| **3 — Day view, read-only** | Column-per-child grid over 06:00–23:00 with early/late strips, sticky headers and gutter, now-line and scroll-to-now, events band, 15-minute rows, unscheduled tray, and the §11.3 time formatter with its Settings control. `chores-core.js` generalization, `slots-core.js` lookup. Replaces `ambient-ui.js`. ✅ Landed. | ~2.5 h |
+| **4 — Block mode** | Collapse/expand into the four blocks, block hours, unplaced-chore placement by `block_hint`. ✅ Landed. | ~1.5 h |
 | **5 — Placement writes** | Drag-and-drop and tap-to-place, 15-minute snapping, the slots API, carry-forward, collision warnings (§9 — at the drag, against that day's rows), and §3.1.2's split: per-child placements for `each`, the single child-less row for `claim`. | ~2.5 h |
 | **5b — Duration adjust** | §3.5.2's fork: the adjust control, "just this one" vs "this and future", "use the assigned time", the overridden-chip marker, and the precedence chain in `slots-core.js`. | ~1.5 h |
 | **6 — Completion** | The completion sheet (who by column, when by stepper), the earn entry, `pendingEarns`, Undo both paths, the claim path and "got there first" — **sending the sheet's time on both paths**, which Phase 1a made possible — and done-in-place styling. | ~2.5 h |
