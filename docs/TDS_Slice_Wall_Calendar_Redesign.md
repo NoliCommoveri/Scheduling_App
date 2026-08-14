@@ -222,12 +222,29 @@ CREATE TABLE IF NOT EXISTS wall_slots (
   subject_key   TEXT    NOT NULL,          -- chore: source_id; school: course_name
   instance_key  TEXT    NOT NULL DEFAULT '',
   start_min     INTEGER NOT NULL,          -- minutes from local midnight, % 15 == 0
-  duration_min  INTEGER NOT NULL DEFAULT 15,
+  duration_min  INTEGER,                   -- NULL = use the assignment's own estimate (§3.5)
   updated_at    INTEGER NOT NULL,
   updated_by    TEXT    NOT NULL,          -- 'wall:<deviceId>'
   PRIMARY KEY (child_id, subject_kind, subject_key, instance_key)
 );
+
+-- The per-day override: "just this instance" (§3.5.2). Same key as wall_slots
+-- plus a date, so one precedence chain covers chores and school blocks alike.
+CREATE TABLE IF NOT EXISTS wall_slot_days (
+  child_id      TEXT    NOT NULL,
+  subject_kind  TEXT    NOT NULL,
+  subject_key   TEXT    NOT NULL,
+  instance_key  TEXT    NOT NULL DEFAULT '',
+  date          TEXT    NOT NULL,          -- YYYY-MM-DD
+  duration_min  INTEGER,                   -- NULL row is meaningless; delete instead
+  updated_at    INTEGER NOT NULL,
+  updated_by    TEXT    NOT NULL,
+  PRIMARY KEY (child_id, subject_kind, subject_key, instance_key, date)
+);
 ```
+
+`wall_slots` answers **when** and, optionally, **for how long**. `wall_slot_days` answers "…except
+on this one day." Neither ever touches an `assignments` column — §3.5 is where that matters.
 
 `instance_key` is `NOT NULL DEFAULT ''` for exactly the reason `migrations/0006` gives at length:
 `NULL = NULL` is never true in SQLite, so a nullable component of a natural key silently disables
@@ -276,7 +293,113 @@ tray, since that is precisely the information a block hint carries. `child_block
 override where present, mirroring `planner-core.js:55` — the wall reads it and, as ever, never
 writes it.
 
-### 3.5 Placement writes are online-required
+### 3.5 Duration: the column already exists, and chores should be able to set it
+
+```
+[DECISION] Duration lives on the assignment row, not on the placement
+Decided: a chip's height comes from `assignments.expected_duration_min`, and
+  Chore Authoring (Management Module 06) gains an `expectedDurationMin` field
+  so a chore can carry one. `wall_slots` stores no duration.
+Rationale: Ray, 2026-08-14 — "we have an estimated activity time field we use
+  for pacing; why not just write that into a column on the d1 assignment table
+  and let me set it for Chores too?" This is a better answer than this slice's
+  first draft, which had a `duration_min` on the placement, and the reason is
+  that duration is a property of the WORK, not of the arrangement: "empty the
+  dishwasher takes ten minutes" is true wherever it sits on the grid, and would
+  otherwise have to be re-stated per placement and re-entered if it moved.
+Cost, counted: essentially nothing.
+  - The column EXISTS. `expected_duration_min INTEGER` on `assignments`
+    (`migrations/0001:46`).
+  - The API already accepts it. `expectedDurationMin` is in BOTH
+    ASSIGNMENT_CREATE_FIELDS (`index.js:67`) and ASSIGNMENT_PATCH_FIELDS
+    (`index.js:83`), and the Commit insert already writes it (`index.js:909`).
+  - So there is NO migration and NO Worker work. Activities have been filling
+    this column since the revamp (`packet.js:526`); chores simply never set it.
+  What remains is two small Management App changes: the authoring field, and
+  one line in `assignmentFromChore` mirroring the activity path.
+Fallback: 15 minutes where the column is NULL, which is the pacing engine's own
+  fallback for the same field (`packet.js:43`, DEFAULT_MINUTES).
+Rendering: the grid is 15-minute rows, so a chip is ceil(duration / 15) rows
+  tall. The stored value is NOT rounded — a 20-minute activity keeps 20 and
+  simply occupies two rows. Rounding the truth to fit the drawing would put a
+  wrong number into a column the pacing engine reads.
+Consequence: this slice now touches `management-app/` as well as `wall-app/`
+  and needs SRS Module 06 amended (§18.3). That is a scope declaration, not a
+  violation — CLAUDE.md §I.A forbids shared runtime CODE, not coordinated
+  change, and no file is shared.
+Locked for: this slice.
+```
+
+#### 3.5.1 The wall may adjust a duration — but not by writing that column
+
+Ray, 2026-08-14: *"do let them adjust the minutes on already assigned stuff though. I'll of course
+update next push, but I dont want to accidentally commit half an hour on two weeks of chores and
+hog two blocks if it ends up taking ten minutes."*
+
+That is the right requirement and it runs straight into the one rule that has no exceptions:
+**`expected_duration_min` is a parent-owned column** (`migrations/0001:46`, in the parent-owned
+block; writable only through `ASSIGNMENT_CREATE_FIELDS` / `ASSIGNMENT_PATCH_FIELDS`, both of which
+are parent routes). `CLAUDE.md` §0 states it plainly — *"No credential class widens this"* — and
+this slice does not propose to be the first.
+
+So the wall does not write the estimate. It writes an **override it owns**, and the renderer
+resolves the two. The parent's authored number stays exactly what the parent authored, which is
+also what makes Ray's "I'll update next push" work: the next Commit rewrites the assignment's
+estimate and the override is still visibly sitting on top of it, ready to be cleared.
+
+**The precedence chain**, resolved per chip per rendered date, in `slots-core.js`:
+
+| # | Source | Meaning |
+|---|---|---|
+| 1 | `wall_slot_days.duration_min` for this subject **and this date** | "just this instance" |
+| 2 | `wall_slots.duration_min` | the standing wall override — "future occurrences" |
+| 3 | `assignments.expected_duration_min` | what the parent authored (§3.5) |
+| 4 | 15 minutes | `packet.js:43`'s own fallback |
+
+#### 3.5.2 The fork: this instance, or from now on
+
+Adjusting a duration opens a two-button choice, exactly as Ray asked: **Just this one** →
+`wall_slot_days`; **This and future** → `wall_slots.duration_min`. A third, quieter action appears
+whenever an override is in force: **Use the assigned time (30 min)**, which deletes the override and
+returns the chip to row 3 of the chain.
+
+- **An overridden chip is marked**, subtly — the duration reads in italic with a small dot. A wall
+  that silently disagrees with the assignment about how long something takes is worse than one that
+  says so, and this is the affordance that makes "I'll update next push" end in a cleanup rather
+  than in two numbers quietly diverging forever.
+- **"This and future" is date-less**, like every other placement (§3.3), so it also applies to *past*
+  days that carry no per-day override. Same revisionism, same defence: what actually happened is
+  recorded in `completed_at` and rendered on the chip.
+- **Both overrides are wall-scoped.** The Child App and the Management App never read `wall_slots`
+  and are unaffected; pacing continues to use the parent's estimate, untouched. The wall's opinion
+  about how long the bins take does not leak into next term's schedule.
+- Adjusting is available on chore chips **and** school blocks (§5.4), because "hogging two blocks"
+  is exactly as annoying when the thing hogging them is a course.
+- Duration overrides snap to 15-minute multiples, matching the grid. The parent's estimate does not
+  (§3.5) — a 20-minute activity keeps 20 and occupies two rows.
+
+This also makes §17.1's deferred per-day *start* override nearly free: `wall_slot_days` is already
+keyed by date, and it would be one nullable `start_min` column and one more button. Deliberately not
+built now — Ray asked for duration, and a per-day time override is a different feature wearing the
+same table.
+
+The Management App work, in full:
+
+| Change | File | Size |
+|---|---|---|
+| `expectedDurationMin` on the chore form, in `validateFields` (positive integer, or absent) and `buildRecord` | `management-app/js/chores.js` | small |
+| Pass it through to the assignment row, mirroring `packet.js:526` | `management-app/js/packet.js` | one line |
+| The bulk-import CSV column — see below | `management-app/js/chores-csv-core.js` | small |
+| FR + validation row for the new field | `docs/SRS_Management_Module_06_Chore_Authoring.md` | doc |
+
+**The CSV column is a real if minor decision.** `CSV_COLUMNS` is validated by exact length and exact
+order (`chores-csv-core.js:78-79`), so adding a column means any previously saved import file is
+rejected until re-exported from the app's own template button (`:272`). Recommended anyway: a
+duration is a flat scalar, which is exactly what a CSV represents well — unlike `childDays` and
+per-occurrence `blockHint`, which Module 06's Amendment A1 keeps out of the CSV precisely because
+they are *maps*. That rationale does not extend to this field.
+
+### 3.6 Placement writes are online-required
 
 Consistent with wall slice §6.4: a placement write is synchronous. A failure leaves the chip where
 it was, shows a brief message, and the drag can be repeated. There is no outbox on this device and
@@ -324,10 +447,11 @@ kitchen should be showing today when someone walks past it, not wherever the las
 ### 4.3 The grid
 
 - **15-minute rows.** The smallest placeable and displayable unit, per Ray's "up to 15 min
-  increments". A chip's height is its `duration_min`.
-- **Default duration is 15 minutes** for a chore with no `expected_duration_min`, matching the
-  pacing engine's own fallback (`packet.js:43`, `DEFAULT_MINUTES = 15`). Where the column carries a
-  duration it is used.
+  increments".
+- **A chip's height is `ceil(duration / 15)` rows**, where `duration` is §3.5.1's four-step
+  precedence chain — per-day override, then standing wall override, then the assignment's own
+  `expected_duration_min`, then 15 minutes. Today no chore carries an estimate at all, so every
+  chore chip is one row until §3.5's authoring field ships.
 - **The now-line** is a single horizontal rule across all columns at the current time, and the grid
   **scrolls to it on load** so the tablet opens on the part of the day that is actually happening.
   Ray, 2026-08-14. It moves on a one-minute tick — one `transform`, the only looping motion in the
@@ -424,14 +548,32 @@ set is not an achievement.
 This is computed in `school-core.js` (§13), pure, from rows already in hand. It costs no new fetch:
 the plan window already returns activity rows and the wall has simply been discarding them.
 
+### 5.4 How tall a school block is
+
+Row 3 of §3.5.1's chain reads differently for a block than for a chore: a block has no single
+assignment, so its natural duration is the **sum of that day's non-rescinded activity durations**
+for that course, each falling back to 15 minutes. A five-activity course with no estimates is
+therefore 75 minutes tall, which is a defensible first guess and exactly the kind of thing Ray will
+want to correct — so rows 1 and 2 of the chain (the per-day and standing overrides) apply to school
+blocks unchanged, keyed by `subject_kind = 'school'`.
+
+A block whose activities are all complete keeps its height. Nothing resizes on completion, for the
+same reason nothing moves (§8.4).
+
 ---
 
 ## 6. Week view
 
-Seven day-columns, Monday-first, with the same sticky-header treatment — the day names freeze at the
+Seven day-columns, **Sunday-first**, with the same sticky-header treatment — the day names freeze at the
 top. The kid-per-column trick is unavailable here (columns are days), so **attribution moves to
 colour plus name**: each child gets a stable colour assigned by roster order, carried identically
 across day, week and month, and each chip carries the child's name.
+
+Sunday-first is a household fact, not a locale default: **Saturday is the family's Sabbath** and
+will usually be empty (Ray, 2026-08-14). Running Monday-first would put that reliably-blank column
+second-to-last and strand Sunday alone past it; Sunday-first keeps the busy days contiguous and
+lets the quiet one close the week. The month grid (§7) uses the same column order, for the same
+reason and so the two views' weeks line up.
 
 Week view is **read-only**. Placement is a day-view gesture: a 15-minute grid across seven columns
 at 960px is ~130px a column, which is not a drop target anyone can hit reliably at arm's length.
@@ -726,9 +868,11 @@ by 20 seconds of inactivity — a menu left open on a wall display is a broken w
 
 | Route | Method | Body / query | Notes |
 |---|---|---|---|
-| `/api/wall/slots` | GET | — | Every placement, household-wide. Small: one row per chore per child. |
-| `/api/wall/slots` | PUT | `{ childId, subjectKind, subjectKey, instanceKey?, startMin, durationMin }` | Upsert. Validates `childId` against `children WHERE active = 1`; `startMin % 15 === 0`, `0 ≤ startMin < 1440`; `durationMin` a positive multiple of 15, `startMin + durationMin ≤ 1440`. |
-| `/api/wall/slots` | DELETE | `{ childId, subjectKind, subjectKey, instanceKey? }` | Un-place; the chore returns to the tray. |
+| `/api/wall/slots` | GET | `?from=&to=` | Every placement, household-wide, plus any `wall_slot_days` overrides inside the window. Small: one row per chore per child, and overrides are rare. |
+| `/api/wall/slots` | PUT | `{ childId, subjectKind, subjectKey, instanceKey?, startMin?, durationMin? }` | Upsert of the standing placement. Validates `childId` against `children WHERE active = 1`; `startMin % 15 === 0` and `0 ≤ startMin < 1440`; `durationMin` a positive multiple of 15 with `startMin + durationMin ≤ 1440`, or `null` to clear the standing override. |
+| `/api/wall/slots` | DELETE | `{ childId, subjectKind, subjectKey, instanceKey? }` | Un-place; the chore returns to the tray. Also deletes that subject's `wall_slot_days` rows — an override of a placement that no longer exists is unreachable garbage. |
+| `/api/wall/slots/day` | PUT | `{ childId, subjectKind, subjectKey, instanceKey?, date, durationMin }` | §3.5.2's "just this one". Same validation, plus a well-formed `date`. |
+| `/api/wall/slots/day` | DELETE | `{ childId, subjectKind, subjectKey, instanceKey?, date }` | Clears the per-day override; the chip falls back down the chain. |
 | `/api/wall/events` | GET | `?from=&to=` | §7.2. Household-scoped, deduped, 62-day cap. |
 
 Existing wall routes are unchanged. `withWall` gates all four; a `scope='child'` token is 401 on
@@ -791,25 +935,34 @@ App or the Management App**, mirroring included.
 2. **Placement lookup (§3.1)** — a chore matches on `source_id` + `instance_key`; three instances of
    one chore hold three distinct placements; an unmatched chore reports as unplaced.
 3. **Carry-forward (§3.3)** — one placement answers for every future date the chore recurs on.
-4. **Collisions (§9)** — two private chores for one child overlapping warns; the same pair for two
+4. **The duration precedence chain (§3.5.1)** — a per-day override beats a standing override beats
+   `expected_duration_min` beats 15 minutes; clearing the per-day override falls back exactly one
+   step, not all the way; a school block with no overrides sums its activities' durations (§5.4),
+   and a block with no activities that day has no height rather than a zero one.
+5. **Collisions (§9)** — two private chores for one child overlapping warns; the same pair for two
    different children does not; a shared chore overlapping a private one does not; partial overlap
-   (4:00+30min vs 4:15) is detected where a slot-equality test would miss it.
-5. **School rollup (§5.3)** — complete only when every non-rescinded activity for that course and
+   (4:00+30min vs 4:15) is detected where a slot-equality test would miss it. The overlap is
+   computed from the resolved duration, so an override that shortens a chip can *clear* a warning.
+6. **School rollup (§5.3)** — complete only when every non-rescinded activity for that course and
    date is complete; waived counts as resolved; **no activities that day renders empty, not
    complete**; rows for another course or another child do not contribute.
-6. **Events dedupe (§7)** — unchanged behaviour, re-asserted against the new month window: three
+7. **Events dedupe (§7)** — unchanged behaviour, re-asserted against the new month window: three
    children's rows for one event on one day collapse to one; a multi-day event yields one entry per
    day with the right span label.
-7. **Completion time (§8.3)** — the sheet's time lands in `completed_at` and in the earn's
+8. **Completion time (§8.3)** — the sheet's time lands in `completed_at` and in the earn's
    `earned_at`; a future time is refused; a backdated one is accepted.
-8. **Done-in-place (§8.4)** — a completed row keeps its placement position in the rendered model and
+9. **Done-in-place (§8.4)** — a completed row keeps its placement position in the rendered model and
    is not filtered out of it.
-9. Earn shape and the `pendingEarns` three-answer classification — unchanged from wall slice §12.10
-   and §12.11, re-run.
-10. **Routes** — a `scope='child'` token is 401 on `/api/wall/slots` and `/api/wall/events`; a
-    `PUT /api/wall/slots` with an archived or unknown `childId` writes nothing; a `startMin` that is
-    not a multiple of 15, is negative, or overruns midnight is rejected; `/api/wall/events` refuses a
-    window over 62 days.
+10. Earn shape and the `pendingEarns` three-answer classification — unchanged from wall slice §12.10
+    and §12.11, re-run.
+11. **Routes** — a `scope='child'` token is 401 on `/api/wall/slots`, `/api/wall/slots/day` and
+    `/api/wall/events`; a `PUT` to either slots route with an archived or unknown `childId` writes
+    nothing; a `startMin` or `durationMin` that is not a multiple of 15, is negative, or overruns
+    midnight is rejected; `DELETE /api/wall/slots` also clears that subject's `wall_slot_days` rows;
+    `/api/wall/events` refuses a window over 62 days.
+12. **Ownership, asserted directly** — no wall route writes `expected_duration_min`, and a
+    `durationMin` sent to `/api/wall/completions` is a per-row `rejected` like any other unknown
+    key. §3.5.1 is the reason this test exists rather than being assumed.
 
 ---
 
@@ -819,8 +972,10 @@ App or the Management App**, mirroring included.
   needs reversing, the PINs are still there, and an unread key costs nothing.
 - `sw.js`'s `CACHE_NAME` must be bumped in the phase that changes the shell, or tablets serve the
   old app indefinitely. Settings' **Reload app** button is the manual escape hatch (no CLI).
-- Migration `0010_wall_slots.sql` is registered in `management-app/worker/migrations.js` **in the
-  same commit** and applied from Settings → Database in the browser.
+- Migration `0010_wall_slots.sql` creates **both** tables — `wall_slots` and `wall_slot_days` — in
+  one file, because they are one logical change (`CLAUDE.md` §III.D) and an override table without
+  the table it overrides is meaningless. Registered in `management-app/worker/migrations.js` **in
+  the same commit** and applied from Settings → Database in the browser.
 
 ---
 
@@ -830,12 +985,14 @@ No phase exceeds the `CLAUDE.md` §V.A 2–3 hour ceiling. Each ends with a §VI
 
 | Phase | Contents | Est. |
 |---|---|---|
-| **0** | This TDS; the `CLAUDE.md` v2.3 amendment (§18); the Roadmap entry. **Ray's sign-off on §18 before Phase 1.** | done on approval |
-| **1 — Worker** | Migration 0010 + registry; `GET/PUT/DELETE /api/wall/slots`; `GET /api/wall/events`; tests §14.10. No app changes. | ~2 h |
+| **0** | This TDS; the `CLAUDE.md` v2.3 amendment (§18); the Module 06 and Roadmap entries. ✅ Signed off 2026-08-14. | done |
+| **1a — Worker** | Migration 0010 (`wall_slots`, `wall_slot_days`) + registry; `GET/PUT/DELETE /api/wall/slots`; `PUT/DELETE /api/wall/slots/day`; `GET /api/wall/events`; tests §14.11–12. No app changes. | ~2 h |
+| **1b — Management App** | §3.5's chore duration: the authoring field, `validateFields`, `buildRecord`, the `assignmentFromChore` passthrough, the CSV column, and the Module 06 A2 amendment. **Declares `management-app/` in scope** — the only phase that does. | ~1.5 h |
 | **2 — Shell & nav** | Hamburger, sidebar, view routing, date stepper, land-on-today, centre refresh, 10-minute cadence, interaction-triggered polls, rollover reset. Ambient board still rendering underneath. | ~2 h |
 | **3 — Day view, read-only** | Column-per-child grid, sticky headers and gutter, now-line and scroll-to-now, events band, 15-minute rows, unscheduled tray. `chores-core.js` generalization, `slots-core.js` lookup. Replaces `ambient-ui.js`. | ~2.5 h |
 | **4 — Block mode** | Collapse/expand into the four blocks, block hours, unplaced-chore placement by `block_hint`. | ~1.5 h |
 | **5 — Placement writes** | Drag-and-drop and tap-to-place, 15-minute snapping, the slots API, carry-forward, collision warnings. | ~2.5 h |
+| **5b — Duration adjust** | §3.5.2's fork: the adjust control, "just this one" vs "this and future", "use the assigned time", the overridden-chip marker, and the precedence chain in `slots-core.js`. | ~1.5 h |
 | **6 — Completion** | The completion sheet (who by column, when by stepper), the earn entry, `pendingEarns`, Undo both paths, the claim path and "got there first", done-in-place styling. | ~2.5 h |
 | **7 — School blocks** | `school-core.js`, course grouping, the read-only block, the rollup. | ~1.5 h |
 | **8 — Week & month** | Seven-day columns; the month grid on `/api/wall/events`; child colours carried across all three views. | ~2.5 h |
@@ -849,9 +1006,11 @@ live with it before building placement.
 
 ## 17. Deferred — decided not to build, with reasons
 
-**17.1 Per-day placement overrides.** §3.3 makes a placement standing. A one-day override needs a
-date-keyed second table, a "this day or every day?" prompt on every drag, and a precedence rule when
-the standing time later moves. Revisit if Ray finds himself fighting the carry-forward.
+**17.1 Per-day *start-time* overrides.** §3.3 makes a placement's time standing. Per-day *duration*
+overrides are built (§3.5.2) and their table is already keyed by date, so this is now one nullable
+`start_min` column on `wall_slot_days` and one more button — but it is a different feature wearing
+the same table, and Ray asked for duration. Revisit if he finds himself fighting the carry-forward
+on times as well.
 
 **17.2 Parent-side scheduling.** Ray chose wall-only (§0.2). If the Management App ever wants to
 place chores, `wall_slots` is the table to promote — it is already keyed by things the Management
@@ -876,17 +1035,23 @@ default); any reporting surface; streaks from the wall (wall slice §15.3, uncha
 
 ## 18. Amendments required before Phase 1
 
-**These need Ray's sign-off. Phase 1 does not start until they are signed.**
+**✅ Signed off by Ray in-session, 2026-08-14 — all three narrowings of §18.2, individually.
+Phase 0 is complete and Phase 1 is clear to start.** What follows is the record of what was
+changed and why.
 
 ### 18.1 `CLAUDE.md` → v2.3
 
 1. **§I.A** — the Wall Display App's scope line currently reads *"writes completions, their earn
-   entries, and shared-chore claims. Nothing else."* It must gain **its own placement table
-   (`wall_slots`)** — and, in the same breath, restate that this widens nothing on `assignments`:
-   the wall's writes there remain exactly `ASSIGNMENT_COMPLETION_FIELDS`. The read side gains
-   activities, read-only, for school blocks (§5.1).
-2. **§I.A** — the same table's Data Flow cell gains `GET/PUT/DELETE /api/wall/slots` and
-   `GET /api/wall/events`.
+   entries, and shared-chore claims. Nothing else."* It must gain **its own placement tables
+   (`wall_slots`, `wall_slot_days`)** — and, in the same breath, restate that this widens nothing on
+   `assignments`: the wall's writes there remain exactly `ASSIGNMENT_COMPLETION_FIELDS`. The read
+   side gains activities, read-only, for school blocks (§5.1).
+2. **§I.A** — the same table's Data Flow cell gains `GET/PUT/DELETE /api/wall/slots`,
+   `PUT/DELETE /api/wall/slots/day` and `GET /api/wall/events`.
+2a. **§0** — the "Column-level ownership" row gains a sentence naming the case that tested it and
+   held: the wall adjusts a duration by writing an override in a table it owns, **not** by writing
+   the parent-owned `expected_duration_min` (§3.5.1). The rule bent nothing; the feature was built
+   around it.
 3. **§III.E** — no change to the four bounds, but a sentence recording that `/api/wall/events` is
    household-scoped and names no child, like `/api/wall/children`, so the bounds that govern
    acting-for-a-named-child do not apply to it.
@@ -896,53 +1061,92 @@ default); any reporting surface; streaks from the wall (wall slice §15.3, uncha
 5. **§IV.B** — a row: *Wall App placement write added → writes only `wall_slots`; no `assignments`
    column touched outside `ASSIGNMENT_COMPLETION_FIELDS`.*
 
-### 18.2 The three narrowings needing individual sign-off
+### 18.2 The three narrowings, each signed off individually
 
-Each is a departure from something previously locked. Each is listed with the alternative that was
-considered and rejected, so the sign-off is a choice rather than a rubber stamp.
+Each is a departure from something previously locked. Each was put to Ray with the alternative that
+was considered and rejected, so the sign-off was a choice rather than a rubber stamp.
 
-1. **The wall writes a table of its own (§3.2)** — narrows `CLAUDE.md` §I.A's "nothing else."
-   *Alternative offered: keep placements in `localStorage`, costing no amendment but losing weeks of
-   arrangement to any browser data clear.*
-2. **Per-child PIN gating is repealed (§0.4, §2.3)** — repeals wall slice §0.3/§0.4/§4. *Alternative:
-   keep the gate and answer "who" with it, at the cost of the shared board Ray asked for. The real
-   consequence — any child can tick any child's chore — is stated in §2.3 rather than buried.*
-3. **The wall reads activity rows (§5.1)** — repeals the read half of wall slice §5.1. *Alternative:
-   school blocks that show only a course name and no progress, which is a label rather than a block.
-   The write half is untouched and absolute.*
+1. ✅ **The wall writes a table of its own (§3.2)** — narrows `CLAUDE.md` §I.A's "nothing else."
+   *Alternative offered and declined: keep placements in `localStorage`, costing no amendment but
+   losing weeks of arrangement to any browser data clear.*
+2. ✅ **Per-child PIN gating is repealed (§0.4, §2.3)** — repeals wall slice §0.3/§0.4/§4.
+   *Alternative offered and declined: keep the gate and answer "who" with it, at the cost of the
+   shared board Ray asked for. The real consequence — any child can tick any child's chore — is
+   stated in §2.3 rather than buried.*
+3. ✅ **The wall reads activity rows (§5.1)** — repeals the read half of wall slice §5.1.
+   *Alternative offered and declined: school blocks that show only a course name and no progress,
+   which is a label rather than a block. The write half is untouched and absolute.*
 
-### 18.3 `docs/TDS_Slice_Wall_Display_App.md`
+### 18.3 `docs/SRS_Management_Module_06_Chore_Authoring.md`
+
+Gains `expectedDurationMin` as an optional authored field (§3.5): an FR in §4, a row in §5's
+validation table (optional; positive integer minutes; blank means the 15-minute default), and a
+line in §2 recording that a chore may now carry an estimated duration for the same reason an
+activity does. Amendment A2, in the style A1 already established in that document.
+
+This is the one place where the slice's scope reaches outside `wall-app/` and the Worker.
+`CLAUDE.md` §I.A forbids shared runtime *code*, not coordinated change, and no file is shared —
+but the session that builds it must declare `management-app/` in scope (§16, Phase 1b).
+
+### 18.4 `docs/TDS_Slice_Wall_Display_App.md`
 
 Gains a header note pointing at this document as its successor, and §1.2's table as the map of what
 in it still applies. It is **not** deleted — most of its architecture survives, and its reasoning is
 the reason this slice could be short.
 
-### 18.4 `docs/Roadmap_Schedule_App.md` §0
+### 18.5 `docs/Roadmap_Schedule_App.md` §0
 
 A slice entry with §16's phase table.
 
-### 18.5 No SRS module
+### 18.6 No SRS module for the wall itself
 
 Same call wall slice §16.4 made, for the same reason: §3–§11 specify this surface more precisely
-than an SRS module would. If the wall grows past a calendar, it earns one then.
+than an SRS module would. If the wall grows past a calendar, it earns one then. §18.3's Module 06
+amendment is a Management App change and is unaffected by this.
 
 ---
 
 ## 19. Open questions for Ray
 
-Not blockers for sign-off — each has a stated default that Phase 3 or later will implement unless
-Ray says otherwise.
+Not blockers — each has a stated default that Phase 3 or later implements unless Ray says
+otherwise. Two of the original four were answered on 2026-08-14 and have moved into the sections
+that own them: **week start** is Sunday-first (§6), and **chip duration** comes from
+`expected_duration_min` with a new Chore Authoring field behind it (§3.5).
 
-1. **Week view start day.** Default: Monday-first.
-2. **Chip duration.** Default: `expected_duration_min` where present, else 15 minutes
-   (`packet.js:43`). Chores rarely carry one, so most chips will be a single 15-minute row. If
-   Ray wants chores to occupy a *visible* block of time, the alternative is a per-placement
-   `duration_min` set at drop time — the column already exists in §3.2's schema.
-3. **Day-view scroll range.** Default: the full 24 hours, scrolled to now. The alternative is to
+1. **Day-view scroll range.** Default: the full 24 hours, scrolled to now. The alternative is to
    render only 06:00–22:00 and put anything outside it in an "early/late" strip.
-4. **Colour assignment.** Default: by roster order (alphabetical by name, which is what
+2. **Colour assignment.** Default: by roster order (alphabetical by name, which is what
    `/api/wall/children` returns). This means adding a child can re-colour the others. The
    alternative is a colour picked per child in Settings and stored locally.
+
+---
+
+## 20. Revision log
+
+### 2026-08-14 — sign-off, and two decisions taken during it
+
+**Signed off by Ray, in-session:** all three narrowings of §18.2 — the wall writing a table of its
+own, the repeal of per-child PIN gating, and the read of activity rows for school blocks. Phase 0
+closes with this revision; Phase 1 is clear to start.
+
+**Three things changed in the same conversation, all improvements on the draft:**
+
+| Draft said | Ray said | Now |
+|---|---|---|
+| `wall_slots.duration_min`, a per-placement duration, as the only duration | *"we have an estimated activity time field we use for pacing; why not just write that into a column on the d1 assignment table and let me set it for Chores too?"* | §3.5. The column already exists and both Worker allowlists already carry it, so the authored estimate is a Management App change and nothing else. |
+| — | *"do let them adjust the minutes on already assigned stuff though… and if they adjust, ask just this instance or future assigned occurances"* | §3.5.1/§3.5.2. The wall gets an override it owns, a four-step precedence chain, and the two-button fork. `wall_slots.duration_min` returns as an *override*, and `wall_slot_days` is added for the per-instance case. |
+| Week view Monday-first (§19.1's default) | *"do Sunday first though. Saturday is our Sabbath and will likely always be blank so I dont want Sunday orphaned by its lonesome"* | §6, and the month grid follows it. |
+
+The duration split is the better design for a reason worth keeping: **the estimate belongs to the
+work, the override belongs to the wall.** The draft had one number on the placement, which would
+have made "empty the dishwasher takes ten minutes" a fact re-entered every time the chore moved.
+
+**One constraint did not move, and is worth recording as a constraint that held rather than one
+that was worked around.** `expected_duration_min` is parent-owned (`migrations/0001:46`), and
+`CLAUDE.md` §0 admits no credential class that widens column ownership. The obvious implementation
+of Ray's request — let the wall PATCH the estimate — is exactly the thing that rule forbids, and the
+override table is what the requirement looks like once it is built inside the rule instead of
+through it. §14.12 asserts it in a test rather than trusting the review.
 
 ---
 
