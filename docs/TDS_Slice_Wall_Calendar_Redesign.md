@@ -54,7 +54,12 @@ blocks in the sections that own them rather than re-argued.
    large centre refresh. The midnight rollover stays on its own timer and is not a poll. §10.
 
 10. **Motion is spent only on interaction.** Transform and opacity only, 150–300ms, nothing loops —
-    with one exception, the now-line, which moves once a minute. §11.
+    with one exception, the now-line, which moves once a minute. §11.2.
+
+11. **The wall makes two sounds.** A chime when a placed chore's start time arrives and it is still
+    pending, and a confirmation tone when one is ticked. Synthesized rather than shipped as files,
+    costing no request at all, silenced during night-dim hours, and switchable off per child —
+    subject to the browser autoplay rule §11.5.1 is honest about. §11.5.
 
 ---
 
@@ -452,8 +457,17 @@ kitchen should be showing today when someone walks past it, not wherever the las
   precedence chain — per-day override, then standing wall override, then the assignment's own
   `expected_duration_min`, then 15 minutes. Today no chore carries an estimate at all, so every
   chore chip is one row until §3.5's authoring field ships.
+- **The grid runs 06:00 to 23:00**, not a full 24 hours. Ray, 2026-08-14: 23:00 is one child's
+  bedtime, so the range ends at a household boundary rather than at midnight. That is 68
+  fifteen-minute rows, which is a comfortable scroll rather than the 96 a full day would need, and
+  it spends no vertical space on hours that will never hold anything.
+- **Anything placed outside the range gets an early/late strip**, one at the top and one at the
+  bottom, each collapsed to a single line listing what is out there (`Before 6:00 · 1`). It is not
+  hidden and not silently clamped: a chore placed at 05:30 is a real placement, and a grid that
+  swallowed it would be lying. Tapping a strip expands it in place.
 - **The now-line** is a single horizontal rule across all columns at the current time, and the grid
   **scrolls to it on load** so the tablet opens on the part of the day that is actually happening.
+  Outside 06:00–23:00 it pins to the nearest edge rather than vanishing.
   Ray, 2026-08-14. It moves on a one-minute tick — one `transform`, the only looping motion in the
   app (§11.2).
 - **Vertical scrolling only.** No horizontal scroll anywhere, per wall slice §10.2.
@@ -816,7 +830,7 @@ leave the last render up with no modal (wall slice §5.4).
 
 ---
 
-## 11. Look and motion
+## 11. Look, motion, and sound
 
 ### 11.1 Where the personality goes
 
@@ -856,7 +870,152 @@ Forbidden: animated gradients, pulsing glows, particles, animated `box-shadow`
 Locked for: this slice.
 ```
 
-### 11.3 Navigation
+### 11.3 Time format — 24-hour or 12-hour, household choice
+
+```
+[DECISION] A time-format setting, defaulting to 24-hour
+Decided: `wall.settings.timeFormat` ∈ { '24h', '12h' }, defaulting to '24h',
+  set in Settings behind the admin PIN. It governs EVERY time the wall renders
+  itself: the time gutter, the clock, chip labels, completion times, the
+  completion sheet's stepper, and the early/late strips.
+Rationale: Ray, 2026-08-14 — "we usually do military time in our house but just
+  in case." Defaulting to the house's own convention and keeping the other one
+  a tap away costs one formatter and one radio pair.
+Shape: one `formatTime(minutes | ms, fmt)` helper, used everywhere. No
+  component formats a time itself — that is how a setting like this rots into
+  a screen that is half converted.
+Locked for: this slice.
+```
+
+**One thing the setting cannot reach, and the UI should not pretend otherwise.** An event's time is
+`payload.time`, a **freeform, unvalidated display string** — SRS Module 07 §2.7 fixes it that way
+deliberately, and `events-core.js:44-46` already notes it cannot even be sorted chronologically. An
+event authored as `3:00 PM` renders as `3:00 PM` in 24-hour mode, because the wall has a string, not
+a time. It is displayed verbatim rather than parsed-and-guessed: a regex that turned `3:00 PM` into
+`15:00` would also turn `3:00 PM-ish, ask Grandma` into something wrong.
+
+Making event times real is a Module 07 schema and authoring change, deferred (§17.7). Until then
+the wall's own times obey the setting and events show what the parent typed.
+
+### 11.4 Child colours — picked in Settings
+
+```
+[DECISION] Colour is chosen per child, not derived from roster order
+Decided: each child's colour is picked in Settings behind the admin PIN, from a
+  fixed palette of eight swatches, and stored in `localStorage` as
+  `wall.childPrefs` keyed by `child_id` — the same record that carries their
+  §11.5 sound toggle. Until someone picks one, a child gets a palette colour by
+  roster order, so a newly-added child is never colourless.
+Rationale: Ray, 2026-08-14, choosing this over roster-order assignment. Derived
+  colour has a real flaw: the roster is ordered by name, so adding a child —
+  or renaming one — re-colours everybody, and the colour is the thing the eye
+  uses to find a kid in week and month view. A colour people have learned
+  should not move because someone else joined.
+Why a fixed palette and not a free picker: this is read from two metres, under
+  a night overlay, by people at a glance. Eight swatches chosen for contrast
+  and separation guarantee that; an arbitrary hex does not, and the failure
+  mode is a wall nobody can read rather than an ugly one.
+Why localStorage and not D1, when placements went to D1 (§3.2): the same test,
+  answered the other way. Placements are weeks of accumulated arrangement and
+  losing them is painful; picking two or three colours takes twenty seconds.
+  That is the PIN's argument (wall slice §0.3) and it applies unchanged.
+Consequence: colours are per-tablet. A second display would need them picked
+  again — twenty seconds, once, and §17.2's promotion path exists if that ever
+  stops being true.
+Locked for: this slice.
+```
+
+Two swatches assigned to two children warns but is permitted — the wall says the colours clash
+rather than refusing the pick, which is the same posture §9 takes with overlaps. A child's
+preferences survive archive and un-archive, exactly as their PIN row used to, because nothing
+deletes a `wall.childPrefs` entry except an explicit reset.
+
+### 11.5 Sound
+
+```
+[DECISION] Two sounds, synthesized, bounded by quiet hours and a per-child toggle
+Decided: the wall makes exactly two sounds — a chime when a placed chore's
+  START TIME arrives and it is still pending, and a short confirmation tone
+  when a chore is ticked. Both synthesized with WebAudio; no audio files.
+  Silenced during the §10 night-dim window, and switchable off per child.
+Rationale: Ray, 2026-08-14. The start-time chime is the sound placement makes
+  possible — before this slice nothing in the schema knew when anything was
+  meant to begin, so there was no moment to announce.
+Declined, and recorded so they are not re-proposed as oversights: a lead-in
+  warning ("5 minutes before"), an overdue nag, a one-chime-per-minute
+  coalescing cap, and a never-repeat rule.
+Consequence of declining the cap: three chores placed at 16:00 across two
+  children produce three chimes in sequence, ~600ms apart. This is stated
+  rather than quietly capped, because Ray chose it; §17.8 keeps the coalescing
+  option on the shelf as a one-setting change if the room disagrees.
+Consequence of declining never-repeat: none, and this is worth knowing. Without
+  the overdue trigger, "the start time arrives" is a single instant per chore
+  per day, so a chore cannot chime twice anyway. The rule would have been
+  machinery guarding a case the trigger set makes impossible.
+Locked for: this slice.
+```
+
+**Cost: nil.** The chime is a `setTimeout` over rows already in memory. No request, no D1 read, no
+D1 write, no effect on §10's arithmetic. Sound is the one feature in this slice that is genuinely
+free.
+
+**Synthesis, not assets.** An `OscillatorNode` through a `GainNode` with a short attack-decay
+envelope — two distinct tones, one rising (start), one brief and higher (confirmation). No files to
+precache, nothing for the service worker to version, and no CDN, which §10.2's network-only-for-API
+rule would forbid anyway. Volume rides the tablet's hardware volume; a web page cannot set system
+volume and should not pretend to.
+
+#### 11.5.1 The autoplay problem, stated as a constraint to verify
+
+**Browsers refuse to play audio in a page the user has never touched.** This is not a bug to code
+around; it is a deliberate platform rule, and it lands hardest on exactly this device:
+
+> The tablet reboots at 03:00, the kiosk browser reloads the wall, nobody touches it, and at 07:00
+> the first chore's chime does not play. Nothing is broken, nothing logs an error, and the reminder
+> feature is silently absent until a human taps the glass.
+
+So the design:
+
+- The `AudioContext` is created lazily and **resumed on the first user gesture** of each page load.
+- Until that happens, a small, permanent **"tap to enable sound"** indicator sits in the top bar.
+  It is the only honest option: a wall that is quiet for a reason nobody can see is worse than one
+  that is quiet and says so.
+- A **Test sound** button in Settings, which doubles as the unlock gesture.
+- After any tap anywhere, sound works for the rest of that page load.
+
+**This is a constraint to confirm on the actual Fire tablet (§16, Phase 9), not verified fact.**
+Silk's exact autoplay behaviour, and whether a kiosk browser's own settings can pre-authorize
+audio, are things this document cannot check from here — the same honesty §10.1 of the wall slice
+applied to Show Mode.
+
+#### 11.5.2 Bounds
+
+- **Quiet hours** reuse `dimStartHour` / `dimEndHour` (defaults 21:00–06:00) rather than inventing a
+  second window. One concept, two effects: the screen dims and the wall goes quiet together.
+- **Per-child toggle**, stored alongside that child's colour (§11.4), so one child's column can be
+  silent while the other's is not.
+- The **confirmation tone ignores both bounds**. It fires on a tap, which means someone is standing
+  there, it cannot hit the autoplay problem, and a silent tick at 21:30 reads as a failed tick.
+
+#### 11.5.3 What this hands the Alexa slice
+
+Ray intends Alexa devices around the house to give the same reminders verbally
+(`TDS_Slice_Alexa_Voice_Bridge.md`, not started). Two things here make that easier, and neither is
+speculative work done in advance:
+
+- **Placements are the "when" that slice never had.** It could answer *what are my chores*; it
+  could not say *it is time to do them*, because no column knew when anything started. `wall_slots`
+  is that column, it is server-side, and a voice route can read it without the wall's involvement.
+- **The cost is small and countable.** A Worker cron scanning for chores due to start would be ~96
+  invocations a day against a 100,000 free-tier allowance, with a query riding
+  `idx_assign_child_date` over tens of rows — call it ~5,000 row reads a day against five million.
+  Cloudflare is not the binding constraint. Amazon's is: a skill, proactive-event permissions, and
+  endpoint configuration outside Ray's dashboard.
+
+Explicitly **not built here**: the wall does not talk to Alexa, does not push anything anywhere, and
+does not assume that slice exists. It makes a noise in a kitchen.
+
+### 11.6 Navigation
 
 A hamburger at top-left opens a sidebar over the content: **Day · Week · Month**, a date stepper, a
 Today button, and Settings behind the admin PIN. It is dismissed by choosing, by tapping outside, or
@@ -907,6 +1066,8 @@ wall-app/
     ├── chores-core.js     PURE — the on-day rule, generalized past "today"
     ├── slots-core.js      PURE — placement lookup, carry-forward, collisions
     ├── school-core.js     PURE — course grouping and the completion rollup
+    ├── remind-core.js     PURE — which chores are due to chime, and when (§11.5)
+    ├── sound.js           WebAudio: the two tones, the unlock gesture, quiet hours
     ├── day-ui.js          the grid, columns, blocks, now-line, tray, drag
     ├── week-ui.js         seven-day columns
     ├── month-ui.js        month grid of events
@@ -960,7 +1121,19 @@ App or the Management App**, mirroring included.
     nothing; a `startMin` or `durationMin` that is not a multiple of 15, is negative, or overruns
     midnight is rejected; `DELETE /api/wall/slots` also clears that subject's `wall_slot_days` rows;
     `/api/wall/events` refuses a window over 62 days.
-12. **Ownership, asserted directly** — no wall route writes `expected_duration_min`, and a
+12. **Time formatting (§11.3)** — `formatTime` renders 09:05 and 21:05 correctly in both modes,
+    including the two that catch naive implementations: midnight (`00:00` / `12:00 am`) and noon
+    (`12:00` / `12:00 pm`). An event's freeform `payload.time` passes through **unmodified** in both
+    modes.
+13. **Grid range (§4.3)** — a placement at 05:30 or 23:30 lands in the early/late strip rather than
+    being clamped into the visible range or dropped; the now-line pins to an edge outside
+    06:00–23:00.
+14. **Reminders (§11.5)** — `remind-core.js` is pure and testable without a speaker: a pending
+    chore at its placed start time is due; the same chore already complete is not; a chore with no
+    placement never is; a child whose `soundOn` is false contributes none; nothing is due inside
+    the quiet-hours window; and a chore whose start time passed while the page was loading is
+    **not** retro-fired on boot — a chime for 08:00 arriving at 08:47 is worse than no chime.
+15. **Ownership, asserted directly** — no wall route writes `expected_duration_min`, and a
     `durationMin` sent to `/api/wall/completions` is a per-row `rejected` like any other unknown
     key. §3.5.1 is the reason this test exists rather than being assumed.
 
@@ -968,6 +1141,13 @@ App or the Management App**, mirroring included.
 
 ## 15. Migration and rollout notes
 
+- `wall.settings` gains **`timeFormat`** (§11.3), defaulting to `'24h'`. `store.js`'s
+  `DEFAULT_SETTINGS` merge already handles a key absent from an existing tablet's stored object, so
+  no migration of `localStorage` is needed — an installed wall picks up the default on first read.
+- A new `localStorage` key, **`wall.childPrefs`** (§11.4, §11.5): `[{ childId, swatch, soundOn }]`,
+  following `wall.pins`' shape and its survives-archive rule. Absent entries fall back to roster
+  order for colour and to sound-on, so the key being empty is a valid steady state rather than a
+  first-run task.
 - `wall.pins` in `localStorage` becomes dead. It is **left in place, not deleted** — if §0.4 ever
   needs reversing, the PINs are still there, and an unread key costs nothing.
 - `sw.js`'s `CACHE_NAME` must be bumped in the phase that changes the shell, or tablets serve the
@@ -989,13 +1169,14 @@ No phase exceeds the `CLAUDE.md` §V.A 2–3 hour ceiling. Each ends with a §VI
 | **1a — Worker** | Migration 0010 (`wall_slots`, `wall_slot_days`) + registry; `GET/PUT/DELETE /api/wall/slots`; `PUT/DELETE /api/wall/slots/day`; `GET /api/wall/events`; tests §14.11–12. No app changes. | ~2 h |
 | **1b — Management App** | §3.5's chore duration: the authoring field, `validateFields`, `buildRecord`, the `assignmentFromChore` passthrough, the CSV column, and the Module 06 A2 amendment. **Declares `management-app/` in scope** — the only phase that does. | ~1.5 h |
 | **2 — Shell & nav** | Hamburger, sidebar, view routing, date stepper, land-on-today, centre refresh, 10-minute cadence, interaction-triggered polls, rollover reset. Ambient board still rendering underneath. | ~2 h |
-| **3 — Day view, read-only** | Column-per-child grid, sticky headers and gutter, now-line and scroll-to-now, events band, 15-minute rows, unscheduled tray. `chores-core.js` generalization, `slots-core.js` lookup. Replaces `ambient-ui.js`. | ~2.5 h |
+| **3 — Day view, read-only** | Column-per-child grid over 06:00–23:00 with early/late strips, sticky headers and gutter, now-line and scroll-to-now, events band, 15-minute rows, unscheduled tray, and the §11.3 time formatter with its Settings control. `chores-core.js` generalization, `slots-core.js` lookup. Replaces `ambient-ui.js`. | ~2.5 h |
 | **4 — Block mode** | Collapse/expand into the four blocks, block hours, unplaced-chore placement by `block_hint`. | ~1.5 h |
 | **5 — Placement writes** | Drag-and-drop and tap-to-place, 15-minute snapping, the slots API, carry-forward, collision warnings. | ~2.5 h |
 | **5b — Duration adjust** | §3.5.2's fork: the adjust control, "just this one" vs "this and future", "use the assigned time", the overridden-chip marker, and the precedence chain in `slots-core.js`. | ~1.5 h |
 | **6 — Completion** | The completion sheet (who by column, when by stepper), the earn entry, `pendingEarns`, Undo both paths, the claim path and "got there first", done-in-place styling. | ~2.5 h |
+| **6b — Sound** | `remind-core.js` and `sound.js`: the two synthesized tones, the start-time chime, the audio unlock and its indicator, quiet hours, the per-child toggle, and Settings' Test sound. | ~1.5 h |
 | **7 — School blocks** | `school-core.js`, course grouping, the read-only block, the rollup. | ~1.5 h |
-| **8 — Week & month** | Seven-day columns; the month grid on `/api/wall/events`; child colours carried across all three views. | ~2.5 h |
+| **8 — Week & month** | Sunday-first seven-day columns; the month grid on `/api/wall/events`; the §11.4 colour picker in Settings, with colours carried across all three views. | ~2.5 h |
 | **9 — Polish & shakedown** | The §11 look pass, remaining tests, `CACHE_NAME` bump, and the on-device shakedown (wall slice §10.3). | ~2 h |
 
 Phases 3, 6 and 8 are each independently deployable and individually useful. The app is a working
@@ -1027,7 +1208,23 @@ slice §10.2 forbids — or a different arrangement entirely.
 (§5.2). It is a Management App change (`packet.js`) for a wall feature, so it waits for a second
 reason to exist.
 
-**17.6 Also not built.** Placement of events or activities; recurring-event authoring; a second wall
+**17.6 Structured event times.** `payload.time` is freeform display text (Module 07 §2.7), so it
+cannot be sorted chronologically, cannot be placed on the grid, and cannot obey §11.3's time-format
+setting. Fixing it means giving Family Event a real time field in Module 07 — an SRS change, an
+authoring change, and a decision about what to do with the strings already authored. Worth doing if
+events ever want to sit *in* the grid rather than in the band above it.
+
+**17.7 Reminder shapes Ray declined (§11.5).** A lead-in warning some minutes before a start time;
+an overdue nag; a one-chime-per-minute coalescing cap; a never-repeat rule. Each was offered and
+not chosen. The first three are a setting and a few lines on top of `remind-core.js` if the room
+proves noisier or quieter than expected; the fourth is unnecessary while "start time arrives" is
+the only reminder trigger, since that instant happens once.
+
+**17.8 Anything that pushes sound off this tablet.** The wall does not talk to Alexa, a speaker, a
+phone, or a notification service. §11.5.3 records what this slice hands the voice bridge; building
+that is `TDS_Slice_Alexa_Voice_Bridge.md`'s job.
+
+**17.9 Also not built.** Placement of events or activities; recurring-event authoring; a second wall
 tablet; drag-to-resize a chip's duration (duration comes from the assignment or the 15-minute
 default); any reporting surface; streaks from the wall (wall slice §15.3, unchanged).
 
@@ -1106,18 +1303,20 @@ amendment is a Management App change and is unaffected by this.
 
 ---
 
-## 19. Open questions for Ray
+## 19. Open questions — all closed
 
-Not blockers — each has a stated default that Phase 3 or later implements unless Ray says
-otherwise. Two of the original four were answered on 2026-08-14 and have moved into the sections
-that own them: **week start** is Sunday-first (§6), and **chip duration** comes from
-`expected_duration_min` with a new Chore Authoring field behind it (§3.5).
+**All four are answered.** They are recorded here as a pointer to the sections that now own them,
+rather than deleted, so a reader of an early draft can find where each landed:
 
-1. **Day-view scroll range.** Default: the full 24 hours, scrolled to now. The alternative is to
-   render only 06:00–22:00 and put anything outside it in an "early/late" strip.
-2. **Colour assignment.** Default: by roster order (alphabetical by name, which is what
-   `/api/wall/children` returns). This means adding a child can re-colour the others. The
-   alternative is a colour picked per child in Settings and stored locally.
+1. **Week start** — Sunday-first, so the Sabbath closes the week. §6.
+2. **Chip duration** — `expected_duration_min`, with a new Chore Authoring field behind it and a
+   wall-owned override above it. §3.5, §3.5.1.
+3. **Day-view range** — 06:00–23:00, ending at a child's bedtime, with early/late strips for
+   anything placed outside. §4.3.
+4. **Colour assignment** — picked per child in Settings from a fixed eight-swatch palette, with
+   roster order as the until-picked default. §11.4.
+
+Nothing in this slice is now waiting on an answer.
 
 ---
 
@@ -1136,6 +1335,25 @@ closes with this revision; Phase 1 is clear to start.
 | `wall_slots.duration_min`, a per-placement duration, as the only duration | *"we have an estimated activity time field we use for pacing; why not just write that into a column on the d1 assignment table and let me set it for Chores too?"* | §3.5. The column already exists and both Worker allowlists already carry it, so the authored estimate is a Management App change and nothing else. |
 | — | *"do let them adjust the minutes on already assigned stuff though… and if they adjust, ask just this instance or future assigned occurances"* | §3.5.1/§3.5.2. The wall gets an override it owns, a four-step precedence chain, and the two-button fork. `wall_slots.duration_min` returns as an *override*, and `wall_slot_days` is added for the per-instance case. |
 | Week view Monday-first (§19.1's default) | *"do Sunday first though. Saturday is our Sabbath and will likely always be blank so I dont want Sunday orphaned by its lonesome"* | §6, and the month grid follows it. |
+| A full 24-hour grid (§19.1's default) | *"just do 0600-2200… actually 0600-2300, as that is bedtime for one kid"* | §4.3. 68 rows instead of 96, ending at a household boundary, with early/late strips so a placement outside the range is never swallowed. |
+| Times always 12-hour | *"give me a military time and standard am/pm setting too lol. we usually do military time in our house but just in case"* | §11.3. `wall.settings.timeFormat`, defaulting to `24h`, through one shared formatter. Event times are the exception it cannot reach — they are freeform strings by Module 07's design. |
+| Child colours derived from roster order (§19.4's default) | *"pick color in settings"* | §11.4. Eight-swatch palette, picked per child, stored locally — because a colour people have learned should not move when someone else joins the roster. |
+
+**§19's four open questions are all closed**, three of them within an hour of the slice being
+written. Nothing in this document is waiting on an answer, and Phase 1a can start cold.
+
+**Added in the same conversation: sound (§11.5).** Ray asked whether the wall could make a noise as
+a reminder, and placement is what makes that answerable — before this slice nothing in the schema
+knew when anything was meant to *start*, so there was no moment to announce. Two tones, synthesized,
+free of any request. He chose the start-time chime and the completion confirmation, bounded by quiet
+hours and a per-child toggle, and declined the lead-in warning, the overdue nag, and the coalescing
+cap; §17.7 keeps those on the shelf. §11.5.1 records the browser autoplay rule as the one thing that
+can silently defeat the feature, and puts a visible indicator in front of it rather than hoping.
+
+His follow-up — *"or is that gonna tip free tier lol"* — is answered in §11.5 (the chime costs
+nothing at all) and §11.5.3 (a future Alexa cron would be ~96 invocations and ~5,000 row reads a
+day, against allowances of 100,000 and 5,000,000; Amazon's requirements bind long before
+Cloudflare's do).
 
 The duration split is the better design for a reason worth keeping: **the estimate belongs to the
 work, the override belongs to the wall.** The draft had one number on the placement, which would
