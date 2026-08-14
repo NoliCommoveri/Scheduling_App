@@ -210,6 +210,50 @@ li {
   flex: 1;
 }
 
+/* ---- Course Template Library: collapsible per-subject buckets ----
+   Plain <details>/<summary>; the browser owns open/closed state, so it
+   defaults closed by omitting the `open` attribute. */
+.course-subject-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.course-subject-group {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.course-subject-group > summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 0.65rem 0;
+  list-style: none;
+}
+
+.course-subject-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.course-subject-group > summary::before {
+  content: "▶";
+  display: inline-block;
+  margin-right: 0.5rem;
+  font-size: 0.7em;
+  transition: transform 0.1s ease;
+}
+
+.course-subject-group[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.course-subject-group .course-list {
+  padding-bottom: 0.35rem;
+}
+
+.course-subject-group .course-list .list-row:last-child {
+  border-bottom: none;
+}
+
 /* ---- Shared list row (Courses, Lessons, Activities) ----
    Two fixed grid tracks — text, then controls — so the buttons sit in exactly
    the same place on every row regardless of how long the title is. A wrapping

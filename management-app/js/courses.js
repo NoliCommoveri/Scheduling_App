@@ -981,34 +981,65 @@ const Courses = (() => {
     heading.textContent = 'Course Template Library';
     root.appendChild(heading);
 
-    const list = document.createElement('ul');
-    list.className = 'course-list';
+    // Group by subject, subjects alphabetical, courses alphabetical within
+    // each subject. Courses with no subject land in a trailing catch-all bucket.
+    const NO_SUBJECT = 'No subject';
+    const bySubject = new Map();
     courses.forEach((c) => {
-      const item = document.createElement('li');
-      // .list-row keeps the text and the buttons in fixed grid tracks, so Open
-      // and Delete land in the same place whatever the name's length (§UI).
-      item.className = 'list-row';
-      item.innerHTML = `
-        <div class="row-text">
-          <span class="row-title course-name">${escapeHtml(c.name)}</span>
-          <span class="row-meta course-code">${escapeHtml(c.courseCode)}</span>
-        </div>
-        <div class="row-actions">
-          <button data-action="open">Open</button>
-          <button data-action="delete">Delete</button>
-        </div>
-      `;
-      item.querySelector('[data-action="open"]').addEventListener('click', () => {
-        viewCourseId = c.id;
-        render(root);
-      });
-      item.querySelector('[data-action="delete"]').addEventListener('click', async () => {
-        await deleteCourse(c.id);
-        render(root);
-      });
-      list.appendChild(item);
+      const subject = (c.subject && c.subject.trim()) || NO_SUBJECT;
+      if (!bySubject.has(subject)) bySubject.set(subject, []);
+      bySubject.get(subject).push(c);
     });
-    root.appendChild(list);
+    const subjects = Array.from(bySubject.keys()).sort((a, b) => {
+      if (a === NO_SUBJECT) return 1;
+      if (b === NO_SUBJECT) return -1;
+      return a.localeCompare(b);
+    });
+
+    const groupsEl = document.createElement('div');
+    groupsEl.className = 'course-subject-groups';
+    subjects.forEach((subject) => {
+      const coursesInSubject = bySubject.get(subject).sort((a, b) => a.name.localeCompare(b.name));
+
+      // <details> defaults closed (no `open` attribute) so the library opens
+      // collapsed with just the subject headings visible.
+      const details = document.createElement('details');
+      details.className = 'course-subject-group';
+      const summary = document.createElement('summary');
+      summary.textContent = `${subject} (${coursesInSubject.length})`;
+      details.appendChild(summary);
+
+      const list = document.createElement('ul');
+      list.className = 'course-list';
+      coursesInSubject.forEach((c) => {
+        const item = document.createElement('li');
+        // .list-row keeps the text and the buttons in fixed grid tracks, so Open
+        // and Delete land in the same place whatever the name's length (§UI).
+        item.className = 'list-row';
+        item.innerHTML = `
+          <div class="row-text">
+            <span class="row-title course-name">${escapeHtml(c.name)}</span>
+            <span class="row-meta course-code">${escapeHtml(c.courseCode)}</span>
+          </div>
+          <div class="row-actions">
+            <button data-action="open">Open</button>
+            <button data-action="delete">Delete</button>
+          </div>
+        `;
+        item.querySelector('[data-action="open"]').addEventListener('click', () => {
+          viewCourseId = c.id;
+          render(root);
+        });
+        item.querySelector('[data-action="delete"]').addEventListener('click', async () => {
+          await deleteCourse(c.id);
+          render(root);
+        });
+        list.appendChild(item);
+      });
+      details.appendChild(list);
+      groupsEl.appendChild(details);
+    });
+    root.appendChild(groupsEl);
 
     const form = document.createElement('form');
     const curriculumOptions = curricula.map((c) => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
