@@ -120,9 +120,9 @@ school blocks that aggregate a course; and completion that asks *when* it was do
 | Phase | Contents | Est. | Status |
 |---|---|---|---|
 | **0** | The TDS, the `CLAUDE.md` 2.3 amendment, the Module 06 A2 amendment, this entry. Ray's sign-off on the three narrowings. | ~1 h | ✅ Done |
-| **1a — Worker** | Migration 0010 (`wall_slots`, `wall_slot_days`) + registry; the slots, slots/day and events routes. No app changes. | ~2 h | ⬜ |
-| **1b — Management App** | Chore duration authoring (Module 06 FR-9), the `assignmentFromChore` passthrough, the CSV column. The only phase declaring `management-app/` in scope. | ~1.5 h | ⬜ |
-| **2** | Hamburger, sidebar, view routing, date stepper, land-on-today, centre refresh, the 10-minute cadence, rollover reset. | ~2 h | ⬜ |
+| **1a — Worker** | Migration 0010 (`wall_slots`, `wall_slot_days`) + registry; the slots, slots/day and events routes. No app changes. | ~2 h | ✅ Landed |
+| **1b — Management App** | Chore duration authoring (Module 06 FR-9), the `assignmentFromChore` passthrough, the CSV column. The only phase declaring `management-app/` in scope. | ~1.5 h | ✅ Landed |
+| **2** | Hamburger, sidebar, view routing, date stepper, land-on-today, centre refresh, the 10-minute cadence, rollover reset. | ~2 h | ✅ Landed |
 | **3** | The day view read-only: column-per-child grid, sticky headers, now-line, events band, unscheduled tray. Replaces `ambient-ui.js`. | ~2.5 h | ⬜ |
 | **4** | Block mode — collapse/expand into morning/afternoon/evening/night. | ~1.5 h | ⬜ |
 | **5** | Placement writes: drag-and-drop, 15-minute snapping, carry-forward, collision warnings. | ~2.5 h | ⬜ |

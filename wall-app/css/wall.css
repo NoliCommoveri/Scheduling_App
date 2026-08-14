@@ -170,37 +170,166 @@ button {
   cursor: default;
 }
 
-/* ---- ambient screen ------------------------------------------------------ */
+/* ---- wall shell: topbar + sidebar nav (Wall Calendar Redesign §11.6) ----- */
+
+.wall-shell {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+
+.wall-topbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 2vh 3vw 1.5vh;
+}
+
+.icon-btn {
+  min-width: 64px;
+  min-height: 64px;
+  font-size: 1.6rem;
+  background: var(--panel);
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.wall-topbar-label {
+  flex: 1 1 auto;
+  font-size: 1.3rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wall-clock {
+  font-size: 1.4rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+}
+
+.wall-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+
+.wall-placeholder {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 1.3rem;
+}
+
+.wall-sidebar-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(6, 8, 14, 0.6);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+  z-index: 5;
+}
+
+.wall-sidebar-scrim.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.wall-sidebar {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: min(340px, 82vw);
+  background: var(--panel);
+  z-index: 6;
+  padding: 3vh 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.75rem;
+  transform: translateX(-100%);
+  transition: transform 0.25s ease;
+  overflow-y: auto;
+}
+
+.wall-sidebar.open {
+  transform: translateX(0);
+}
+
+.sidebar-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.sidebar-view-btn {
+  min-height: 64px;
+  border-radius: 14px;
+  border: 2px solid var(--panel-2);
+  background: transparent;
+  color: var(--text);
+  font-size: 1.2rem;
+  font-weight: 600;
+  text-align: left;
+  padding: 0 1.25rem;
+  cursor: pointer;
+}
+
+.sidebar-view-btn.active {
+  background: var(--accent);
+  color: #1a1408;
+  border-color: var(--accent);
+}
+
+.sidebar-datestep {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.datestep-btn {
+  min-width: 56px;
+  min-height: 56px;
+  border-radius: 50%;
+  border: none;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 1.5rem;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.datestep-label {
+  flex: 1 1 auto;
+  text-align: center;
+  font-size: 1.02rem;
+  color: var(--text-dim);
+}
+
+/* ---- ambient screen (Day view content, Phase 3 replaces this) ------------ */
 
 .ambient {
-  height: 100vh;
-  padding: 3vh 4vw;
+  height: 100%;
+  padding: 0 4vw 3vh;
   display: flex;
   flex-direction: column;
   gap: 1.5rem;
   overflow: hidden; /* §10.2 — no page scroll; the panels below scroll internally instead */
-}
-
-.ambient-topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1.5rem;
-}
-
-.ambient-brand {
-  font-size: 1.4rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
-
-.ambient-clock {
-  font-size: 1.6rem;
-  font-weight: 600;
-  color: var(--text-dim);
-  margin-left: auto;
-  margin-right: 1.5rem;
-  font-variant-numeric: tabular-nums;
 }
 
 .ambient-body {
@@ -217,16 +346,6 @@ button {
   display: grid;
   grid-template-columns: 3fr 2fr;
   gap: 1.25rem;
-}
-
-.gear-btn {
-  min-width: 64px;
-  min-height: 64px;
-  font-size: 1.6rem;
-  background: var(--panel);
-  border: none;
-  border-radius: 50%;
-  cursor: pointer;
 }
 
 .ambient-tiles {
@@ -401,9 +520,10 @@ button {
   opacity: 0;
   pointer-events: none;
   transition: opacity 3s ease;
+  z-index: 4; /* above content, below the sidebar (z-index 6) and its scrim (5) */
 }
 
-.ambient.dimmed .night-overlay {
+.wall-shell.dimmed .night-overlay {
   opacity: 0.82;
 }
 

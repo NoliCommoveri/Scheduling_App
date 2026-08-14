@@ -3,9 +3,9 @@
 ## Scope: Wall Calendar — the Wall Display App becomes a shared family calendar with 15-minute chore placement, block collapse, week and month views
 
 **Status:** in build. **§18 signed off by Ray, 2026-08-14 — Phase 0 complete.** Phase 1a
-(`wall_slots`/`wall_slot_days` migration + Worker routes) and Phase 1b (§3.5's chore duration in
-the Management App) are both complete; Phase 2 (shell & nav) is clear to start. Revised 2026-08-14
-after a design review; see §20.
+(`wall_slots`/`wall_slot_days` migration + Worker routes), Phase 1b (§3.5's chore duration in
+the Management App), and Phase 2 (shell & nav) are complete; Phase 3 (day view, read-only) is
+clear to start. Revised 2026-08-14 after a design review; see §20.
 **Date:** 2026-08-14.
 **Depends on:** `TDS_Slice_Online_Revamp.md` (controlling design), `TDS_Slice_Wall_Display_App.md`
 (the app this rewrites), `TDS_Slice_Shared_Chores.md` (claim arbitration).
