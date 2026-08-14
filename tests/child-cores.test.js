@@ -553,6 +553,51 @@ test('filterView (chores) stays block-then-position only — course_name has no 
   assert.deepEqual(ids(PlannerCore.filterView(rows, TODAY, nothingResolved, 'chores')), ['c2', 'c1']);
 });
 
+// Module 3 FR-13 — the course collapse's grouping. The Today view feeds it a
+// byCourseThenLesson list and the Completed view feeds it an unordered one;
+// both have to come out one group per course.
+test('groupByCourse gathers one group per course, in first-appearance order', () => {
+  const items = [
+    row({ id: 'a1', course_name: 'History' }),
+    row({ id: 'a2', course_name: 'Maths' }),
+    row({ id: 'a3', course_name: 'History' })
+  ];
+  const groups = PlannerCore.groupByCourse(items);
+  assert.deepEqual(groups.map((grp) => grp.course_name), ['History', 'Maths']);
+  assert.deepEqual(groups.map((grp) => ids(grp.items)), [['a1', 'a3'], ['a2']]);
+});
+
+test('groupByCourse keeps the order it was handed inside each group', () => {
+  const rivers = JSON.stringify({ lessonTitle: 'Rivers' });
+  const rows = plan(
+    row({ id: 'a1', course_name: 'History', payload: rivers, sort_order: 9 }),
+    row({ id: 'a2', course_name: 'History', payload: rivers, sort_order: 0 }),
+    row({ id: 'a3', course_name: 'Maths', sort_order: 1 })
+  );
+  // The lesson sort byCourseThenLesson applied (a2 before a1) survives the
+  // grouping — the collapse wraps the cards, it does not resequence them.
+  const sorted = PlannerCore.filterView(rows, TODAY, nothingResolved, 'school');
+  const groups = PlannerCore.groupByCourse(sorted);
+  assert.deepEqual(groups.map((grp) => ids(grp.items)), [['a2', 'a1'], ['a3']]);
+});
+
+test('groupByCourse puts course-less rows in one trailing null group', () => {
+  const groups = PlannerCore.groupByCourse([
+    row({ id: 'a1', course_name: null }),
+    row({ id: 'a2', course_name: 'Maths' }),
+    row({ id: 'a3', course_name: undefined }),
+    row({ id: 'a4', course_name: '' })
+  ]);
+  assert.deepEqual(groups.map((grp) => grp.course_name), ['Maths', null],
+    'the unlabeled group is last however early its first row appeared, and the core names it null rather than inventing a display string');
+  assert.deepEqual(ids(groups[1].items), ['a1', 'a3', 'a4']);
+});
+
+test('groupByCourse survives an empty list and a missing one', () => {
+  assert.deepEqual(PlannerCore.groupByCourse([]), []);
+  assert.deepEqual(PlannerCore.groupByCourse(), []);
+});
+
 // Child Feedback Loop §4.3, widened by the Lesson Recipe slice §9.2 — every
 // row is reorderable now that `sequence_no` (parent-authored lesson order) is
 // gone with the column, and the peer scope narrows one level further, to the

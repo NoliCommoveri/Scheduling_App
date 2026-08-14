@@ -74,7 +74,10 @@
 
   // Groups `list` by `keyFn`, in first-appearance order; a falsy key collapses
   // every such row into one unlabeled group, forced last so it never vanishes.
-  // Shared by byCourseThenLesson's two passes below.
+  // Each group carries the `key` it was gathered under (null for the unlabeled
+  // one) — byCourseThenLesson below only ever concatenates the items, but
+  // groupByCourse hands the groups themselves to a caller that has to label
+  // them. Shared by byCourseThenLesson's two passes below.
   function groupByKey(list, keyFn) {
     var groups = [];
     var index = Object.create(null);
@@ -82,18 +85,40 @@
     list.forEach(function (r) {
       var key = keyFn(r);
       if (!key) {
-        if (!unlabeled) unlabeled = { items: [] };
+        if (!unlabeled) unlabeled = { key: null, items: [] };
         unlabeled.items.push(r);
         return;
       }
       if (!(key in index)) {
-        index[key] = { items: [] };
+        index[key] = { key: key, items: [] };
         groups.push(index[key]);
       }
       index[key].items.push(r);
     });
     if (unlabeled) groups.push(unlabeled);
     return groups;
+  }
+
+  // Course grouping as a *shape* rather than a flattened order (Ray,
+  // 2026-08-13 — the Today and Completed views render one collapsible section
+  // per course, and a section needs its own item list and its own name).
+  // Returns [{ course_name, items }] in first-appearance order, each group
+  // keeping the order its items arrived in.
+  //
+  // Handed a byCourseThenLesson list, the groups come out in that function's
+  // course order with each course's lesson runs intact inside them — the
+  // collapse changes what wraps the cards, never their sequence. Handed an
+  // unordered list (the Completed view joins records to rows in completion
+  // order, not plan order) it still gathers a course into one group, which is
+  // why this groups by first appearance rather than by detecting contiguous
+  // runs.
+  //
+  // Course-less rows collapse into one trailing group keyed `null` — the same
+  // group groupByKey already forces last for the flat sort. The caller names
+  // it; this layer will not invent a display string.
+  function groupByCourse(items) {
+    return groupByKey(items || [], function (r) { return r.course_name; })
+      .map(function (grp) { return { course_name: grp.key, items: grp.items }; });
   }
 
   // Child Feedback Loop §4.2, reworked by the Lesson Recipe slice §9.2 —
@@ -277,6 +302,7 @@
     byPosition: byPosition,
     onToday: onToday,
     eventKey: eventKey,
+    groupByCourse: groupByCourse,
     assembleToday: assembleToday,
     filterView: filterView,
     eventsView: eventsView,
