@@ -22,7 +22,11 @@
 // v3: §16 Phase 3 — the real day view (day-ui.js) replaces the ambient
 // board outright. `ambient-ui.js` and `completed-core.js` are deleted
 // (§13); `time-core.js` and `slots-core.js` are new.
-const CACHE_NAME = "wall-display-shell-v3";
+// v4: §16 Phase 4 — block mode. day-ui.js and wall.css both change
+// substantially (the mode bar, collapsed block rows, and the single-block
+// expanded grid); chores-core.js gains the block-classification helpers.
+// No new files.
+const CACHE_NAME = "wall-display-shell-v4";
 
 const APP_SHELL = [
   "./",

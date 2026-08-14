@@ -3,6 +3,7 @@
 // events-core.js, chores-core.js (generalized past "today", §4.5),
 // slots-core.js (§3.1/§3.5.1) and time-core.js (§11.3), and retires
 // completed-core.js — the Done Today board it backed is repealed (§8.4).
+// §16 Phase 4 adds chores-core.js's block classification (§4.4).
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -169,6 +170,47 @@ test('claimState: open, mine, and claimed-by-sibling', () => {
   assert.equal(ChoresCore.claimState(open, 'c1'), 'open');
   assert.equal(ChoresCore.claimState(mine, 'c1'), 'mine');
   assert.equal(ChoresCore.claimState(sibling, 'c1'), 'claimed-by-sibling');
+});
+
+// ===========================================================  chores-core: block mode (§4.4)
+
+test('effectiveBlockHint mirrors planner-core.js:54-56: child_block_hint wins, then block_hint, then morning', () => {
+  assert.equal(ChoresCore.effectiveBlockHint({ child_block_hint: 'evening', block_hint: 'morning' }), 'evening');
+  assert.equal(ChoresCore.effectiveBlockHint({ block_hint: 'afternoon' }), 'afternoon');
+  assert.equal(ChoresCore.effectiveBlockHint({}), 'morning');
+  assert.equal(ChoresCore.effectiveBlockHint({ child_block_hint: 'bogus', block_hint: 'night' }), 'night'); // an invalid hint is not canonical
+});
+
+test('blockFromStartMin classifies every boundary hour in the §4.4 table, including the night wrap', () => {
+  assert.equal(ChoresCore.blockFromStartMin(5 * 60 + 59), 'night');   // 05:59
+  assert.equal(ChoresCore.blockFromStartMin(6 * 60), 'morning');       // 06:00
+  assert.equal(ChoresCore.blockFromStartMin(11 * 60 + 59), 'morning'); // 11:59
+  assert.equal(ChoresCore.blockFromStartMin(12 * 60), 'afternoon');    // 12:00
+  assert.equal(ChoresCore.blockFromStartMin(16 * 60 + 59), 'afternoon');
+  assert.equal(ChoresCore.blockFromStartMin(17 * 60), 'evening');      // 17:00
+  assert.equal(ChoresCore.blockFromStartMin(20 * 60 + 59), 'evening');
+  assert.equal(ChoresCore.blockFromStartMin(21 * 60), 'night');        // 21:00
+  assert.equal(ChoresCore.blockFromStartMin(23 * 60 + 59), 'night');
+  assert.equal(ChoresCore.blockFromStartMin(0), 'night');              // 00:00 — the wrap
+});
+
+test('blockForChip: the placement wins over the hint for a placed chip; the hint decides an unplaced one (§4.4)', () => {
+  const row = { block_hint: 'morning' };
+  const placed = { startMin: 18 * 60, durationMin: 15, overridden: false }; // 18:00 -> evening
+  const unplaced = { startMin: null, durationMin: 15, overridden: false };
+  assert.equal(ChoresCore.blockForChip(row, placed), 'evening');
+  assert.equal(ChoresCore.blockForChip(row, unplaced), 'morning');
+});
+
+test('blockVirtualMin maps a real clock minute into a block\'s own coordinate space, wrapping only for night', () => {
+  assert.equal(ChoresCore.blockVirtualMin(9 * 60, 'morning'), 9 * 60); // no wrap needed, passes through
+  assert.equal(ChoresCore.blockVirtualMin(21 * 60 + 30, 'night'), 21 * 60 + 30); // already >= night's start
+  assert.equal(ChoresCore.blockVirtualMin(5 * 60 + 30, 'night'), 5 * 60 + 30 + 1440); // wraps past midnight
+  // The wrap keeps ordering correct: a chip placed just after midnight sorts
+  // later in the night block's own axis than one placed just before it.
+  const justBefore = ChoresCore.blockVirtualMin(23 * 60, 'night');
+  const justAfter = ChoresCore.blockVirtualMin(0, 'night');
+  assert.ok(justAfter > justBefore);
 });
 
 // ===========================================================  slots-core (§3.1, §3.5.1)

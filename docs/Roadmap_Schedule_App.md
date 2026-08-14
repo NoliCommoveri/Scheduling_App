@@ -123,8 +123,8 @@ school blocks that aggregate a course; and completion that asks *when* it was do
 | **1a — Worker** | Migration 0010 (`wall_slots`, `wall_slot_days`) + registry; the slots, slots/day and events routes. No app changes. | ~2 h | ✅ Landed |
 | **1b — Management App** | Chore duration authoring (Module 06 FR-9), the `assignmentFromChore` passthrough, the CSV column. The only phase declaring `management-app/` in scope. | ~1.5 h | ✅ Landed |
 | **2** | Hamburger, sidebar, view routing, date stepper, land-on-today, centre refresh, the 10-minute cadence, rollover reset. | ~2 h | ✅ Landed |
-| **3** | The day view read-only: column-per-child grid, sticky headers, now-line, events band, unscheduled tray. Replaces `ambient-ui.js`. | ~2.5 h | ⬜ |
-| **4** | Block mode — collapse/expand into morning/afternoon/evening/night. | ~1.5 h | ⬜ |
+| **3** | The day view read-only: column-per-child grid, sticky headers, now-line, events band, unscheduled tray. Replaces `ambient-ui.js`. | ~2.5 h | ✅ Landed |
+| **4** | Block mode — collapse/expand into morning/afternoon/evening/night. | ~1.5 h | ✅ Landed |
 | **5** | Placement writes: drag-and-drop, 15-minute snapping, carry-forward, collision warnings. | ~2.5 h | ⬜ |
 | **5b** | Duration adjust — "just this one" vs "this and future", and the precedence chain. | ~1.5 h | ⬜ |
 | **6** | Completion: the sheet (who by column, when by stepper), earns, Undo both paths, the claim path, done-in-place. | ~2.5 h | ⬜ |
