@@ -11,6 +11,11 @@ const Pacing = (() => {
   const MODES = ['activityCount', 'minutesBudget'];
 
   let filterChildId = '';
+  // Which per-course pacing cards are expanded — kept outside the DOM (like
+  // filterChildId) so it survives the full re-render every filter change and
+  // form submit triggers. Closed by default (§UX: one full pacing form per
+  // course, all open, was a scroll per child).
+  const openCards = new Set();
 
   function escapeHtml(str) {
     const div = document.createElement('div');
@@ -210,22 +215,29 @@ const Pacing = (() => {
     const [profile, progress] = await Promise.all([getProfile(instance.id), progressFor(instance.id)]);
     const child = children.find((c) => c.id === instance.childId);
 
-    const card = document.createElement('section');
+    // Collapsed <details> bucket per course, same convention as
+    // .course-subject-group in courses.js. Open/closed state lives in
+    // openCards, not on the element, so it survives the render() a filter
+    // change or a form submit does.
+    const card = document.createElement('details');
     card.className = 'pacing-card';
+    card.open = openCards.has(instance.id);
+    card.addEventListener('toggle', () => {
+      if (card.open) openCards.add(instance.id);
+      else openCards.delete(instance.id);
+    });
 
-    const title = document.createElement('h2');
-    title.textContent = `${instance.name} — ${child ? child.name : '(unknown child)'}`;
-    card.appendChild(title);
-
-    // FR-8 progress (read-only) — "n of N sent", plus excluded tally.
-    const prog = document.createElement('p');
-    prog.className = 'pacing-progress';
-    prog.textContent =
+    // FR-8 progress (read-only) folded into the summary line — "n of N sent" —
+    // so the whole roster's status reads at a glance without opening every
+    // course.
+    const summary = document.createElement('summary');
+    summary.textContent =
+      `${instance.name} — ${child ? child.name : '(unknown child)'} · ` +
       `${progress.sent} of ${progress.total} Activities sent` +
       ` · ${progress.pending} pending` +
       (progress.excluded ? ` · ${progress.excluded} excluded` : '') +
       (profile ? '' : ' · no Pacing Profile yet');
-    card.appendChild(prog);
+    card.appendChild(summary);
 
     const form = document.createElement('form');
     form.className = 'pacing-form';

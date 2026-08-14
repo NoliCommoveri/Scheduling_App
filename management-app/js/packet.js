@@ -343,6 +343,11 @@ const Packet = (() => {
       // minted on the first Commit attempt and reused by every retry of this
       // same proposal; partial records that some of it reached D1.
       batchId: null, postedRows: 0, partial: false,
+      // Pending-remainder UI state (§UX below) — which per-course buckets are
+      // open and which have had their preview cap lifted. Kept on the session,
+      // not the DOM, so it survives the full re-render every Review action
+      // triggers.
+      openRemainders: new Set(), expandedRemainders: new Set(),
     };
     return { session };
   }
@@ -956,14 +961,35 @@ const Packet = (() => {
       root.appendChild(warning);
     }
 
-    // Pending remainder (Pull-forward source) per instance.
+    // Pending remainder (Pull-forward source) per instance — one collapsed
+    // <details> bucket per course (closed by default, same convention as
+    // .course-subject-group in courses.js) so a multi-course proposal doesn't
+    // dump every course's full remainder onto the screen at once. Each bucket
+    // previews only the first REMAINDER_PREVIEW items; "Show N more" lifts the
+    // cap for that course. Both the open/closed state and the cap-lifted state
+    // live on the session (not the DOM) so a Pull-forward click — which
+    // re-renders the whole proposal — doesn't collapse the bucket the parent
+    // is actively working in.
+    const REMAINDER_PREVIEW = 5;
     for (const [instanceId, remainder] of session.pendingByInstance) {
       if (!remainder.length) continue;
       const inst = session.coursesById.get(instanceId);
-      const box = document.createElement('div');
+      const expanded = session.expandedRemainders.has(instanceId);
+      const shown = expanded ? remainder : remainder.slice(0, REMAINDER_PREVIEW);
+
+      const box = document.createElement('details');
       box.className = 'pending-box';
-      box.innerHTML = `<h3>Pending remainder — ${escapeHtml(inst ? inst.name : instanceId)} (${remainder.length})</h3>`;
-      remainder.forEach((a) => {
+      box.open = session.openRemainders.has(instanceId);
+      box.addEventListener('toggle', () => {
+        if (box.open) session.openRemainders.add(instanceId);
+        else session.openRemainders.delete(instanceId);
+      });
+
+      const summary = document.createElement('summary');
+      summary.textContent = `Pending remainder — ${inst ? inst.name : instanceId} (${remainder.length})`;
+      box.appendChild(summary);
+
+      shown.forEach((a) => {
         const row = document.createElement('div');
         row.innerHTML = `<span>${escapeHtml(a.title)} <code>${escapeHtml(a.id)}</code></span> `;
         const btn = document.createElement('button');
@@ -973,11 +999,28 @@ const Packet = (() => {
           if (!toDate) return;
           const r = pullForward(instanceId, a.id, toDate.trim());
           if (r.error) window.alert(r.error);
+          session.openRemainders.add(instanceId); // stay open — likely pulling more than one
           render(root);
         });
         row.appendChild(btn);
         box.appendChild(row);
       });
+
+      if (remainder.length > REMAINDER_PREVIEW) {
+        const toggleRow = document.createElement('div');
+        const toggleBtn = document.createElement('button');
+        toggleBtn.className = 'secondary';
+        toggleBtn.textContent = expanded ? 'Show fewer' : `Show ${remainder.length - REMAINDER_PREVIEW} more`;
+        toggleBtn.addEventListener('click', () => {
+          if (expanded) session.expandedRemainders.delete(instanceId);
+          else session.expandedRemainders.add(instanceId);
+          session.openRemainders.add(instanceId);
+          render(root);
+        });
+        toggleRow.appendChild(toggleBtn);
+        box.appendChild(toggleRow);
+      }
+
       root.appendChild(box);
     }
 
