@@ -861,5 +861,8 @@ const Chores = (() => {
   return {
     render, createChore, editChore, deleteChore, listChores, importChoresCsv,
     participantsOf, allocationOf, daysFor, instancesOf, pruneParticipant,
+    // Exported so any other view grouping Chores by type (weekly.js) uses the
+    // same canonical order this page does, rather than a second copy of it.
+    CHORE_TYPES,
   };
 })();

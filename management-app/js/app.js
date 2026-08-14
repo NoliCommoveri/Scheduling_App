@@ -20,6 +20,7 @@ const App = (() => {
     '#/chores': () => Chores.render(root),
     '#/events': () => Events.render(root),
     '#/pacing': () => Pacing.render(root),
+    '#/weekly': () => Weekly.render(root),
     '#/packet': () => Packet.render(root),
     '#/assignments': () => Assignments.render(root),
     '#/reporting': () => Reporting.render(root),
@@ -66,6 +67,7 @@ const App = (() => {
       <a href="#/chores">Chores</a>
       <a href="#/events">Events</a>
       <a href="#/pacing">Pacing</a>
+      <a href="#/weekly">Weekly</a>
       <a href="#/packet">Assign</a>
       <a href="#/assignments">Assignments</a>
       <a href="#/reporting">Reporting</a>
