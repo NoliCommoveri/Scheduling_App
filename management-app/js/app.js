@@ -17,6 +17,7 @@ const App = (() => {
     '#/activity-types': () => ActivityTypes.render(root),
     '#/courses': () => Courses.render(root),
     '#/children': () => Children.render(root),
+    '#/assigned-courses': () => Instances.render(root),
     '#/chores': () => Chores.render(root),
     '#/events': () => Events.render(root),
     '#/pacing': () => Pacing.render(root),
@@ -64,6 +65,7 @@ const App = (() => {
       <a href="#/activity-types">Activity Types</a>
       <a href="#/courses">Courses</a>
       <a href="#/children">Children</a>
+      <a href="#/assigned-courses">Assigned Courses</a>
       <a href="#/chores">Chores</a>
       <a href="#/events">Events</a>
       <a href="#/pacing">Pacing</a>

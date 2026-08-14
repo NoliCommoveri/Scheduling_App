@@ -198,7 +198,7 @@ const Pacing = (() => {
 
     if (instances.length === 0) {
       const empty = document.createElement('p');
-      empty.textContent = 'No Course Instances yet. Stamp a Course to a Child (Children tab) first.';
+      empty.textContent = 'No Courses assigned yet. Assign one to a Child from Assigned Courses first.';
       root.appendChild(empty);
       return;
     }
