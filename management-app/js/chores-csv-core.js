@@ -23,7 +23,7 @@ const ChoresCsvCore = (() => {
   // -> schedule -> tier -> optional, mirroring FR-1's own prose order.
   const CSV_COLUMNS = [
     'children', 'title', 'choreType', 'daysOfWeek', 'allocation', 'difficultyTier',
-    'instances', 'blockHint', 'notes',
+    'instances', 'blockHint', 'notes', 'expectedDurationMin',
   ];
 
   // Mirrors chores.js's three enums. Mirrored, not shared: chores.js owns the
@@ -154,6 +154,18 @@ const ChoresCsvCore = (() => {
     return { days };
   }
 
+  // SRS Module 06 §2.8/§5 (Amendment A2) — a whole minute, positive, capped at
+  // a day (1440): a chore longer than that is a data-entry error, not a chore.
+  // Blank cell => omitted entirely, same as every other optional column here.
+  function resolveExpectedDurationMin(cell) {
+    if (isBlank(cell)) return {};
+    const n = Number(String(cell).trim());
+    if (!Number.isInteger(n) || n < 1 || n > 1440) {
+      return { error: `expectedDurationMin "${cell}" must be a whole number from 1 to 1440, or blank.` };
+    }
+    return { value: n };
+  }
+
   // TDS §3 — labels only; ids are minted by the caller, never authored, which
   // is what makes the "unique" and "no -" rules of Shared Chores §2.4
   // unfailable from this path rather than merely checked. Blank cell => the
@@ -215,6 +227,9 @@ const ChoresCsvCore = (() => {
 
     const notes = String(rowObj.notes || '').trim();
 
+    const durationResult = resolveExpectedDurationMin(rowObj.expectedDurationMin);
+    if (durationResult.error) return fail(durationResult.error);
+
     // The candidate is the same field shape the create form hands
     // createChore(), so chores.js can run it through validateFields() and
     // buildRecord() unchanged. Optional fields are omitted, never null
@@ -234,6 +249,7 @@ const ChoresCsvCore = (() => {
     };
     if (notes) candidate.fields.notes = notes;
     if (blockHint) candidate.fields.blockHint = blockHint;
+    if (durationResult.value != null) candidate.fields.expectedDurationMin = durationResult.value;
     return { candidate };
   }
 
@@ -286,6 +302,7 @@ const ChoresCsvCore = (() => {
     resolveChildren,
     resolveDays,
     resolveInstanceLabels,
+    resolveExpectedDurationMin,
     validateRow,
     readCsv,
     templateCsv,

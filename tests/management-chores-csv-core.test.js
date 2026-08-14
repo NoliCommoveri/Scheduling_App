@@ -57,10 +57,10 @@ test('drops blank lines rather than reading them as rows', () => {
 
 // ----------------------------------------------------------- header gate
 
-test('the locked header is nine columns in the documented order', () => {
+test('the locked header is ten columns in the documented order (§4/FR-8, A2)', () => {
   assert.deepEqual(Core.CSV_COLUMNS, [
     'children', 'title', 'choreType', 'daysOfWeek', 'allocation', 'difficultyTier',
-    'instances', 'blockHint', 'notes',
+    'instances', 'blockHint', 'notes', 'expectedDurationMin',
   ]);
 });
 
@@ -77,10 +77,11 @@ test('re-importing the unchanged template is accepted and writes nothing (§5.3)
 
 test('a missing, extra, renamed or reordered column rejects before any row (§5.2)', () => {
   const bad = [
-    'children,title,choreType,daysOfWeek,allocation,difficultyTier,instances,blockHint', // missing
+    'children,title,choreType,daysOfWeek,allocation,difficultyTier,instances,blockHint,notes', // missing
     HEADER + ',extra',                                                                    // extra
     HEADER.replace('children', 'childIds'),                                               // renamed
-    'title,children,choreType,daysOfWeek,allocation,difficultyTier,instances,blockHint,notes', // reordered
+    'title,children,choreType,daysOfWeek,allocation,difficultyTier,instances,blockHint,notes,expectedDurationMin', // reordered
+    HEADER.replace(',expectedDurationMin', ''),                                           // the old, nine-column header (A2)
   ];
   for (const header of bad) {
     // A row that would be perfectly valid under the real header.
@@ -118,11 +119,12 @@ test('blank optional cells omit the property entirely, never null or "" (§5.11)
   assert.ok(!keys.includes('blockHint'));
   assert.ok(!keys.includes('instances'));
   assert.ok(!keys.includes('childDays'), 'childDays is never importable (§1)');
+  assert.ok(!keys.includes('expectedDurationMin'), '(A2) blank omits the property, never 0/null/"" (§5.11)');
 });
 
-test('every optional column round-trips when populated', () => {
+test('every optional column round-trips when populated, including expectedDurationMin (A2)', () => {
   const { candidates } = Core.readCsv(
-    csv('Ada|Ben,Dishes,Kitchen/Dining,Mon|Tue|Wed,claim,D02,Breakfast|Dinner,evening,After supper'),
+    csv('Ada|Ben,Dishes,Kitchen/Dining,Mon|Tue|Wed,claim,D02,Breakfast|Dinner,evening,After supper,25'),
     LOOKUPS
   );
   const c = candidates[0];
@@ -131,6 +133,7 @@ test('every optional column round-trips when populated', () => {
   assert.equal(c.fields.choreType, 'Kitchen/Dining'); // the `/` survives `|` splitting
   assert.equal(c.fields.blockHint, 'evening');
   assert.equal(c.fields.notes, 'After supper');
+  assert.equal(c.fields.expectedDurationMin, 25);
   assert.deepEqual(c.instanceLabels, ['Breakfast', 'Dinner']);
 });
 
@@ -273,6 +276,33 @@ test('a stray separator or a duplicate label in instances is rejected (§5.10)',
     Core.readCsv(csv('Ada,Dishes,Kitchen/Dining,Mon,,D01,Dishes|Dishes,,'), LOOKUPS).failures[0],
     /must be distinct/
   );
+});
+
+// ------------------------------------------------------ expectedDurationMin
+
+test('expectedDurationMin round-trips when populated (§5, A2)', () => {
+  const result = Core.readCsv(csv(VALID_ROW + ',25'), LOOKUPS);
+  assert.equal(result.candidates[0].fields.expectedDurationMin, 25);
+});
+
+test('a blank expectedDurationMin cell omits the property (§5.11, A2)', () => {
+  const result = Core.readCsv(csv(VALID_ROW), LOOKUPS);
+  assert.ok(!('expectedDurationMin' in result.candidates[0].fields));
+});
+
+test('0, a negative value, over 1440, and non-numeric are all rejected (§8.9)', () => {
+  for (const bad of ['0', '-5', '1441', 'abc']) {
+    const result = Core.readCsv(csv(VALID_ROW + ',' + bad), LOOKUPS);
+    assert.match(
+      result.failures[0], /expectedDurationMin ".*" must be a whole number from 1 to 1440, or blank\./,
+      `expected rejection for: ${bad}`
+    );
+  }
+});
+
+test('1 and 1440 are both accepted at the boundary', () => {
+  assert.equal(Core.readCsv(csv(VALID_ROW + ',1'), LOOKUPS).candidates[0].fields.expectedDurationMin, 1);
+  assert.equal(Core.readCsv(csv(VALID_ROW + ',1440'), LOOKUPS).candidates[0].fields.expectedDurationMin, 1440);
 });
 
 // ------------------------------------------------------ whole-file outcome
