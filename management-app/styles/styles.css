@@ -254,6 +254,12 @@ li {
   border-bottom: none;
 }
 
+/* Same grouping, reused for a Child's stamped Course Instances (children.js)
+   — its list keeps the .instance-list class it already had. */
+.course-subject-group .instance-list .list-row:last-child {
+  border-bottom: none;
+}
+
 /* ---- Chore Authoring (Module 06): collapsible per-type buckets ----
    Same convention as .course-subject-group above. */
 .chore-type-groups {
@@ -295,6 +301,139 @@ li {
 
 .chore-type-group .chore-list .list-row:last-child {
   border-bottom: none;
+}
+
+/* ---- Weekly Overview: collapsible per-weekday buckets ----
+   Same convention as .course-subject-group above. Rows inside reuse
+   .item-activity/.item-chore (Module 08's Propose day-sections) for the
+   same 📘/🧹 left-border coloring, since these are the same two kinds of
+   thing shown in the same shape, just grouped by weekday instead of date. */
+.weekday-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.weekday-group {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.weekday-group > summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 0.65rem 0;
+  list-style: none;
+}
+
+.weekday-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.weekday-group > summary::before {
+  content: "▶";
+  display: inline-block;
+  margin-right: 0.5rem;
+  font-size: 0.7em;
+  transition: transform 0.1s ease;
+}
+
+.weekday-group[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.weekday-group[open] {
+  padding-bottom: 0.75rem;
+}
+
+/* "Courses" / "Chores" labels above the nested subject/type groups — plain
+   and small, since .course-subject-group/.chore-type-group's own summary
+   text already carries the specific grouping. */
+.weekday-group h4 {
+  margin: 0.5rem 0 0.25rem;
+  font-size: 0.85rem;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+/* ---- Settings (Module 04/11): collapsible per-section buckets ----
+   Same convention as .course-subject-group above. .settings-subsection
+   nests inside Cloud backup for the three destructive, rarely-used actions —
+   one level deeper than the token/sync controls above them. */
+.settings-section {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 0 1rem;
+  margin-bottom: 1rem;
+  background: #fff;
+}
+
+.settings-section > summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 1.05rem;
+  padding: 0.75rem 0;
+  list-style: none;
+}
+
+.settings-section[open] > summary {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.settings-section > summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-section > summary::before {
+  content: "▶";
+  display: inline-block;
+  margin-right: 0.5rem;
+  font-size: 0.7em;
+  transition: transform 0.1s ease;
+}
+
+.settings-section[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.settings-section > div {
+  padding: 0.25rem 0 1rem;
+}
+
+.settings-subsection {
+  margin: 0.75rem 0;
+  padding: 0 0.75rem;
+  border: 1px dashed var(--color-border);
+  border-radius: 6px;
+  background: #fbfaf8;
+}
+
+.settings-subsection > summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 0.5rem 0;
+  list-style: none;
+}
+
+.settings-subsection > summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-subsection > summary::before {
+  content: "▶";
+  display: inline-block;
+  margin-right: 0.5rem;
+  font-size: 0.7em;
+  transition: transform 0.1s ease;
+}
+
+.settings-subsection[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.settings-subsection > form,
+.settings-subsection > p {
+  margin-bottom: 0.75rem;
 }
 
 /* ---- Shared list row (Courses, Lessons, Activities) ----

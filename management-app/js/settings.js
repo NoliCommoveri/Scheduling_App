@@ -86,27 +86,40 @@ const Settings = (() => {
   // Settings view (#/settings): FR-2 change-PIN form.
   function renderSettingsPage(root) {
     clear(root);
-    renderChangePinForm(root);
+    const heading = document.createElement('h1');
+    heading.textContent = 'Settings';
+    root.appendChild(heading);
 
-    const syncSection = document.createElement('section');
-    root.appendChild(syncSection);
-    renderSyncPanel(syncSection);
-
+    root.appendChild(buildSection('Change launch PIN', renderChangePinForm));
+    root.appendChild(buildSection('Cloud backup (Cloudflare D1)', renderSyncPanel));
     // Settings → Database, the everyday migration surface (Revamp §3.7.5).
     // Placed after the sync panel because it reuses that panel's token.
-    const migrationsSection = document.createElement('section');
-    root.appendChild(migrationsSection);
-    Migrations.renderPanel(migrationsSection);
-
-    const devicesSection = document.createElement('section');
-    root.appendChild(devicesSection);
-    Devices.render(devicesSection);
+    root.appendChild(buildSection('Database', Migrations.renderPanel));
+    root.appendChild(buildSection('Devices', Devices.render));
   }
 
-  // Cloud backup panel — TDS_Slice_D1_Sync_Management_App.md §6/§1.9.
+  // Collapsed-by-default <details> bucket per Settings section — same
+  // convention as .course-subject-group (courses.js) and the other list/panel
+  // groupings — so opening Settings isn't one long scroll through Cloud
+  // backup, Database, and Devices to reach the one you came for.
+  function buildSection(title, renderer) {
+    const details = document.createElement('details');
+    details.className = 'settings-section';
+    const summary = document.createElement('summary');
+    summary.textContent = title;
+    details.appendChild(summary);
+    const body = document.createElement('div');
+    details.appendChild(body);
+    renderer(body);
+    return details;
+  }
+
+  // Cloud backup panel — TDS_Slice_D1_Sync_Management_App.md §6/§1.9. The
+  // three destructive actions each sit behind their own nested, closed
+  // <details> — rarely used and irreversible, so hiding them one level deeper
+  // than the token/sync controls above them is a feature, not just declutter.
   function renderSyncPanel(root) {
     root.innerHTML = `
-      <h2>Cloud backup (Cloudflare D1)</h2>
       <p>Your data lives in this browser. With a sync token set, every change is
          also copied to your Cloudflare D1 database automatically, so losing this
          browser no longer means losing your work.</p>
@@ -119,35 +132,41 @@ const Settings = (() => {
       <p class="error sync-error" hidden></p>
       <p class="success sync-success" hidden></p>
 
-      <h3>Restore from cloud</h3>
-      <p class="warning">This <strong>replaces everything</strong> in this browser with the
-         cloud copy. Your launch PIN is not affected. There is no undo.</p>
-      <form class="sync-restore-form">
-        <label>Type <code>RESTORE</code> to confirm<input type="text" name="confirm" autocomplete="off"></label>
-        <button type="submit">Restore from cloud</button>
-      </form>
+      <details class="settings-subsection">
+        <summary>Restore from cloud</summary>
+        <p class="warning">This <strong>replaces everything</strong> in this browser with the
+           cloud copy. Your launch PIN is not affected. There is no undo.</p>
+        <form class="sync-restore-form">
+          <label>Type <code>RESTORE</code> to confirm<input type="text" name="confirm" autocomplete="off"></label>
+          <button type="submit">Restore from cloud</button>
+        </form>
+      </details>
 
-      <h3>Clear assignments</h3>
-      <p class="warning">This <strong>permanently empties</strong> the generated plan — every
-         assignment, chore claim, and this device's Propose/Commit history, including which
-         activities were already sent — in the cloud database and this browser. Children,
-         curriculum, devices, and reward balances are <strong>not</strong> touched. Useful
-         while testing the generator or pacing engine, so the same range can be proposed
-         again from a clean slate. There is no undo.</p>
-      <form class="sync-clear-assignments-form">
-        <label>Type <code>CLEAR</code> to confirm<input type="text" name="confirm" autocomplete="off"></label>
-        <button type="submit">Clear assignments</button>
-      </form>
+      <details class="settings-subsection">
+        <summary>Clear assignments</summary>
+        <p class="warning">This <strong>permanently empties</strong> the generated plan — every
+           assignment, chore claim, and this device's Propose/Commit history, including which
+           activities were already sent — in the cloud database and this browser. Children,
+           curriculum, devices, and reward balances are <strong>not</strong> touched. Useful
+           while testing the generator or pacing engine, so the same range can be proposed
+           again from a clean slate. There is no undo.</p>
+        <form class="sync-clear-assignments-form">
+          <label>Type <code>CLEAR</code> to confirm<input type="text" name="confirm" autocomplete="off"></label>
+          <button type="submit">Clear assignments</button>
+        </form>
+      </details>
 
-      <h3>Reset everything</h3>
-      <p class="warning">This <strong>permanently empties</strong> the cloud database and this
-         browser's local data — every child, curriculum item, assignment, and reward entry.
-         Paired child devices will be logged out and need to be re-paired. Your launch PIN
-         and this device's sync token are not affected. There is no undo.</p>
-      <form class="sync-reset-form">
-        <label>Type <code>RESET</code> to confirm<input type="text" name="confirm" autocomplete="off"></label>
-        <button type="submit">Reset to empty</button>
-      </form>
+      <details class="settings-subsection">
+        <summary>Reset everything</summary>
+        <p class="warning">This <strong>permanently empties</strong> the cloud database and this
+           browser's local data — every child, curriculum item, assignment, and reward entry.
+           Paired child devices will be logged out and need to be re-paired. Your launch PIN
+           and this device's sync token are not affected. There is no undo.</p>
+        <form class="sync-reset-form">
+          <label>Type <code>RESET</code> to confirm<input type="text" name="confirm" autocomplete="off"></label>
+          <button type="submit">Reset to empty</button>
+        </form>
+      </details>
     `;
 
     const statusEl = root.querySelector('.sync-status');
@@ -259,11 +278,8 @@ const Settings = (() => {
 
   // FR-2 — change PIN, reached via the gated Settings view (#/settings).
   function renderChangePinForm(root) {
-
     const form = document.createElement('form');
     form.innerHTML = `
-      <h1>Settings</h1>
-      <h2>Change launch PIN</h2>
       <label>Current PIN<input type="password" inputmode="numeric" name="current" autocomplete="off"></label>
       <label>New PIN (4+ digits)<input type="password" inputmode="numeric" name="pin" autocomplete="off"></label>
       <label>Confirm new PIN<input type="password" inputmode="numeric" name="confirm" autocomplete="off"></label>

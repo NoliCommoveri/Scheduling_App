@@ -13,6 +13,12 @@ const Children = (() => {
   let viewInstanceId = null;
   let viewLessonId = null;
   let editActivityId = null; // when set, the Lesson detail shows the Activity edit form
+  // Which Course Instances subject buckets are expanded (§UX below) — kept
+  // outside the DOM, same convention as chores.js's openTypes, so it survives
+  // the render() an Open/Un-assign/Stamp action triggers. Keyed by subject
+  // text only (not per-child): a parent who likes "Math" open tends to like
+  // it open for every child.
+  const openInstanceSubjectGroups = new Set();
 
   function randomToken(len = 6) {
     const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -649,38 +655,81 @@ const Children = (() => {
     root.appendChild(instHeading);
 
     const instances = await listChildInstances(child.id);
-    const list = document.createElement('ul');
-    list.className = 'instance-list';
-    for (const inst of instances) {
-      const template = inst.sourceTemplateId ? await Storage.get('courses', inst.sourceTemplateId) : null;
-      const item = document.createElement('li');
-      item.className = 'list-row';
-      item.innerHTML = `
-        <div class="row-text">
-          <span class="row-title instance-name">${escapeHtml(inst.name)}</span>
-          <span class="row-meta instance-source">${template ? escapeHtml(template.name) : 'template no longer available'}</span>
-        </div>
-        <div class="row-actions">
-          <button data-action="open">Open</button>
-          <button data-action="delete">Un-assign</button>
-        </div>
-      `;
-      item.querySelector('[data-action="open"]').addEventListener('click', () => {
-        viewInstanceId = inst.id;
-        render(root);
+
+    // Grouped by subject, subjects alphabetical, instances alphabetical
+    // within each subject — the same convention (and the same
+    // .course-subject-group/.course-subject-groups classes) as the Course
+    // Template Library in courses.js, since a stamped Instance carries its
+    // template's subject forward verbatim (children.js's stampCourse).
+    const NO_SUBJECT = 'No subject';
+    const bySubject = new Map();
+    instances.forEach((inst) => {
+      const subject = (inst.subject && inst.subject.trim()) || NO_SUBJECT;
+      if (!bySubject.has(subject)) bySubject.set(subject, []);
+      bySubject.get(subject).push(inst);
+    });
+    const subjects = Array.from(bySubject.keys()).sort((a, b) => {
+      if (a === NO_SUBJECT) return 1;
+      if (b === NO_SUBJECT) return -1;
+      return a.localeCompare(b);
+    });
+
+    const groupsEl = document.createElement('div');
+    groupsEl.className = 'course-subject-groups';
+    for (const subject of subjects) {
+      const instancesInSubject = bySubject.get(subject).sort((a, b) => a.name.localeCompare(b.name));
+
+      const details = document.createElement('details');
+      details.className = 'course-subject-group';
+      details.open = openInstanceSubjectGroups.has(subject);
+      details.addEventListener('toggle', () => {
+        if (details.open) openInstanceSubjectGroups.add(subject); else openInstanceSubjectGroups.delete(subject);
       });
-      item.querySelector('[data-action="delete"]').addEventListener('click', async () => {
-        const confirmed = window.confirm(
-          `Permanently un-assign "${inst.name}"? This stops all future pacing/generation from it. ` +
-          `Content already delivered to the child's device is unaffected.`
-        );
-        if (!confirmed) return;
-        await deleteInstance(inst.id);
-        render(root);
-      });
-      list.appendChild(item);
+      const summary = document.createElement('summary');
+      summary.textContent = `${subject} (${instancesInSubject.length})`;
+      details.appendChild(summary);
+
+      const list = document.createElement('ul');
+      list.className = 'instance-list';
+      for (const inst of instancesInSubject) {
+        // The instance's own curriculumId (copied from the template at stamp
+        // time), not the template's name — the instance's name already IS
+        // the template's name (that's how stamping builds it), so showing
+        // the template name again on the second line was always just the
+        // title twice. The publisher/curriculum it came from is the
+        // information that line didn't yet carry.
+        const curriculum = inst.curriculumId ? await Storage.get('curricula', inst.curriculumId) : null;
+        const item = document.createElement('li');
+        item.className = 'list-row';
+        item.innerHTML = `
+          <div class="row-text">
+            <span class="row-title instance-name">${escapeHtml(inst.name)}</span>
+            <span class="row-meta instance-source">${curriculum ? escapeHtml(curriculum.name) : '(no curriculum)'}</span>
+          </div>
+          <div class="row-actions">
+            <button data-action="open">Open</button>
+            <button data-action="delete">Un-assign</button>
+          </div>
+        `;
+        item.querySelector('[data-action="open"]').addEventListener('click', () => {
+          viewInstanceId = inst.id;
+          render(root);
+        });
+        item.querySelector('[data-action="delete"]').addEventListener('click', async () => {
+          const confirmed = window.confirm(
+            `Permanently un-assign "${inst.name}"? This stops all future pacing/generation from it. ` +
+            `Content already delivered to the child's device is unaffected.`
+          );
+          if (!confirmed) return;
+          await deleteInstance(inst.id);
+          render(root);
+        });
+        list.appendChild(item);
+      }
+      details.appendChild(list);
+      groupsEl.appendChild(details);
     }
-    root.appendChild(list);
+    root.appendChild(groupsEl);
 
     const templates = await Courses.listCourseTemplates();
     const stampForm = document.createElement('form');

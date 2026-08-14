@@ -120,7 +120,6 @@ const Migrations = (() => {
 
   function renderPanel(root) {
     root.innerHTML = `
-      <h2>Database</h2>
       <p>Schema changes ship as numbered files and apply from this button. There
          is no console step and no command line — if a task ever seems to need
          one, that is a bug in the task.</p>

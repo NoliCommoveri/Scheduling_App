@@ -19,7 +19,6 @@ const Devices = (() => {
 
   async function render(root) {
     root.innerHTML = `
-      <h2>Devices</h2>
       <p>Pair a child's device so it can fetch its plan and record completions
          directly, instead of importing files.</p>
       <p class="devices-status" role="status">Loading…</p>
