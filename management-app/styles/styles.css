@@ -254,6 +254,49 @@ li {
   border-bottom: none;
 }
 
+/* ---- Chore Authoring (Module 06): collapsible per-type buckets ----
+   Same convention as .course-subject-group above. */
+.chore-type-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.chore-type-group {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.chore-type-group > summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 0.65rem 0;
+  list-style: none;
+}
+
+.chore-type-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.chore-type-group > summary::before {
+  content: "▶";
+  display: inline-block;
+  margin-right: 0.5rem;
+  font-size: 0.7em;
+  transition: transform 0.1s ease;
+}
+
+.chore-type-group[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.chore-type-group .chore-list {
+  padding-bottom: 0.35rem;
+}
+
+.chore-type-group .chore-list .list-row:last-child {
+  border-bottom: none;
+}
+
 /* ---- Shared list row (Courses, Lessons, Activities) ----
    Two fixed grid tracks — text, then controls — so the buttons sit in exactly
    the same place on every row regardless of how long the title is. A wrapping
@@ -489,6 +532,9 @@ button.secondary {
   gap: 1rem;
 }
 
+/* <details>/<summary> — same convention as .course-subject-group; the
+   browser owns open/closed state, so it defaults closed by omitting the
+   `open` attribute. */
 .pacing-card {
   border: 1px solid var(--color-border);
   border-radius: 6px;
@@ -496,18 +542,31 @@ button.secondary {
   background: #fff;
 }
 
-.pacing-card h2 {
-  margin: 0 0 0.5rem;
+.pacing-card > summary {
+  cursor: pointer;
+  font-weight: 600;
   font-size: 1.05rem;
+  list-style: none;
 }
 
-.pacing-progress {
-  margin: 0 0 0.75rem;
-  padding: 0.4rem 0.6rem;
-  font-size: 0.85rem;
-  color: #555;
-  background: var(--color-bg);
-  border-radius: 4px;
+.pacing-card[open] > summary {
+  margin-bottom: 0.5rem;
+}
+
+.pacing-card > summary::-webkit-details-marker {
+  display: none;
+}
+
+.pacing-card > summary::before {
+  content: "▶";
+  display: inline-block;
+  margin-right: 0.5rem;
+  font-size: 0.7em;
+  transition: transform 0.1s ease;
+}
+
+.pacing-card[open] > summary::before {
+  transform: rotate(90deg);
 }
 
 .pacing-form {
@@ -537,6 +596,9 @@ button.secondary {
   font-size: 1.05rem;
 }
 
+/* <details>/<summary> — same convention as .course-subject-group; closed by
+   default so a multi-course proposal doesn't dump every course's remainder
+   onto the screen at once. */
 .pending-box {
   padding: 0.5rem 0.75rem;
   margin-bottom: 1rem;
@@ -545,9 +607,31 @@ button.secondary {
   background: #fbfaf8;
 }
 
-.pending-box h3 {
-  margin: 0.25rem 0 0.5rem;
+.pending-box > summary {
+  cursor: pointer;
+  font-weight: 600;
   font-size: 0.95rem;
+  list-style: none;
+}
+
+.pending-box[open] > summary {
+  margin-bottom: 0.5rem;
+}
+
+.pending-box > summary::-webkit-details-marker {
+  display: none;
+}
+
+.pending-box > summary::before {
+  content: "▶";
+  display: inline-block;
+  margin-right: 0.5rem;
+  font-size: 0.7em;
+  transition: transform 0.1s ease;
+}
+
+.pending-box[open] > summary::before {
+  transform: rotate(90deg);
 }
 
 .pending-box > div {
