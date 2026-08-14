@@ -113,6 +113,15 @@ const Chores = (() => {
     const tier = await Storage.get('tiers', fields.difficultyTier);
     if (!tier) return 'Difficulty Tier must resolve to an existing Tier.';
     if (fields.blockHint && !BLOCK_HINTS.includes(fields.blockHint)) return 'Invalid block hint.';
+    // §2.8/FR-9 (Amendment A2) — an estimate for the Wall App's chip sizing,
+    // not a schedule; optional, and capped at a day (1440) since anything
+    // longer is a data-entry error, not a chore.
+    if (fields.expectedDurationMin) {
+      const n = Number(fields.expectedDurationMin);
+      if (!Number.isInteger(n) || n < 1 || n > 1440) {
+        return 'Expected duration (min) must be a whole number from 1 to 1440, or left blank.';
+      }
+    }
     // Shared Chores §2.2 — occurrences per day. Absent means one unlabeled
     // occurrence, today's behavior exactly (§2.4). No '-' in an id: the
     // Generation Log's occurrence id (CHR-{token}-{date}[-{instanceId}])
@@ -149,6 +158,7 @@ const Chores = (() => {
     };
     if (fields.notes && fields.notes.trim()) record.notes = fields.notes.trim();
     if (fields.blockHint) record.blockHint = fields.blockHint;
+    if (fields.expectedDurationMin) record.expectedDurationMin = Number(fields.expectedDurationMin);
     if (fields.childDays && Object.keys(fields.childDays).length) record.childDays = fields.childDays;
     if (fields.instances && fields.instances.length) record.instances = fields.instances;
     return record;
@@ -172,6 +182,7 @@ const Chores = (() => {
       difficultyTier: chore.difficultyTier,
       notes: chore.notes,
       blockHint: chore.blockHint,
+      expectedDurationMin: chore.expectedDurationMin,
       childDays,
       instances: chore.instances,
     });
@@ -781,6 +792,7 @@ const Chores = (() => {
       <label>Difficulty Tier<select name="difficultyTier">${tierOptions(tiers, chore.difficultyTier)}</select></label>
       <label>Notes<input type="text" name="notes" value="${escapeHtml(chore.notes || '')}"></label>
       <label>Block hint<select name="blockHint">${blockHintOptions(chore.blockHint)}</select></label>
+      <label>Expected duration (min)<input type="number" name="expectedDurationMin" min="1" max="1440" step="1" value="${chore.expectedDurationMin || ''}"></label>
       <p class="error" hidden></p>
       <button type="submit">Save</button>
       <button type="button" data-action="cancel">Cancel</button>
@@ -804,6 +816,7 @@ const Chores = (() => {
         difficultyTier: form.difficultyTier.value,
         notes: form.notes.value,
         blockHint: form.blockHint.value,
+        expectedDurationMin: form.expectedDurationMin.value,
         instances: instancesFieldset.readInstances(),
       });
       if (result.error) {
@@ -828,6 +841,7 @@ const Chores = (() => {
       <label>Difficulty Tier<select name="difficultyTier">${tierOptions(tiers, '')}</select></label>
       <label>Notes<input type="text" name="notes"></label>
       <label>Block hint<select name="blockHint">${blockHintOptions('')}</select></label>
+      <label>Expected duration (min)<input type="number" name="expectedDurationMin" min="1" max="1440" step="1"></label>
       <p class="error" hidden></p>
       <button type="submit">Add Chore</button>
     `;
@@ -846,6 +860,7 @@ const Chores = (() => {
         difficultyTier: form.difficultyTier.value,
         notes: form.notes.value,
         blockHint: form.blockHint.value,
+        expectedDurationMin: form.expectedDurationMin.value,
         instances: instancesFieldset.readInstances(),
       });
       if (result.error) {

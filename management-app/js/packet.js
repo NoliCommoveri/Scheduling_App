@@ -552,6 +552,7 @@ const Packet = (() => {
     // three dishes in three different parts of the kid's day.
     const blockHint = item.instanceBlockHint || c.blockHint;
     if (blockHint) row.blockHint = blockHint;
+    if (c.expectedDurationMin != null) row.expectedDurationMin = c.expectedDurationMin;
     // Shared Chores §5.3 — a `claim` chore's rows carry `shared: true` so the
     // Worker links every participant's row for this occurrence into one
     // `claim_groups` entry. `each` chores, including multi-child `each`,
