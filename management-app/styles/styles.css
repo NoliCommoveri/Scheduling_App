@@ -254,6 +254,49 @@ li {
   border-bottom: none;
 }
 
+/* ---- Chore Authoring (Module 06): collapsible per-type buckets ----
+   Same convention as .course-subject-group above. */
+.chore-type-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.chore-type-group {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.chore-type-group > summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 0.65rem 0;
+  list-style: none;
+}
+
+.chore-type-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.chore-type-group > summary::before {
+  content: "▶";
+  display: inline-block;
+  margin-right: 0.5rem;
+  font-size: 0.7em;
+  transition: transform 0.1s ease;
+}
+
+.chore-type-group[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.chore-type-group .chore-list {
+  padding-bottom: 0.35rem;
+}
+
+.chore-type-group .chore-list .list-row:last-child {
+  border-bottom: none;
+}
+
 /* ---- Shared list row (Courses, Lessons, Activities) ----
    Two fixed grid tracks — text, then controls — so the buttons sit in exactly
    the same place on every row regardless of how long the title is. A wrapping

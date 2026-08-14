@@ -22,6 +22,9 @@ const Chores = (() => {
   // elsewhere (e.g. children.js's viewChildId).
   let editingId = null;
   let filterChildId = '';
+  // Which chore-type buckets are expanded (§UX below) — kept outside the DOM
+  // so it survives the render() a filter change, edit, or delete triggers.
+  const openTypes = new Set();
 
   function randomToken(len = 6) {
     const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -599,14 +602,46 @@ const Chores = (() => {
     });
     root.appendChild(filterForm);
 
-    const list = document.createElement('ul');
-    list.className = 'chore-list';
+    // Grouped into collapsed-by-default buckets by chore type — a flat list
+    // across every type was one long scroll (§UX, same convention as the
+    // Course Template Library's subject grouping in courses.js). Every Chore's
+    // type is one of CHORE_TYPES by construction (validateFields rejects any
+    // other value), so grouping by that fixed list needs no "other" bucket.
+    const byType = new Map();
     for (const chore of chores) {
-      list.appendChild(
-        chore.id === editingId ? buildEditItem(root, chore, children, tiers) : buildDisplayItem(root, chore, children)
-      );
+      if (!byType.has(chore.choreType)) byType.set(chore.choreType, []);
+      byType.get(chore.choreType).push(chore);
     }
-    root.appendChild(list);
+
+    const groupsEl = document.createElement('div');
+    groupsEl.className = 'chore-type-groups';
+    for (const type of CHORE_TYPES.filter((t) => byType.has(t))) {
+      const choresOfType = byType.get(type);
+
+      // <details> defaults closed, same as course-subject-group, except a
+      // bucket holding the Chore currently being edited — Save/Cancel
+      // shouldn't vanish behind a closed summary.
+      const details = document.createElement('details');
+      details.className = 'chore-type-group';
+      details.open = openTypes.has(type) || choresOfType.some((c) => c.id === editingId);
+      details.addEventListener('toggle', () => {
+        if (details.open) openTypes.add(type); else openTypes.delete(type);
+      });
+      const summary = document.createElement('summary');
+      summary.textContent = `${type} (${choresOfType.length})`;
+      details.appendChild(summary);
+
+      const list = document.createElement('ul');
+      list.className = 'chore-list';
+      for (const chore of choresOfType) {
+        list.appendChild(
+          chore.id === editingId ? buildEditItem(root, chore, children, tiers) : buildDisplayItem(root, chore, children)
+        );
+      }
+      details.appendChild(list);
+      groupsEl.appendChild(details);
+    }
+    root.appendChild(groupsEl);
 
     root.appendChild(buildCreateForm(root, children, tiers));
     root.appendChild(buildBulkImportSection(root));
