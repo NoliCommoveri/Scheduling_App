@@ -1253,6 +1253,13 @@ const WALL_ROUTES = [
   ['/api/wall/rewards/entries', 'POST', { childId: 'CH-1', entries: [] }],
   ['/api/wall/assignments/AS-1/claim', 'POST', { childId: 'CH-1' }],
   ['/api/wall/assignments/AS-1/claim?childId=CH-1', 'DELETE', undefined],
+  // Wall Calendar Redesign §12
+  ['/api/wall/slots', 'GET', undefined],
+  ['/api/wall/slots', 'PUT', { childId: 'CH-1', subjectKind: 'chore', subjectKey: 'CHORE-1', startMin: 480 }],
+  ['/api/wall/slots', 'DELETE', { childId: 'CH-1', subjectKind: 'chore', subjectKey: 'CHORE-1' }],
+  ['/api/wall/slots/day', 'PUT', { childId: 'CH-1', subjectKind: 'chore', subjectKey: 'CHORE-1', date: '2026-08-14', durationMin: 30 }],
+  ['/api/wall/slots/day', 'DELETE', { childId: 'CH-1', subjectKind: 'chore', subjectKey: 'CHORE-1', date: '2026-08-14' }],
+  ['/api/wall/events?from=2026-08-01&to=2026-08-14', 'GET', undefined],
 ];
 
 test('§12.13: a child device token is 401 on every /api/wall/* route', async () => {
@@ -1551,6 +1558,242 @@ test('a child pair code still requires a childId', async () => {
   const { env } = makeEnv();
   const res = await call(env, '/api/devices/pair-code', { method: 'POST', token: PARENT_TOKEN, body: {} });
   assert.equal(res.status, 400);
+});
+
+// ================================  Wall Calendar Redesign §12 (Phase 1a)
+//
+// Placements live in `wall_slots` / `wall_slot_days`, tables outside the
+// child-scoping scheme entirely — so these routes use `resolveSlotChildId`,
+// not `withWallChild`, and the one thing worth checking that the ordinary
+// wall routes above don't need to is the sentinel `childId` rule (§12): ''
+// is accepted only on a chore placement.
+
+test('§12/§14.11a: the sentinel childId is accepted on a chore placement and stores one row', async () => {
+  const { env, statements } = makeEnv(wallResolver());
+  const res = await call(env, '/api/wall/slots', {
+    method: 'PUT', token: WALL_TOKEN,
+    body: { childId: '', subjectKind: 'chore', subjectKey: 'CHORE-1', startMin: 240 },
+  });
+  assert.equal(res.status, 200);
+  const insert = statements.find((s) => s.sql.includes('INSERT INTO wall_slots'));
+  assert.ok(insert, 'a household placement is stored');
+  assert.equal(insert.args[0], '', 'child_id is the sentinel, not a real id');
+});
+
+test('§12/§14.11a: the sentinel childId is refused on a school placement', async () => {
+  const { env, statements } = makeEnv(wallResolver());
+  const res = await call(env, '/api/wall/slots', {
+    method: 'PUT', token: WALL_TOKEN,
+    body: { childId: '', subjectKind: 'school', subjectKey: 'Algebra', startMin: 480 },
+  });
+  assert.equal(res.status, 400);
+  assert.equal(statements.filter((s) => s.sql.includes('wall_slots')).length, 0, 'nothing is written');
+});
+
+test('§12/§14.11a: a GET never expands the sentinel row per active child', async () => {
+  const { env } = makeEnv(wallResolver((sql) => (
+    sql.startsWith('SELECT * FROM wall_slots')
+      ? { results: [{ child_id: '', subject_kind: 'chore', subject_key: 'CHORE-1', instance_key: '', start_min: 240, duration_min: null }] }
+      : {}
+  )));
+  const res = await call(env, '/api/wall/slots', { token: WALL_TOKEN });
+  const out = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(out.slots.length, 1, 'the sentinel is one row, not fanned out across the roster');
+  assert.equal(out.slots[0].child_id, '');
+});
+
+test('§14.11: an archived or unknown childId writes no placement (PUT or DELETE, either slots route)', async () => {
+  const cases = [
+    ['/api/wall/slots', 'PUT', { subjectKind: 'chore', subjectKey: 'CHORE-1', startMin: 240 }],
+    ['/api/wall/slots', 'DELETE', { subjectKind: 'chore', subjectKey: 'CHORE-1' }],
+    ['/api/wall/slots/day', 'PUT', { subjectKind: 'chore', subjectKey: 'CHORE-1', date: '2026-08-14', durationMin: 30 }],
+    ['/api/wall/slots/day', 'DELETE', { subjectKind: 'chore', subjectKey: 'CHORE-1', date: '2026-08-14' }],
+  ];
+  for (const [path, method, rest] of cases) {
+    for (const childId of ['CH-ARCHIVED', 'CH-NOT-A-CHILD']) {
+      const { env, statements } = makeEnv(wallResolver());
+      const res = await call(env, path, { method, token: WALL_TOKEN, body: { childId, ...rest } });
+      assert.equal(res.status, 400, `${method} ${path} with ${childId}`);
+      assert.equal(
+        statements.filter((s) => s.sql.includes('wall_slot')).length, 0,
+        `${method} ${path} must write nothing for ${childId}`
+      );
+    }
+  }
+});
+
+test('§14.11: startMin and durationMin are bound to the 15-minute grid', async () => {
+  const cases = [
+    { body: { startMin: 1 }, error: /startMin/ },
+    { body: { startMin: -15 }, error: /startMin/ },
+    { body: { startMin: 1440 }, error: /startMin/ },
+    { body: { startMin: 480, durationMin: 10 }, error: /durationMin/ },
+    { body: { startMin: 1425, durationMin: 30 }, error: /midnight/ },
+  ];
+  for (const { body, error } of cases) {
+    const { env } = makeEnv(wallResolver());
+    const res = await call(env, '/api/wall/slots', {
+      method: 'PUT', token: WALL_TOKEN,
+      body: { childId: 'CH-1', subjectKind: 'chore', subjectKey: 'CHORE-1', ...body },
+    });
+    assert.equal(res.status, 400, JSON.stringify(body));
+    assert.match((await res.json()).error, error);
+  }
+});
+
+test('§3.2: un-placing deletes both the placement and its per-day overrides', async () => {
+  const { env, statements } = makeEnv(wallResolver());
+  const res = await call(env, '/api/wall/slots', {
+    method: 'DELETE', token: WALL_TOKEN,
+    body: { childId: 'CH-1', subjectKind: 'chore', subjectKey: 'CHORE-1' },
+  });
+  assert.equal(res.status, 200);
+  assert.ok(statements.some((s) => s.sql.startsWith('DELETE FROM wall_slots ')), 'the placement is removed');
+  assert.ok(
+    statements.some((s) => s.sql.startsWith('DELETE FROM wall_slot_days')),
+    'an override of a placement that no longer exists is unreachable garbage'
+  );
+});
+
+test('§3.5.2: a wall_slot_days write requires a real duration, never null', async () => {
+  const { env, statements } = makeEnv(wallResolver());
+  const res = await call(env, '/api/wall/slots/day', {
+    method: 'PUT', token: WALL_TOKEN,
+    body: { childId: 'CH-1', subjectKind: 'chore', subjectKey: 'CHORE-1', date: '2026-08-14', durationMin: null },
+  });
+  assert.equal(res.status, 400);
+  assert.equal(statements.filter((s) => s.sql.includes('wall_slot_days')).length, 0);
+});
+
+test('§12: GET /api/wall/slots bounds wall_slot_days to the window but returns every placement', async () => {
+  const { env, statements } = makeEnv(wallResolver((sql) => {
+    if (sql.startsWith('SELECT * FROM wall_slots')) return { results: [{ child_id: 'CH-1' }] };
+    if (sql.startsWith('SELECT * FROM wall_slot_days')) return { results: [{ child_id: 'CH-1', date: '2026-08-14' }] };
+    return {};
+  }));
+  const res = await call(env, '/api/wall/slots?from=2026-08-14&to=2026-08-14', { token: WALL_TOKEN });
+  const out = await res.json();
+  assert.equal(out.slots.length, 1);
+  assert.equal(out.days.length, 1);
+  const daysQuery = statements.find((s) => s.sql.startsWith('SELECT * FROM wall_slot_days'));
+  assert.ok(daysQuery.sql.includes('WHERE date >= ?1 AND date <= ?2'));
+  assert.deepEqual(daysQuery.args, ['2026-08-14', '2026-08-14']);
+});
+
+test('§7.2/§14.11: /api/wall/events refuses a window over 62 days', async () => {
+  const { env } = makeEnv(wallResolver());
+  const res = await call(env, '/api/wall/events?from=2026-01-01&to=2026-04-01', { token: WALL_TOKEN });
+  assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /62/);
+});
+
+test('§7.2: the events query joins active children and dedupes by source and date', async () => {
+  const { env, statements } = makeEnv(wallResolver());
+  const res = await call(env, '/api/wall/events?from=2026-08-01&to=2026-10-01', { token: WALL_TOKEN });
+  assert.equal(res.status, 200, 'exactly 62 days is the boundary, not the refusal');
+  const query = statements.find((s) => s.sql.includes('FROM assignments a'));
+  assert.ok(query.sql.includes('JOIN children c ON c.id = a.child_id AND c.active = 1'));
+  assert.ok(query.sql.includes("a.kind = 'event'"));
+  assert.ok(query.sql.includes('GROUP BY COALESCE(a.source_id, a.id), a.date'));
+});
+
+test('§14.15: no wall route ever touches expected_duration_min', async () => {
+  const { env, statements } = makeEnv(wallResolver((sql) => (
+    sql.startsWith('UPDATE assignments') ? { meta: { changes: 1 } } : {}
+  )));
+  await call(env, '/api/wall/completions', {
+    method: 'POST', token: WALL_TOKEN, outboxProtocol: 2,
+    body: { childId: 'CH-1', completions: [{ id: 'AS-1', status: 'complete' }] },
+  });
+  await call(env, '/api/wall/slots', {
+    method: 'PUT', token: WALL_TOKEN,
+    body: { childId: 'CH-1', subjectKind: 'chore', subjectKey: 'CHORE-1', startMin: 240, durationMin: 45 },
+  });
+  assert.ok(
+    !statements.some((s) => s.sql.includes('expected_duration_min')),
+    'the wall adjusts a duration in a table it owns, never the parent-owned column'
+  );
+});
+
+test('§14.15: a durationMin sent to /api/wall/completions is rejected like any unknown key', async () => {
+  const { env } = makeEnv(wallResolver());
+  const res = await call(env, '/api/wall/completions', {
+    method: 'POST', token: WALL_TOKEN, outboxProtocol: 2,
+    body: { childId: 'CH-1', completions: [{ id: 'AS-1', durationMin: 45 }] },
+  });
+  const out = await res.json();
+  assert.match(out.rejected[0].error, /Not a child-writable column: durationMin/);
+});
+
+// ---- §8.3.1: the claim route can now carry the completion sheet's time ----
+
+function claimWonResolver(extra = () => ({})) {
+  return wallResolver((sql) => {
+    if (sql.includes('SELECT claim_group, rescinded_at FROM assignments')) {
+      return { first: { claim_group: 'GRP-1', rescinded_at: null } };
+    }
+    if (sql.includes('SET claimed_by = ?1, claimed_at = ?2')) return { meta: { changes: 2 } };
+    if (sql.startsWith('SELECT * FROM assignments WHERE id')) return { first: { id: 'AS-1' } };
+    return extra(sql);
+  });
+}
+
+test('§8.3.1: a completedAt in the claim body lands on the row', async () => {
+  const past = Date.now() - 60_000;
+  const { env, statements } = makeEnv(claimWonResolver());
+  const res = await call(env, '/api/wall/assignments/AS-1/claim', {
+    method: 'POST', token: WALL_TOKEN, body: { childId: 'CH-1', completedAt: past },
+  });
+  assert.equal(res.status, 200);
+  const complete = statements.find((s) => s.sql.includes("SET status = 'complete'"));
+  assert.equal(complete.args[0], past, "the sheet's time, not the route's own clock");
+});
+
+test('§8.3.1: an absent completedAt still falls back to now, unchanged for existing Child App calls', async () => {
+  const before = Date.now();
+  const { env, statements } = makeEnv(claimWonResolver());
+  const res = await call(env, '/api/wall/assignments/AS-1/claim', {
+    method: 'POST', token: WALL_TOKEN, body: { childId: 'CH-1' },
+  });
+  assert.equal(res.status, 200);
+  const complete = statements.find((s) => s.sql.includes("SET status = 'complete'"));
+  assert.ok(complete.args[0] >= before, "falls back to the route's own clock");
+});
+
+test('§8.3.1: a future completedAt is refused server-side, on the claim route and on completions alike', async () => {
+  const future = Date.now() + 60_000;
+
+  const { env: claimEnv } = makeEnv(claimWonResolver());
+  const claimRes = await call(claimEnv, '/api/wall/assignments/AS-1/claim', {
+    method: 'POST', token: WALL_TOKEN, body: { childId: 'CH-1', completedAt: future },
+  });
+  assert.equal(claimRes.status, 400);
+  assert.match((await claimRes.json()).error, /future/);
+
+  const { env: completeEnv } = makeEnv(wallResolver());
+  const completeRes = await call(completeEnv, '/api/wall/completions', {
+    method: 'POST', token: WALL_TOKEN, outboxProtocol: 2,
+    body: { childId: 'CH-1', completions: [{ id: 'AS-1', status: 'complete', completedAt: future }] },
+  });
+  const out = await completeRes.json();
+  assert.match(out.rejected[0].error, /future/);
+});
+
+test('§8.3.1: a losing claim writes no completed_at at all', async () => {
+  const { env, statements } = makeEnv(wallResolver((sql) => {
+    if (sql.includes('SELECT claim_group, rescinded_at FROM assignments')) {
+      return { first: { claim_group: 'GRP-1', rescinded_at: null } };
+    }
+    if (sql.includes('SET claimed_by = ?1, claimed_at = ?2')) return { meta: { changes: 0 } };
+    if (sql.includes('SELECT claimed_by FROM assignments')) return { first: { claimed_by: 'CH-2' } };
+    return {};
+  }));
+  const res = await call(env, '/api/wall/assignments/AS-1/claim', {
+    method: 'POST', token: WALL_TOKEN, body: { childId: 'CH-1', completedAt: Date.now() },
+  });
+  assert.equal((await res.json()).claimed, false);
+  assert.ok(!statements.some((s) => s.sql.includes("SET status = 'complete'")));
 });
 
 // ---- §8.5: the short URL --------------------------------------------------

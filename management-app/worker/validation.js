@@ -79,9 +79,14 @@ export function validateCompletionValue(key, value) {
       }
       return null;
     case 'completedAt':
-      return Number.isSafeInteger(value) && value >= 0
-        ? null
-        : 'completedAt must be a millisecond timestamp.';
+      if (!Number.isSafeInteger(value) || value < 0) {
+        return 'completedAt must be a millisecond timestamp.';
+      }
+      // Wall Calendar Redesign §8.3.1 — the not-in-the-future bound has to
+      // live here, not only in the wall's completion sheet, because this
+      // function is the one place both /api/completions-style routes and
+      // the claim route already run every completedAt value through.
+      return value <= Date.now() ? null : 'completedAt must not be in the future.';
     case 'grade':
       return typeof value === 'number' && Number.isFinite(value)
         ? null
@@ -106,6 +111,28 @@ export function validateCompletionValue(key, value) {
       // column added to that map without a rule here fails closed.
       return `No validation rule for ${key}.`;
   }
+}
+
+// ---- wall placements (Wall Calendar Redesign §3.2, §12) ----
+
+export const SLOT_SUBJECT_KINDS = new Set(['chore', 'school']);
+
+// A placement's clock position: minutes from local midnight, snapped to the
+// 15-minute grid (§4.3). `1440` itself (midnight of the next day) is excluded
+// — a placement lives on exactly one day's grid.
+export function isValidStartMin(value) {
+  return Number.isInteger(value) && value >= 0 && value < 1440 && value % 15 === 0;
+}
+
+// A duration override on `wall_slots` or `wall_slot_days` (§3.5.1's rows 1-2
+// of the precedence chain). `null` is always valid — it is how a standing
+// `wall_slots` override is cleared, returning a chip to the assignment's own
+// estimate. `wall_slot_days` never stores null (a null row is meaningless;
+// the route deletes the row instead), but the same positive-multiple-of-15
+// shape applies whenever a value is present.
+export function isValidSlotDuration(value) {
+  if (value === null) return true;
+  return Number.isInteger(value) && value > 0 && value % 15 === 0;
 }
 
 // ---- curriculum mirror (§5.1) ----

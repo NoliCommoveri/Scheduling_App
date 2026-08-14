@@ -23,6 +23,9 @@ import {
   randomPairCode,
   PAIR_CODE_ALPHABET,
   timingSafeEqual,
+  SLOT_SUBJECT_KINDS,
+  isValidStartMin,
+  isValidSlotDuration,
 } from '../management-app/worker/validation.js';
 
 // The registry cannot be imported: it `import`s `.sql` files, which only
@@ -90,6 +93,39 @@ test('validateCompletionValue rejects malformed timestamps, grades and dates', (
   assert.equal(validateCompletionValue('grade', 0), null);
   assert.equal(validateCompletionValue('deferredTo', '2026-08-12'), null);
   assert.equal(validateCompletionValue('childSortOrder', -3), null);
+});
+
+// Wall Calendar Redesign §8.3.1 — the not-in-the-future bound has to be
+// server-side, not merely a disabled confirm button in the sheet.
+test('validateCompletionValue refuses a completedAt in the future', () => {
+  const problem = validateCompletionValue('completedAt', Date.now() + 60_000);
+  assert.ok(problem, 'expected an error string');
+  assert.match(problem, /future/);
+  // The instant itself, and any moment up to it, are legitimate: a parent
+  // correcting yesterday evening's bins at breakfast is a real entry.
+  assert.equal(validateCompletionValue('completedAt', Date.now()), null);
+  assert.equal(validateCompletionValue('completedAt', Date.now() - 60_000), null);
+});
+
+// -------------------------------- wall placements (§3.2, §12) --------------
+
+test('isValidStartMin accepts the 15-minute grid and nothing else', () => {
+  for (const ok of [0, 15, 360, 1425]) assert.equal(isValidStartMin(ok), true, `${ok} should be valid`);
+  for (const bad of [-15, 1, 1430, 1440, 1.5, '360', null, undefined]) {
+    assert.equal(isValidStartMin(bad), false, `${JSON.stringify(bad)} should be invalid`);
+  }
+});
+
+test('isValidSlotDuration accepts null (clears an override) and positive multiples of 15', () => {
+  assert.equal(isValidSlotDuration(null), true);
+  for (const ok of [15, 30, 300]) assert.equal(isValidSlotDuration(ok), true, `${ok} should be valid`);
+  for (const bad of [0, -15, 10, 1.5, '30', undefined]) {
+    assert.equal(isValidSlotDuration(bad), false, `${JSON.stringify(bad)} should be invalid`);
+  }
+});
+
+test('SLOT_SUBJECT_KINDS is exactly chore and school', () => {
+  assert.deepEqual([...SLOT_SUBJECT_KINDS].sort(), ['chore', 'school']);
 });
 
 test('validateCompletionValue bounds childBlockHint', () => {
