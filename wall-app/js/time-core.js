@@ -5,6 +5,10 @@
 // §11.3. Not named in §13's file table — it is small enough to have been
 // folded into `day-ui.js`, but §14.12 asks for it as a pure, unit-tested
 // function, and only `*-core.js` files are DOM-free and loaded by the tests.
+// §16 Phase 5b adds `formatDurationMin` — the overridden-chip marker and
+// the duration-adjust sheet (§3.5.2) both render a duration as "45m"/"1h
+// 15m" rather than a clock time, so it earns its own tiny formatter here
+// rather than one-off string building in day-ui.js.
 
 (function (g) {
   "use strict";
@@ -31,5 +35,14 @@
     return formatMinutes(d.getHours() * 60 + d.getMinutes(), fmt);
   }
 
-  g.TimeCore = { formatMinutes: formatMinutes, formatDate: formatDate };
+  // A duration, not a clock time — "45m", "1h", "1h 15m". `min` is assumed
+  // positive (durations are validated as such server-side, §3.5.1).
+  function formatDurationMin(min) {
+    var h = Math.floor(min / 60), m = min % 60;
+    if (h === 0) return m + "m";
+    if (m === 0) return h + "h";
+    return h + "h " + m + "m";
+  }
+
+  g.TimeCore = { formatMinutes: formatMinutes, formatDate: formatDate, formatDurationMin: formatDurationMin };
 })(typeof window !== "undefined" ? window : globalThis);

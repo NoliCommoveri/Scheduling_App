@@ -7,7 +7,9 @@
 // adds slots-core.js's collision check (§9) — the write path itself (the
 // drag/tap gestures, the API calls) lives in day-ui.js/api.js, which do DOM
 // and network IO and so are exercised manually (§13's acceptance checks),
-// not here.
+// not here. §16 Phase 5b adds slots-core.js's assignedDurationMin and
+// time-core.js's formatDurationMin — the duration-adjust sheet's own DOM
+// wiring stays in day-ui.js, exercised manually alongside Phase 5's.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -306,6 +308,12 @@ test('isOverridden is true with either override present, false with neither', ()
   assert.equal(SlotsCore.isOverridden(null, { duration_min: 10 }), true);
 });
 
+test('§16 Phase 5b — assignedDurationMin is row 3/4 of the chain in isolation, with no override applied', () => {
+  assert.equal(SlotsCore.assignedDurationMin({ expected_duration_min: 30 }), 30);
+  assert.equal(SlotsCore.assignedDurationMin({ expected_duration_min: null }), 15);
+  assert.equal(SlotsCore.assignedDurationMin({}), 15);
+});
+
 // ===========================================================  collisions (§9, §16 Phase 5)
 
 test('isPrivateChore: null claim_group is private, any claim_group is shared', () => {
@@ -389,4 +397,12 @@ test('formatMinutes handles midnight and noon, the two that catch naive implemen
   assert.equal(TimeCore.formatMinutes(0, '12h'), '12:00 am');
   assert.equal(TimeCore.formatMinutes(12 * 60, '24h'), '12:00');
   assert.equal(TimeCore.formatMinutes(12 * 60, '12h'), '12:00 pm');
+});
+
+test('§16 Phase 5b — formatDurationMin: minutes-only, hours-only, and mixed', () => {
+  assert.equal(TimeCore.formatDurationMin(15), '15m');
+  assert.equal(TimeCore.formatDurationMin(45), '45m');
+  assert.equal(TimeCore.formatDurationMin(60), '1h');
+  assert.equal(TimeCore.formatDurationMin(120), '2h');
+  assert.equal(TimeCore.formatDurationMin(75), '1h 15m');
 });

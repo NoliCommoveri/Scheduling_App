@@ -4,9 +4,11 @@
 
 **Status:** in build. **§18 signed off by Ray, 2026-08-14 — Phase 0 complete.** Phase 1a
 (`wall_slots`/`wall_slot_days` migration + Worker routes), Phase 1b (§3.5's chore duration in
-the Management App), Phase 2 (shell & nav), Phase 3 (day view, read-only), and Phase 4 (block
-mode) are complete; Phase 5 (placement writes) is clear to start. Revised 2026-08-14 after a
-design review; see §20.
+the Management App), Phase 2 (shell & nav), Phase 3 (day view, read-only), Phase 4 (block
+mode), Phase 5 (placement writes), and Phase 5b (duration adjust) are complete; Phase 6
+(completion) is clear to start. Revised 2026-08-14 after a design review; see §20. Phase 5b's
+gesture choice (long-press opens the duration sheet — §3.5.2) is flagged for Ray's
+confirmation, not yet signed off the way §0's decisions were.
 **Date:** 2026-08-14.
 **Depends on:** `TDS_Slice_Online_Revamp.md` (controlling design), `TDS_Slice_Wall_Display_App.md`
 (the app this rewrites), `TDS_Slice_Shared_Chores.md` (claim arbitration).
@@ -486,6 +488,32 @@ Adjusting a duration opens a two-button choice, exactly as Ray asked: **Just thi
 `wall_slot_days`; **This and future** → `wall_slots.duration_min`. A third, quieter action appears
 whenever an override is in force: **Use the assigned time (30 min)**, which deletes the override and
 returns the chip to row 3 of the chain.
+
+```
+[DECISION] What gesture opens the adjust control
+Decided: a LONG-PRESS (held ~550ms with no movement) on a PLACED chip, built
+  §16 Phase 5b. Not put to Ray — flagged here for confirmation rather than
+  argued as settled the way this section's other choices are.
+Rationale: the three actions themselves are pinned by this section's own
+  text, but the gesture that opens them isn't, and a plain tap on a chip is
+  already spoken for — `onChipTap`, reserved since Phase 5 for the
+  completion sheet (Phase 6). A drag moves the chip; that leaves a held,
+  stationary press as the one gesture not already claimed. Tray items
+  (unplaced chores) don't get it — there is no standing placement yet to
+  adjust a duration ON, so the gesture is wired only where §16 Phase 5's
+  chips already exist (buildColumn), not the tray.
+Alternatives not built: a dedicated small control drawn on every chip (the
+  duration text itself as a tap target) — rejected as visual clutter on an
+  un-overridden 15-minute chip, which is the common case (§4.3) and already
+  one grid row tall; a chip-level "..." icon — same clutter, plus a second
+  hit target inside an already-small chip on a two-metre-viewing-distance
+  display (§10.2/§11.1's constraints).
+Consequence: a held chip gets a transient `.pressing` opacity change so the
+  gesture has SOME feedback before the sheet opens — no animated
+  box-shadow (§11.2).
+Locked for: nothing yet — this is the one open item Phase 5b leaves for
+  Ray, unlike §0's decisions which were all settled in-session.
+```
 
 - **An overridden chip is marked**, subtly — the duration reads in italic with a small dot. A wall
   that silently disagrees with the assignment about how long something takes is worse than one that
@@ -1413,8 +1441,8 @@ No phase exceeds the `CLAUDE.md` §V.A 2–3 hour ceiling. Each ends with a §VI
 | **2 — Shell & nav** | Hamburger, sidebar, view routing, date stepper, land-on-today, centre refresh, 10-minute cadence, interaction-triggered polls, rollover reset. Ambient board still rendering underneath. | ~2 h |
 | **3 — Day view, read-only** | Column-per-child grid over 06:00–23:00 with early/late strips, sticky headers and gutter, now-line and scroll-to-now, events band, 15-minute rows, unscheduled tray, and the §11.3 time formatter with its Settings control. `chores-core.js` generalization, `slots-core.js` lookup. Replaces `ambient-ui.js`. ✅ Landed. | ~2.5 h |
 | **4 — Block mode** | Collapse/expand into the four blocks, block hours, unplaced-chore placement by `block_hint`. ✅ Landed. | ~1.5 h |
-| **5 — Placement writes** | Drag-and-drop and tap-to-place, 15-minute snapping, the slots API, carry-forward, collision warnings (§9 — at the drag, against that day's rows), and §3.1.2's split: per-child placements for `each`, the single child-less row for `claim`. | ~2.5 h |
-| **5b — Duration adjust** | §3.5.2's fork: the adjust control, "just this one" vs "this and future", "use the assigned time", the overridden-chip marker, and the precedence chain in `slots-core.js`. | ~1.5 h |
+| **5 — Placement writes** | Drag-and-drop and tap-to-place, 15-minute snapping, the slots API, carry-forward, collision warnings (§9 — at the drag, against that day's rows), and §3.1.2's split: per-child placements for `each`, the single child-less row for `claim`. ✅ Landed. | ~2.5 h |
+| **5b — Duration adjust** | §3.5.2's fork: the adjust control, "just this one" vs "this and future", "use the assigned time", the overridden-chip marker, and the precedence chain in `slots-core.js`. ✅ Landed — the adjust control is a long-press on a placed chip (§3.5.2's own text pins the three actions but not the gesture; a plain tap was already spoken for by Phase 6's `onChipTap`). Flagged for confirmation, not signed off. | ~1.5 h |
 | **6 — Completion** | The completion sheet (who by column, when by stepper), the earn entry, `pendingEarns`, Undo both paths, the claim path and "got there first" — **sending the sheet's time on both paths**, which Phase 1a made possible — and done-in-place styling. | ~2.5 h |
 | **6b — Sound** | `remind-core.js` and `sound.js`: the two synthesized tones, the start-time chime and its §11.5 pre-chime poll, the audio unlock and its indicator, quiet hours, the per-child toggle, and Settings' Test sound. | ~1.5 h |
 | **7 — School blocks** | `school-core.js`, course grouping, the read-only block, the rollup, **and the tray's course entries (§3.4) — the gesture that creates a block at all**. | ~2 h |

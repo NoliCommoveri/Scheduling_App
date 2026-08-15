@@ -26,7 +26,14 @@
 // substantially (the mode bar, collapsed block rows, and the single-block
 // expanded grid); chores-core.js gains the block-classification helpers.
 // No new files.
-const CACHE_NAME = "wall-display-shell-v5";
+// v5: §16 Phase 5 — placement writes. day-ui.js, api.js, slots-core.js and
+// wall.css all change substantially for drag/tap-to-place. No new files.
+// v6: §16 Phase 5b — the duration-adjust sheet. day-ui.js (long-press
+// gesture, the sheet), api.js (wall_slot_days PUT/DELETE), slots-core.js
+// (assignedDurationMin), time-core.js (formatDurationMin), and wall.css
+// (the sheet, the chip duration marker, the press state) all change.
+// No new files.
+const CACHE_NAME = "wall-display-shell-v6";
 
 const APP_SHELL = [
   "./",
