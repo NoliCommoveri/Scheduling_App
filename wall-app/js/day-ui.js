@@ -1,10 +1,7 @@
 // day-ui.js — the day view: column-per-child grid, sticky header, the
 // events band, the unscheduled tray, early/late strips, and the now-line.
 // TDS_Slice_Wall_Calendar_Redesign.md §4 (the day view), §11.3 (time
-// format). Phase 3 scope: READ-ONLY. Chips are not draggable (§16 Phase 5),
-// the tray's items are not tappable-to-place, and tapping a chip is a
-// no-op stub — the same posture ambient-ui.js took with tile taps before
-// Phase 4a. Replaces `ambient-ui.js` outright (§13).
+// format). Replaces `ambient-ui.js` outright (§13).
 //
 // Layout is plain flexbox, not CSS Grid: §4.3's "vertical scrolling only,
 // no horizontal scroll anywhere" means the column count never overflows the
@@ -13,15 +10,26 @@
 // just `top`/`height` in px within each column — one scroll container, one
 // coordinate system.
 //
-// §16 Phase 4 adds block mode (§4.4): the same day, collapsed into the four
-// canonical blocks, or expanded to just one of them at full 15-minute
-// resolution. Still read-only — an unplaced chore appears inside its
-// block_hint block instead of the tray (§3.4's last paragraph), but nothing
-// is draggable until Phase 5. The full-day grid built in Phase 3 is now one
-// of three "modes" this file renders; `buildGutter`/`buildGridBody`/
-// `buildColumn` were generalized to a `[rangeStart, rangeEnd)` window so the
-// single-block grid reuses the exact same positioning code the full grid
-// uses, rather than a second copy that could drift from it.
+// §16 Phase 4 added block mode (§4.4): the same day, collapsed into the
+// four canonical blocks, or expanded to just one of them at full 15-minute
+// resolution. `buildGutter`/`buildGridBody`/`buildColumn` were generalized
+// to a `[rangeStart, rangeEnd)` window so the single-block grid reuses the
+// exact same positioning code the full grid uses, rather than a second copy
+// that could drift from it.
+//
+// §16 Phase 5 adds placement WRITES: pointer-based drag-and-drop (a chip or
+// a tray item, held and moved past a small threshold) and tap-to-place (a
+// tray item tapped to select it, then a time on the grid tapped to place
+// it there) — both funnel through `commitPlacement`, so a drag and a tap
+// produce the exact same write. Both are scoped to the full-day grid and
+// the single-expanded-block grid, the two modes with an actual time axis
+// to drop onto; collapsed block-mode rows have none and stay read-only, as
+// does the events band. `collision-flash`/the toast give §9's warning a
+// place to show without ever refusing the write. Un-placing is the mirror
+// gesture: drag a placed chip back onto the tray row. A placed chip's TAP
+// (as opposed to a drag) still calls `opts.onChipTap`, reserved for the
+// completion sheet (Phase 6) — this file only ever fires it on a
+// no-movement pointer-up, never as a side effect of a drag.
 
 (function (g) {
   "use strict";
@@ -29,6 +37,7 @@
   var GRID_START_MIN = 6 * 60; // 06:00 (§4.3)
   var GRID_END_MIN = 23 * 60; // 23:00
   var ROW_MIN = 15;
+  var DRAG_THRESHOLD_PX = 8; // below this, a pointer-down+up is a TAP, not a drag
 
   function el(html) {
     var t = document.createElement("template");
@@ -103,6 +112,269 @@
     return bar;
   }
 
+  // ---- placement writes (§16 Phase 5): drag-and-drop, tap-to-place,
+  // collisions, and the toast that reports both without ever refusing a
+  // write (§3.6, §9). Everything below reads/writes `current`/`currentRoot`
+  // (the module state `render()` already keeps) and is pure UI wiring — the
+  // actual write goes through `WallApi.putSlot`/`deleteSlot` and the
+  // collision math goes through the pure `SlotsCore.findCollision`.
+
+  function pointInRect(x, y, rect) {
+    return rect && x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+  }
+
+  function snapToRow(rawMin) {
+    return Math.round(rawMin / ROW_MIN) * ROW_MIN;
+  }
+
+  // Pointer Y -> a startMin in the SAME coordinate space `bodyEl` was laid
+  // out in (real clock minutes in grid mode; §4.4's block-virtual minutes,
+  // which may run past 1440, in single-block mode) — `% 1440` at the call
+  // site converts back to a real clock minute before it reaches the API.
+  function startMinFromPointer(clientY, bodyEl, rangeStart, rangeEnd) {
+    var rect = bodyEl.getBoundingClientRect();
+    var rh = rowHeightPx();
+    var rawMin = ((clientY - rect.top) / rh) * ROW_MIN;
+    var snapped = rangeStart + snapToRow(rawMin);
+    var maxStart = rangeEnd - ROW_MIN;
+    if (snapped < rangeStart) snapped = rangeStart;
+    if (snapped > maxStart) snapped = maxStart;
+    return snapped;
+  }
+
+  function showToast(message, kind, sticky) {
+    var root = currentRoot;
+    if (!root) return;
+    var existing = root.querySelector(".wall-toast");
+    if (existing) existing.remove();
+    if (message == null) return;
+    var toast = el('<div class="wall-toast' + (kind ? " " + kind : "") + '"></div>');
+    toast.textContent = message;
+    root.appendChild(toast);
+    requestAnimationFrame(function () { toast.classList.add("visible"); });
+    if (!sticky) {
+      setTimeout(function () {
+        toast.classList.remove("visible");
+        setTimeout(function () { if (toast.parentNode) toast.remove(); }, 250);
+      }, kind === "warning" ? 4500 : 2200);
+    }
+  }
+
+  function rerenderNow() {
+    if (currentRoot && current.state) render(currentRoot, current.state, current.date, current.opts);
+  }
+
+  function buildGhost(title) {
+    var ghost = el('<div class="drag-ghost"></div>');
+    ghost.textContent = title;
+    return ghost;
+  }
+
+  function positionGhost(ghost, x, y) {
+    ghost.style.transform = "translate(" + (x + 14) + "px, " + (y - 28) + "px)";
+  }
+
+  // §9 — "that day's rows", not the placements alone: gathers the SAME
+  // child's other chores on the rendered date, each resolved to its
+  // current chip (so an already-placed neighbour's real duration is what
+  // gets checked, wherever it renders — main grid, or an early/late strip).
+  function findCollisionForDrop(row, candidateStart, candidateDuration) {
+    if (!g.SlotsCore.isPrivateChore(row)) return null;
+    var slotsIdx = g.SlotsCore.indexSlots(current.state.slots);
+    var daysIdx = g.SlotsCore.indexDays(current.state.slotDays);
+    var chores = g.ChoresCore.choresForChild(current.state.rows, row.child_id, current.date, current.state.today);
+    var others = [];
+    chores.forEach(function (r) {
+      if (r.id === row.id) return; // exclude the subject being moved
+      others.push({ row: r, chip: g.SlotsCore.resolveChip(slotsIdx, daysIdx, r, current.date) });
+    });
+    return g.SlotsCore.findCollision(row, candidateStart, candidateDuration, others);
+  }
+
+  function applyOptimisticSlot(childId, subjectKey, instanceKey, startMin, durationMin) {
+    var slots = current.state.slots || (current.state.slots = []);
+    var found = null;
+    for (var i = 0; i < slots.length; i++) {
+      var s = slots[i];
+      if (s.child_id === childId && s.subject_kind === "chore" && s.subject_key === subjectKey &&
+          (s.instance_key || "") === instanceKey) {
+        found = s;
+        break;
+      }
+    }
+    if (found) {
+      found.start_min = startMin;
+      found.duration_min = durationMin;
+    } else {
+      slots.push({
+        child_id: childId, subject_kind: "chore", subject_key: subjectKey,
+        instance_key: instanceKey, start_min: startMin, duration_min: durationMin,
+      });
+    }
+  }
+
+  function applyOptimisticUnplace(childId, subjectKey, instanceKey) {
+    current.state.slots = (current.state.slots || []).filter(function (s) {
+      return !(s.child_id === childId && s.subject_kind === "chore" && s.subject_key === subjectKey &&
+        (s.instance_key || "") === instanceKey);
+    });
+    current.state.slotDays = (current.state.slotDays || []).filter(function (d) {
+      return !(d.child_id === childId && d.subject_kind === "chore" && d.subject_key === subjectKey &&
+        (d.instance_key || "") === instanceKey);
+    });
+  }
+
+  function flashCollision(rowId, otherRowId) {
+    [rowId, otherRowId].forEach(function (id) {
+      var chipEl = currentRoot.querySelector('.day-chip[data-assignment-id="' + id + '"]');
+      if (!chipEl) return;
+      chipEl.classList.add("collision-flash");
+      setTimeout(function () { chipEl.classList.remove("collision-flash"); }, 2500);
+    });
+  }
+
+  // The one place both drag-drop and tap-to-place end up: a candidate
+  // startMin, already converted to real clock minutes. §3.3 — this writes
+  // the STANDING placement, so it (and every future date the chore recurs
+  // on) carries forward from here; there is no "just today" in v1.
+  function commitPlacement(row, startMin) {
+    var childId = g.SlotsCore.placementChildId(row);
+    var subjectKey = g.SlotsCore.subjectKeyOf(row);
+    var instanceKey = g.SlotsCore.instanceKeyOf(row);
+    var slotsIdx = g.SlotsCore.indexSlots(current.state.slots);
+    var existingSlot = g.SlotsCore.placementFor(slotsIdx, row);
+    var durationOverride = existingSlot ? existingSlot.duration_min : null; // preserved, never guessed (§3.5.1)
+    var chip = g.SlotsCore.resolveChip(slotsIdx, g.SlotsCore.indexDays(current.state.slotDays), row, current.date);
+    var collision = findCollisionForDrop(row, startMin, chip.durationMin);
+    var fmt = (g.Store.getSettings().timeFormat) || "24h";
+
+    g.WallApi.putSlot(childId, "chore", subjectKey, instanceKey, startMin, durationOverride).then(function () {
+      applyOptimisticSlot(childId, subjectKey, instanceKey, startMin, durationOverride);
+      rerenderNow();
+      if (collision) {
+        showToast(
+          row.title + " overlaps " + collision.row.title + " at " +
+          g.TimeCore.formatMinutes(collision.chip.startMin, fmt), "warning");
+        flashCollision(row.id, collision.row.id);
+      } else {
+        showToast(row.title + " moved to " + g.TimeCore.formatMinutes(startMin, fmt));
+      }
+      g.Poll.pollNow();
+    }).catch(function () {
+      showToast("Couldn't place “" + row.title + "” — try again.", "warning");
+    });
+  }
+
+  function unplace(row) {
+    var childId = g.SlotsCore.placementChildId(row);
+    var subjectKey = g.SlotsCore.subjectKeyOf(row);
+    var instanceKey = g.SlotsCore.instanceKeyOf(row);
+    g.WallApi.deleteSlot(childId, "chore", subjectKey, instanceKey).then(function () {
+      applyOptimisticUnplace(childId, subjectKey, instanceKey);
+      rerenderNow();
+      showToast(row.title + " moved to Not scheduled");
+      g.Poll.pollNow();
+    }).catch(function () {
+      showToast("Couldn't move “" + row.title + "” — try again.", "warning");
+    });
+  }
+
+  function tryToggleSelection(row, child) {
+    if (selectedForPlacement && selectedForPlacement.row.id === row.id) {
+      selectedForPlacement = null;
+      rerenderNow();
+      return;
+    }
+    selectedForPlacement = { row: row, child: child };
+    rerenderNow();
+    showToast("Tap a time to place “" + row.title + "” — tap it again to cancel.", "placing", true);
+  }
+
+  // A tap anywhere in the grid body while a tray item is armed places it
+  // there; a tap on a chip is left to the chip's own gesture handler.
+  function attachGridTapToPlace(bodyEl, rangeStart, rangeEnd) {
+    bodyEl.addEventListener("click", function (ev) {
+      if (!selectedForPlacement || ev.target.closest(".day-chip")) return;
+      var virtual = startMinFromPointer(ev.clientY, bodyEl, rangeStart, rangeEnd);
+      var row = selectedForPlacement.row;
+      selectedForPlacement = null;
+      commitPlacement(row, virtual % 1440);
+    });
+  }
+
+  // Pointer-down+move+up, unified for both gestures a chip or a tray item
+  // supports: a small movement is a TAP (`onTap`); past `DRAG_THRESHOLD_PX`
+  // it's a DRAG, tracked with a floating ghost and resolved on release by
+  // where the pointer let go — the grid body (place/move), the tray row
+  // (un-place), or neither (cancel, nothing written, §3.6).
+  function attachGesture(itemEl, row, onTap) {
+    itemEl.addEventListener("pointerdown", function (ev) {
+      if (ev.button != null && ev.button !== 0) return;
+      var startX = ev.clientX, startY = ev.clientY;
+      var pointerId = ev.pointerId;
+      var moved = false;
+      var ghost = null;
+      var bodyEl = currentRoot.querySelector(".day-grid-body");
+      var trayRowEl = currentRoot.querySelector(".day-tray-row");
+
+      function onMove(mv) {
+        var dx = mv.clientX - startX, dy = mv.clientY - startY;
+        if (!moved) {
+          if (Math.sqrt(dx * dx + dy * dy) < DRAG_THRESHOLD_PX) return;
+          moved = true;
+          ghost = buildGhost(row.title);
+          currentRoot.appendChild(ghost);
+          itemEl.classList.add("drag-source");
+          if (bodyEl) bodyEl.classList.add("drop-armed");
+        }
+        positionGhost(ghost, mv.clientX, mv.clientY);
+        var overBody = pointInRect(mv.clientX, mv.clientY, bodyEl && bodyEl.getBoundingClientRect());
+        var overTray = pointInRect(mv.clientX, mv.clientY, trayRowEl && trayRowEl.getBoundingClientRect());
+        if (bodyEl) bodyEl.classList.toggle("drop-hover", overBody);
+        if (trayRowEl) trayRowEl.classList.toggle("drop-hover", overTray && !overBody);
+      }
+
+      function cleanup() {
+        document.removeEventListener("pointermove", onMove);
+        document.removeEventListener("pointerup", onUp);
+        document.removeEventListener("pointercancel", onUp);
+        if (itemEl.releasePointerCapture) { try { itemEl.releasePointerCapture(pointerId); } catch (e) {} }
+        if (bodyEl) bodyEl.classList.remove("drop-armed", "drop-hover");
+        if (trayRowEl) trayRowEl.classList.remove("drop-hover");
+      }
+
+      function onUp(up) {
+        cleanup();
+        if (!moved) {
+          itemEl.classList.remove("drag-source");
+          if (ghost) ghost.remove();
+          if (onTap) onTap();
+          return;
+        }
+        itemEl.classList.remove("drag-source");
+        if (ghost) ghost.remove();
+
+        var overTray = trayRowEl && pointInRect(up.clientX, up.clientY, trayRowEl.getBoundingClientRect());
+        var overBody = !overTray && bodyEl && pointInRect(up.clientX, up.clientY, bodyEl.getBoundingClientRect());
+
+        if (overTray) {
+          if (g.SlotsCore.placementFor(g.SlotsCore.indexSlots(current.state.slots), row)) unplace(row);
+          return; // already unplaced (dragged from the tray itself) — no-op
+        }
+        if (!overBody || !current.range) return; // dropped nowhere valid — cancel, nothing written (§3.6)
+
+        var virtual = startMinFromPointer(up.clientY, bodyEl, current.range.start, current.range.end);
+        commitPlacement(row, virtual % 1440);
+      }
+
+      ev.preventDefault();
+      if (itemEl.setPointerCapture) { try { itemEl.setPointerCapture(pointerId); } catch (e) {} }
+      document.addEventListener("pointermove", onMove);
+      document.addEventListener("pointerup", onUp);
+      document.addEventListener("pointercancel", onUp);
+    });
+  }
+
   // ---- unscheduled tray (§3.4) ---------------------------------------------
   // Used by grid mode for every unplaced chore, and by single-block mode
   // for the unplaced chores whose hint puts them in *this* block — an
@@ -110,34 +382,32 @@
   // narrow. Block mode's collapsed view doesn't need this: there, an
   // unplaced chore renders inline in its block row instead (§3.4).
 
-  function trayCellHtml(entry) {
+  function buildTrayItem(row, child) {
+    var li = el("<li></li>");
+    li.textContent = row.title;
+    if (selectedForPlacement && selectedForPlacement.row.id === row.id) li.classList.add("selected");
+    attachGesture(li, row, function () { tryToggleSelection(row, child); });
+    return li;
+  }
+
+  function buildTrayCell(entry) {
     var n = entry.unplaced.length;
-    if (!n) return '<div class="day-tray-cell"></div>';
-    var items = entry.unplaced.map(function (row) {
-      return '<li>' + escapeHtml(row.title) + "</li>";
-    }).join("");
-    return (
-      '<div class="day-tray-cell">' +
-        '<button class="day-tray-toggle">Not scheduled &middot; ' + n + "</button>" +
-        '<ul class="day-tray-list">' + items + "</ul>" +
-      "</div>"
-    );
+    var cell = el('<div class="day-tray-cell"></div>');
+    if (!n) return cell;
+    var toggle = el('<button class="day-tray-toggle">Not scheduled &middot; ' + n + "</button>");
+    var list = el('<ul class="day-tray-list"></ul>');
+    entry.unplaced.forEach(function (row) { list.appendChild(buildTrayItem(row, entry.child)); });
+    toggle.addEventListener("click", function () { cell.classList.toggle("expanded"); });
+    cell.appendChild(toggle);
+    cell.appendChild(list);
+    return cell;
   }
 
   function buildTrayRow(perChild) {
     var any = perChild.some(function (c) { return c.unplaced.length > 0; });
     var wrap = el('<div class="day-tray-row"><div class="day-gutter-spacer"></div></div>');
     if (!any) return wrap;
-    perChild.forEach(function (entry) {
-      var cell = el(trayCellHtml(entry));
-      var toggle = cell.querySelector(".day-tray-toggle");
-      if (toggle) {
-        toggle.addEventListener("click", function () {
-          cell.classList.toggle("expanded");
-        });
-      }
-      wrap.appendChild(cell);
-    });
+    perChild.forEach(function (entry) { wrap.appendChild(buildTrayCell(entry)); });
     return wrap;
   }
 
@@ -190,7 +460,7 @@
   // as exactly one grid row — too short for two stacked lines to fit.
   function chipHtml(placed, fmt) {
     return (
-      '<div class="day-chip">' +
+      '<div class="day-chip" data-assignment-id="' + escapeHtml(placed.row.id) + '">' +
         '<span class="chip-time">' + g.TimeCore.formatMinutes(placed.chip.startMin, fmt) + "</span>" +
         '<span class="chip-title">' + escapeHtml(placed.row.title) + "</span>" +
       "</div>"
@@ -223,7 +493,7 @@
       var chip = el(chipHtml(placed, opts.fmt));
       chip.style.top = top + "px";
       chip.style.height = (rows * rh - 2) + "px"; // 2px gap between chips
-      chip.addEventListener("click", function () {
+      attachGesture(chip, placed.row, function () {
         if (opts.onChipTap) opts.onChipTap(placed.row, entry.child);
       });
       col.appendChild(chip);
@@ -302,6 +572,7 @@
     if (earlyStrip) scroll.appendChild(earlyStrip);
 
     var body = buildGridBody(perChild, GRID_START_MIN, GRID_END_MIN, { fmt: fmt, onChipTap: opts.onChipTap });
+    attachGridTapToPlace(body, GRID_START_MIN, GRID_END_MIN);
     scroll.appendChild(body);
 
     var lateStrip = buildStrip("late", perChild, fmt);
@@ -422,6 +693,7 @@
     scroll.appendChild(buildTrayRow(perChild));
 
     var body = buildGridBody(perChild, hours.start, hours.end, { fmt: fmt, onChipTap: opts.onChipTap });
+    attachGridTapToPlace(body, hours.start, hours.end);
     scroll.appendChild(body);
 
     return { body: body, rangeStart: hours.start, rangeEnd: hours.end, scrollToNowIfToday: true, block: blockName };
@@ -429,13 +701,14 @@
 
   // ---- assembly --------------------------------------------------------------
 
-  var current = { state: null, date: null, opts: {} };
+  var current = { state: null, date: null, opts: {}, range: null };
   var currentRoot = null;
   var dayMode = "grid"; // "grid" | "blocks" | one of ChoresCore.CANON_BLOCKS
   var nowLineTimer = null;
   var staleTimer = null;
   var lastRenderedDate = null;
   var lastRenderedMode = null;
+  var selectedForPlacement = null; // tap-to-place: {row, child} armed by a tray tap, or null
 
   function setMode(mode) {
     dayMode = mode;
@@ -452,7 +725,7 @@
   function render(root, state, date, opts) {
     opts = opts || {};
     stopTimers();
-    current = { state: state, date: date, opts: opts };
+    current = { state: state, date: date, opts: opts, range: null };
     currentRoot = root;
 
     var settings = g.Store.getSettings();
@@ -465,6 +738,11 @@
     var isNewMode = dayMode !== lastRenderedMode;
     lastRenderedDate = date;
     lastRenderedMode = dayMode;
+
+    // Tap-to-place is scoped to one rendered grid; a stale selection
+    // carried into a different date or into collapsed block mode (no grid
+    // to tap) would arm a placement nobody can see.
+    if ((isNewDate || isNewMode) && selectedForPlacement) selectedForPlacement = null;
 
     root.innerHTML = "";
 
@@ -492,6 +770,13 @@
     } else {
       result = buildSingleBlockContent(scroll, state, date, dayMode, opts, fmt, function () { setMode("blocks"); });
     }
+    // A candidate startMin from a drop is meaningful only in the SAME
+    // coordinate space `result.body` was laid out in — real clock minutes
+    // in grid mode, block-virtual minutes in single-block mode (§4.4). Set
+    // once here so `attachGesture`'s onUp (bound long before this render,
+    // for a chip that survived from the last one) always reads the
+    // CURRENT mode's range rather than a stale closure over the old one.
+    current.range = result.body ? { start: result.rangeStart, end: result.rangeEnd } : null;
 
     scroll.appendChild(buildStaleStamp(state, fmt));
     root.appendChild(shell);
@@ -545,6 +830,7 @@
     stopTimers();
     lastRenderedDate = null;
     lastRenderedMode = null;
+    selectedForPlacement = null;
   }
 
   g.DayUi = { render: render, stop: stop };

@@ -1,10 +1,11 @@
 // api.js — fetch wrappers for the wall's one bearer credential.
 // Phase 2: pairing and the roster read (TDS_Slice_Wall_Display_App.md §13).
 // Phase 3 (Wall Calendar Redesign) adds the placements read
-// (TDS_Slice_Wall_Calendar_Redesign.md §12). Completions/rewards/claim calls
-// join in a later phase — the shape (one wall token, childId per call, 401
-// -> unpaired) is set here so later phases only add routes, not a second
-// convention.
+// (TDS_Slice_Wall_Calendar_Redesign.md §12). Phase 5 adds the placement
+// WRITES: standing PUT/DELETE on `wall_slots` (§3.2, §12). Completions/
+// rewards/claim calls join in a later phase — the shape (one wall token,
+// childId per call, 401 -> unpaired) is set here so later phases only add
+// routes, not a second convention.
 
 (function (g) {
   "use strict";
@@ -68,11 +69,46 @@
 
   // §12 — every placement, household-wide, plus any `wall_slot_days`
   // overrides. `from`/`to` only bound the day-scoped overrides (`wall_slots`
-  // itself carries no date, §3.3); omitted here because Phase 3 has no
-  // write path yet and the set is "small" per §12 regardless.
+  // itself carries no date, §3.3); omitted here because the set is "small"
+  // per §12 regardless, and a full re-fetch is what `Poll.pollNow()` does
+  // after every placement write anyway (day-ui.js).
   function getSlots() {
     return request("/api/wall/slots").then(function (res) {
       return { slots: res.slots || [], days: res.days || [] };
+    });
+  }
+
+  // §12 — upsert of the standing placement (§3.2, §3.3). `durationMin` is
+  // sent verbatim, including `null`/`undefined` normalized to `null` —
+  // the route has no prior value to fall back to on a partial body
+  // (worker/index.js's handleWallSlotPut), so a caller that wants to keep
+  // an existing standing duration override in place across a plain time
+  // move must resend it explicitly rather than omit it.
+  function putSlot(childId, subjectKind, subjectKey, instanceKey, startMin, durationMin) {
+    return request("/api/wall/slots", {
+      method: "PUT",
+      body: {
+        childId: childId,
+        subjectKind: subjectKind,
+        subjectKey: subjectKey,
+        instanceKey: instanceKey || "",
+        startMin: startMin,
+        durationMin: durationMin == null ? null : durationMin,
+      },
+    });
+  }
+
+  // §12 — un-place; the chore returns to the tray. Also clears that
+  // subject's `wall_slot_days` overrides server-side.
+  function deleteSlot(childId, subjectKind, subjectKey, instanceKey) {
+    return request("/api/wall/slots", {
+      method: "DELETE",
+      body: {
+        childId: childId,
+        subjectKind: subjectKind,
+        subjectKey: subjectKey,
+        instanceKey: instanceKey || "",
+      },
     });
   }
 
@@ -82,6 +118,8 @@
     getChildren: getChildren,
     getPlan: getPlan,
     getSlots: getSlots,
+    putSlot: putSlot,
+    deleteSlot: deleteSlot,
     request: request,
   };
 })(typeof window !== "undefined" ? window : globalThis);

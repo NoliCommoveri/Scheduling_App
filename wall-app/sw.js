@@ -26,7 +26,7 @@
 // substantially (the mode bar, collapsed block rows, and the single-block
 // expanded grid); chores-core.js gains the block-classification helpers.
 // No new files.
-const CACHE_NAME = "wall-display-shell-v4";
+const CACHE_NAME = "wall-display-shell-v5";
 
 const APP_SHELL = [
   "./",

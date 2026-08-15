@@ -3,7 +3,11 @@
 // events-core.js, chores-core.js (generalized past "today", §4.5),
 // slots-core.js (§3.1/§3.5.1) and time-core.js (§11.3), and retires
 // completed-core.js — the Done Today board it backed is repealed (§8.4).
-// §16 Phase 4 adds chores-core.js's block classification (§4.4).
+// §16 Phase 4 adds chores-core.js's block classification (§4.4). §16 Phase 5
+// adds slots-core.js's collision check (§9) — the write path itself (the
+// drag/tap gestures, the API calls) lives in day-ui.js/api.js, which do DOM
+// and network IO and so are exercised manually (§13's acceptance checks),
+// not here.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -300,6 +304,75 @@ test('isOverridden is true with either override present, false with neither', ()
   assert.equal(SlotsCore.isOverridden({ duration_min: null }, null), false);
   assert.equal(SlotsCore.isOverridden({ duration_min: 45 }, null), true);
   assert.equal(SlotsCore.isOverridden(null, { duration_min: 10 }), true);
+});
+
+// ===========================================================  collisions (§9, §16 Phase 5)
+
+test('isPrivateChore: null claim_group is private, any claim_group is shared', () => {
+  assert.equal(SlotsCore.isPrivateChore({ claim_group: null }), true);
+  assert.equal(SlotsCore.isPrivateChore({ claim_group: 'grp-1' }), false);
+});
+
+test('§9 — two private chores for one child overlapping warns', () => {
+  const row = { id: 'a1', child_id: 'ellie', claim_group: null, title: 'Feed the cat' };
+  const others = [
+    { row: { id: 'a2', child_id: 'ellie', claim_group: null, title: 'Homework' },
+      chip: { startMin: 480, durationMin: 30 } },
+  ];
+  const hit = SlotsCore.findCollision(row, 495, 15, others); // 8:15, overlaps 8:00-8:30
+  assert.equal(hit && hit.row.id, 'a2');
+});
+
+test('§9 — the same pair for two DIFFERENT children does not warn', () => {
+  const row = { id: 'a1', child_id: 'ellie', claim_group: null, title: 'Feed the cat' };
+  const others = [
+    { row: { id: 'a2', child_id: 'talia', claim_group: null, title: 'Homework' },
+      chip: { startMin: 480, durationMin: 30 } },
+  ];
+  assert.equal(SlotsCore.findCollision(row, 495, 15, others), null);
+});
+
+test('§9 — a shared (claim) chore overlapping a private one does not warn, on either side', () => {
+  const privateOther = { row: { id: 'a2', child_id: 'ellie', claim_group: null, title: 'Homework' },
+    chip: { startMin: 480, durationMin: 30 } };
+  const sharedRow = { id: 'a1', child_id: 'ellie', claim_group: 'grp-1', title: 'Set the table' };
+  assert.equal(SlotsCore.findCollision(sharedRow, 495, 15, [privateOther]), null);
+
+  const sharedOther = { row: { id: 'a2', child_id: 'ellie', claim_group: 'grp-1', title: 'Set the table' },
+    chip: { startMin: 480, durationMin: 30 } };
+  const privateRow = { id: 'a1', child_id: 'ellie', claim_group: null, title: 'Homework' };
+  assert.equal(SlotsCore.findCollision(privateRow, 495, 15, [sharedOther]), null);
+});
+
+test('§9 — partial overlap (4:00+30min vs 4:15) is detected where a slot-equality test would miss it', () => {
+  const row = { id: 'a1', child_id: 'ellie', claim_group: null, title: 'Piano practice' };
+  const others = [
+    { row: { id: 'a2', child_id: 'ellie', claim_group: null, title: 'Reading' },
+      chip: { startMin: 16 * 60, durationMin: 30 } }, // 16:00-16:30
+  ];
+  const hit = SlotsCore.findCollision(row, 16 * 60 + 15, 15, others); // 16:15-16:30 — no shared boundary
+  assert.equal(hit && hit.row.id, 'a2');
+  // Just after the other ends: no overlap.
+  assert.equal(SlotsCore.findCollision(row, 16 * 60 + 30, 15, others), null);
+});
+
+test('§9 — the overlap uses the RESOLVED duration, so an override that shortens a chip can clear a warning', () => {
+  const row = { id: 'a1', child_id: 'ellie', claim_group: null, title: 'Piano practice' };
+  const otherAtFullDuration = [
+    { row: { id: 'a2', child_id: 'ellie', claim_group: null, title: 'Reading' },
+      chip: { startMin: 480, durationMin: 30 } }, // 8:00-8:30
+  ];
+  assert.ok(SlotsCore.findCollision(row, 495, 15, otherAtFullDuration)); // 8:15 still inside
+  const otherShortened = [
+    { row: { id: 'a2', child_id: 'ellie', claim_group: null, title: 'Reading' },
+      chip: { startMin: 480, durationMin: 15 } }, // shortened to 8:00-8:15
+  ];
+  assert.equal(SlotsCore.findCollision(row, 495, 15, otherShortened), null); // 8:15 no longer inside
+});
+
+test('rangesOverlap: touching boundaries do not overlap, any real intersection does', () => {
+  assert.equal(SlotsCore.rangesOverlap(0, 30, 30, 15), false); // 0-30 and 30-45: adjacent, not overlapping
+  assert.equal(SlotsCore.rangesOverlap(0, 30, 29, 15), true); // 0-30 and 29-44: one minute of overlap
 });
 
 // ===========================================================  time-core (§11.3)
