@@ -5,6 +5,9 @@
 // adds the failed-earns list (§6.2's `rejected` outcome — an admin's only
 // window into an append-only ledger entry that will never retry on its
 // own). Per-child PIN management does not join at all — repealed, §2.3.
+// Phase 6b adds the Sound section (§11.5.2): a per-child sound toggle and a
+// Test sound button, which doubles as the §11.5.1 unlock gesture since it
+// is, like everything else in this panel, a tap.
 
 (function (g) {
   "use strict";
@@ -18,12 +21,14 @@
   // Shows the admin PIN pad; calls onClose() whichever way the user leaves
   // (success into the panel and back out, or Cancel). Reuses PinCore's
   // verify — the admin PIN is stored the same shape as a child's (§4.5), just
-  // under wall.settings instead of wall.pins.
-  function open(root, onClose) {
-    renderPad(root, onClose);
+  // under wall.settings instead of wall.pins. `children` is the live roster
+  // (app.js's `Poll.getState().children`), threaded through to the panel for
+  // the Sound section's per-child rows.
+  function open(root, children, onClose) {
+    renderPad(root, children || [], onClose);
   }
 
-  function renderPad(root, onClose) {
+  function renderPad(root, children, onClose) {
     root.innerHTML = "";
     var body = el(
       '<div class="settings-overlay">' +
@@ -52,14 +57,14 @@
       g.PinCore.verifyPin(pin, { pinSalt: settings.adminPinSalt, pinHash: settings.adminPinHash })
         .then(function (ok) {
           if (!ok) { err.textContent = "Wrong PIN."; input.value = ""; input.focus(); return; }
-          renderPanel(root, onClose);
+          renderPanel(root, children, onClose);
         });
     }
     body.querySelector("#settingsUnlock").addEventListener("click", tryUnlock);
     input.addEventListener("keydown", function (e) { if (e.key === "Enter") tryUnlock(); });
   }
 
-  function renderPanel(root, onClose) {
+  function renderPanel(root, children, onClose) {
     root.innerHTML = "";
     var settings = g.Store.getSettings();
     var is24h = settings.timeFormat !== "12h";
@@ -84,6 +89,15 @@
                 'Fix the reward category in the Management App, then adjust the balance from there.</div>' +
             "</div>" +
             '<ul class="failed-earns-list"></ul>' +
+          "</div>" +
+          '<div class="settings-row settings-row-column">' +
+            '<div>' +
+              '<div class="settings-row-title">Sound</div>' +
+              '<div class="settings-row-help">A chime when a placed chore’s start time arrives, and a tone ' +
+                'when one is ticked. Silent during dim hours; off per child below if a room needs quiet.</div>' +
+            "</div>" +
+            '<ul class="sound-child-list"></ul>' +
+            '<button class="btn ghost" id="testSoundBtn" type="button">Test sound</button>' +
           "</div>" +
           '<div class="settings-row">' +
             '<div>' +
@@ -146,6 +160,44 @@
       });
     }
     paintFailedEarns();
+
+    // §11.5.2 — per-child sound toggle, stored alongside §11.4's colour
+    // (Phase 8) in the same `wall.childPrefs` record. Default ON: a child
+    // absent from the record (never touched here) still chimes.
+    var soundList = body.querySelector(".sound-child-list");
+    function paintSoundList() {
+      soundList.innerHTML = "";
+      children.forEach(function (child) {
+        var prefs = g.Store.getChildPrefs();
+        var on = (prefs[child.id] || {}).soundOn !== false;
+        var li = el(
+          '<li class="sound-child-row">' +
+            '<span class="sound-child-name"></span>' +
+            '<button class="btn ghost sound-child-toggle" type="button"></button>' +
+          "</li>"
+        );
+        li.querySelector(".sound-child-name").textContent = child.name;
+        var toggle = li.querySelector(".sound-child-toggle");
+        toggle.textContent = on ? "On" : "Off";
+        toggle.classList.toggle("active", on);
+        toggle.addEventListener("click", function () {
+          g.Store.setChildPref(child.id, { soundOn: !on });
+          paintSoundList();
+        });
+        soundList.appendChild(li);
+      });
+    }
+    paintSoundList();
+
+    // Doubles as the §11.5.1 unlock gesture. Settings renders straight into
+    // `root` (app.js tears the shell down first), so nav-ui.js's shell-wide
+    // pointerdown listener isn't around to catch this tap — `unlock()` is
+    // called here directly rather than assumed.
+    body.querySelector("#testSoundBtn").addEventListener("click", function () {
+      if (!g.Sound) return;
+      g.Sound.unlock();
+      g.Sound.chime();
+    });
 
     body.querySelector("#settingsDone").addEventListener("click", function () { onClose(); });
 

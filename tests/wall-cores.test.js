@@ -17,10 +17,10 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 const repo = new URL('../', import.meta.url);
-for (const file of ['pin-core.js', 'events-core.js', 'chores-core.js', 'slots-core.js', 'time-core.js']) {
+for (const file of ['pin-core.js', 'events-core.js', 'chores-core.js', 'slots-core.js', 'time-core.js', 'remind-core.js']) {
   vm.runInThisContext(readFileSync(new URL(`wall-app/js/${file}`, repo), 'utf8'), { filename: file });
 }
-const { PinCore, EventsCore, ChoresCore, SlotsCore, TimeCore } = globalThis;
+const { PinCore, EventsCore, ChoresCore, SlotsCore, TimeCore, RemindCore } = globalThis;
 
 // ===========================================================  hashing (§12.8)
 
@@ -405,4 +405,105 @@ test('§16 Phase 5b — formatDurationMin: minutes-only, hours-only, and mixed',
   assert.equal(TimeCore.formatDurationMin(60), '1h');
   assert.equal(TimeCore.formatDurationMin(120), '2h');
   assert.equal(TimeCore.formatDurationMin(75), '1h 15m');
+});
+
+// ===========================================================  remind-core (§11.5, §16 Phase 6b)
+
+function remindState(rows, slots) {
+  return {
+    today: '2026-08-15',
+    children: [{ id: 'ellie', name: 'Ellie' }, { id: 'talia', name: 'Talia' }],
+    rows: rows,
+    slots: slots || [],
+    slotDays: [],
+  };
+}
+
+test('a pending chore at its placed start time is due', () => {
+  const rows = [{ id: 'a1', kind: 'chore', child_id: 'ellie', date: '2026-08-15', status: 'pending', source_id: 'dishes', instance_key: '', claim_group: null }];
+  const slots = [{ child_id: 'ellie', subject_kind: 'chore', subject_key: 'dishes', instance_key: '', start_min: 480, duration_min: null }];
+  const state = remindState(rows, slots);
+  const candidates = RemindCore.chimeCandidates(state, state.today);
+  const due = RemindCore.dueNow(candidates, 480, { date: state.today }, {});
+  assert.equal(due.length, 1);
+  assert.equal(due[0].row.id, 'a1');
+});
+
+test('the same chore already complete is never a chime candidate', () => {
+  const rows = [{ id: 'a1', kind: 'chore', child_id: 'ellie', date: '2026-08-15', status: 'complete', source_id: 'dishes', instance_key: '', claim_group: null }];
+  const slots = [{ child_id: 'ellie', subject_kind: 'chore', subject_key: 'dishes', instance_key: '', start_min: 480, duration_min: null }];
+  const state = remindState(rows, slots);
+  assert.equal(RemindCore.chimeCandidates(state, state.today).length, 0);
+});
+
+test('a chore with no placement never is due — there is no "when" to ring for it', () => {
+  const rows = [{ id: 'a1', kind: 'chore', child_id: 'ellie', date: '2026-08-15', status: 'pending', source_id: 'dishes', instance_key: '', claim_group: null }];
+  const state = remindState(rows, []); // no slots at all — unplaced
+  assert.equal(RemindCore.chimeCandidates(state, state.today).length, 0);
+});
+
+test('a child whose soundOn is false contributes none', () => {
+  const rows = [{ id: 'a1', kind: 'chore', child_id: 'ellie', date: '2026-08-15', status: 'pending', source_id: 'dishes', instance_key: '', claim_group: null }];
+  const slots = [{ child_id: 'ellie', subject_kind: 'chore', subject_key: 'dishes', instance_key: '', start_min: 480, duration_min: null }];
+  const state = remindState(rows, slots);
+  const candidates = RemindCore.chimeCandidates(state, state.today);
+  const due = RemindCore.dueNow(candidates, 480, { date: state.today, soundOnByChild: { ellie: false } }, {});
+  assert.equal(due.length, 0);
+  // Absent from the map entirely — the default is ON, not silent.
+  const dueDefault = RemindCore.dueNow(candidates, 480, { date: state.today, soundOnByChild: {} }, {});
+  assert.equal(dueDefault.length, 1);
+});
+
+test('nothing is due inside the quiet-hours window', () => {
+  const rows = [{ id: 'a1', kind: 'chore', child_id: 'ellie', date: '2026-08-15', status: 'pending', source_id: 'dishes', instance_key: '', claim_group: null }];
+  const slots = [{ child_id: 'ellie', subject_kind: 'chore', subject_key: 'dishes', instance_key: '', start_min: 22 * 60, duration_min: null }];
+  const state = remindState(rows, slots);
+  const candidates = RemindCore.chimeCandidates(state, state.today);
+  const due = RemindCore.dueNow(candidates, 22 * 60, { date: state.today, quietStartHour: 21, quietEndHour: 6 }, {});
+  assert.equal(due.length, 0);
+});
+
+test('§14.14 — a start time that passed while the page was loading is not retro-fired on boot', () => {
+  const rows = [{ id: 'a1', kind: 'chore', child_id: 'ellie', date: '2026-08-15', status: 'pending', source_id: 'dishes', instance_key: '', claim_group: null }];
+  const slots = [{ child_id: 'ellie', subject_kind: 'chore', subject_key: 'dishes', instance_key: '', start_min: 8 * 60, duration_min: null }]; // 08:00
+  const state = remindState(rows, slots);
+  const candidates = RemindCore.chimeCandidates(state, state.today);
+  // The page loads at 08:47 — 47 minutes after the chore's placed start time.
+  const due = RemindCore.dueNow(candidates, 8 * 60 + 47, { date: state.today }, {});
+  assert.equal(due.length, 0);
+});
+
+test('dueNow never re-fires an instant already in firedKeys', () => {
+  const rows = [{ id: 'a1', kind: 'chore', child_id: 'ellie', date: '2026-08-15', status: 'pending', source_id: 'dishes', instance_key: '', claim_group: null }];
+  const slots = [{ child_id: 'ellie', subject_kind: 'chore', subject_key: 'dishes', instance_key: '', start_min: 480, duration_min: null }];
+  const state = remindState(rows, slots);
+  const candidates = RemindCore.chimeCandidates(state, state.today);
+  const fired = {};
+  fired[RemindCore.fireKey({ id: 'a1' }, state.today)] = true;
+  assert.equal(RemindCore.dueNow(candidates, 480, { date: state.today }, fired).length, 0);
+  assert.equal(RemindCore.dueNow(candidates, 480, { date: state.today }, {}).length, 1);
+});
+
+test('nextChimeMin finds the earliest placed time strictly after `afterMin`, or null once nothing is left', () => {
+  const rows = [
+    { id: 'a1', kind: 'chore', child_id: 'ellie', date: '2026-08-15', status: 'pending', source_id: 'dishes', instance_key: '', claim_group: null },
+    { id: 'a2', kind: 'chore', child_id: 'talia', date: '2026-08-15', status: 'pending', source_id: 'trash', instance_key: '', claim_group: null },
+  ];
+  const slots = [
+    { child_id: 'ellie', subject_kind: 'chore', subject_key: 'dishes', instance_key: '', start_min: 480, duration_min: null },
+    { child_id: 'talia', subject_kind: 'chore', subject_key: 'trash', instance_key: '', start_min: 600, duration_min: null },
+  ];
+  const state = remindState(rows, slots);
+  const candidates = RemindCore.chimeCandidates(state, state.today);
+  assert.equal(RemindCore.nextChimeMin(candidates, 0), 480);
+  assert.equal(RemindCore.nextChimeMin(candidates, 480), 600);
+  assert.equal(RemindCore.nextChimeMin(candidates, 600), null);
+});
+
+test('inQuietHours wraps midnight the same way nav-ui.js\'s isNight does', () => {
+  assert.equal(RemindCore.inQuietHours(21 * 60, 21, 6), true);
+  assert.equal(RemindCore.inQuietHours(5 * 60 + 59, 21, 6), true);
+  assert.equal(RemindCore.inQuietHours(6 * 60, 21, 6), false);
+  assert.equal(RemindCore.inQuietHours(20 * 60, 21, 6), false);
+  assert.equal(RemindCore.inQuietHours(12 * 60, 12, 12), false); // start === end — never quiet
 });

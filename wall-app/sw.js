@@ -39,7 +39,15 @@
 // done-in-place chip styling (§8.4); settings-ui.js gains the failed-earns
 // list; store.js retires the dead `wall.pins` key and adds `wall.failedEarns`;
 // wall.css gains the sheet, the done-chip styles, and the toast.
-const CACHE_NAME = "wall-display-shell-v7";
+// v8: §16 Phase 6b — sound. New files `remind-core.js` (pure: which placed
+// chores are due to chime) and `sound.js` (WebAudio: the two synthesized
+// tones, the lazy-unlock gesture). app.js gains the local 5-second remind
+// tick; nav-ui.js gains the "tap to enable sound" topbar indicator;
+// complete-ui.js fires the confirmation tone on a successful tick;
+// settings-ui.js gains the Sound section (per-child toggle, Test sound);
+// store.js gains `wall.childPrefs`; wall.css gains the indicator and the
+// sound-section rows.
+const CACHE_NAME = "wall-display-shell-v8";
 
 const APP_SHELL = [
   "./",
@@ -53,6 +61,8 @@ const APP_SHELL = [
   "./js/events-core.js",
   "./js/chores-core.js",
   "./js/slots-core.js",
+  "./js/remind-core.js",
+  "./js/sound.js",
   "./js/poll.js",
   "./js/day-ui.js",
   "./js/complete-ui.js",

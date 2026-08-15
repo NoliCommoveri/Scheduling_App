@@ -14,6 +14,18 @@
 // `wall.pendingEarns` (§6.2's retry queue) on every successful poll, not
 // just right after a write, so a reward that failed to send gets another
 // chance on the ordinary 10-minute cadence too.
+//
+// Phase 6b wires the start-time chime (§11.5). `remindTick` runs on a cheap
+// LOCAL 5-second timer — no network — that only asks "did the clock cross
+// into a new minute, and does any placed chore start THIS minute". Only
+// when the answer to both is yes does it spend a network poll, landing
+// right before the chime fires so a chore finished on the child's own
+// tablet minutes ago isn't announced here as still pending (§11.5's own
+// "one poll immediately before a chime fires, not a faster cadence"). This
+// is deliberately independent of `Poll`'s own 10-minute cadence rather than
+// piggybacked on it — the two run on different clocks for different
+// reasons and tying them together would mean either a laggy chime or a
+// faster background cadence than §10.1 asks for.
 
 (function (g) {
   "use strict";
@@ -21,6 +33,9 @@
   var pollUnsub = null;
   var midnightTimer = null;
   var navCtrl = null;
+  var remindTimer = null;
+  var firedChimeKeys = Object.create(null);
+  var lastCheckedMin = null;
 
   function boot() {
     var root = document.getElementById("app");
@@ -46,8 +61,63 @@
     g.Poll.stop();
     g.DayUi.stop();
     g.CompleteUi.close();
+    stopRemindLoop();
     if (navCtrl) { navCtrl.destroy(); navCtrl = null; }
     if (midnightTimer) { clearTimeout(midnightTimer); midnightTimer = null; }
+  }
+
+  // ---- §11.5 start-time chime (§16 Phase 6b) -------------------------------
+
+  function nowMinutes() {
+    var d = new Date();
+    return d.getHours() * 60 + d.getMinutes();
+  }
+
+  function soundOnMapFromPrefs() {
+    var prefs = g.Store.getChildPrefs();
+    var map = {};
+    Object.keys(prefs).forEach(function (id) { map[id] = prefs[id].soundOn !== false; });
+    return map;
+  }
+
+  function fireDueChimes(state, nowMin) {
+    var settings = g.Store.getSettings();
+    var candidates = g.RemindCore.chimeCandidates(state, state.today);
+    var due = g.RemindCore.dueNow(candidates, nowMin, {
+      soundOnByChild: soundOnMapFromPrefs(),
+      quietStartHour: settings.dimStartHour,
+      quietEndHour: settings.dimEndHour,
+      date: state.today,
+    }, firedChimeKeys);
+    due.forEach(function (entry) {
+      firedChimeKeys[g.RemindCore.fireKey(entry.row, state.today)] = true;
+    });
+    if (due.length && g.Sound) g.Sound.chime();
+  }
+
+  function remindTick() {
+    var state = g.Poll.getState();
+    if (!state.today) return;
+    var nowMin = nowMinutes();
+    if (nowMin === lastCheckedMin) return; // already handled this minute
+    lastCheckedMin = nowMin;
+    var candidates = g.RemindCore.chimeCandidates(state, state.today);
+    var mightFire = candidates.some(function (c) { return c.startMin === nowMin; });
+    if (!mightFire) return; // nothing scheduled this minute — no poll spent
+    g.Poll.pollNow().catch(function () {}).then(function () {
+      fireDueChimes(g.Poll.getState(), nowMin);
+    });
+  }
+
+  function startRemindLoop() {
+    stopRemindLoop();
+    lastCheckedMin = null;
+    remindTimer = setInterval(remindTick, 5000);
+    remindTick();
+  }
+
+  function stopRemindLoop() {
+    if (remindTimer) { clearInterval(remindTimer); remindTimer = null; }
   }
 
   function startAmbient(root) {
@@ -120,12 +190,14 @@
     });
 
     g.Poll.start();
+    startRemindLoop();
     scheduleMidnightRollover();
   }
 
   function openSettings(root) {
+    var children = g.Poll.getState().children || [];
     teardownAmbient();
-    g.SettingsUi.open(root, function () { startAmbient(root); });
+    g.SettingsUi.open(root, children, function () { startAmbient(root); });
   }
 
   function showUnpaired(root) {
@@ -159,6 +231,8 @@
       // day/today, even if the sidebar had wandered to another view or date.
       g.CompleteUi.close(); // a sheet held open across midnight names a stale row
       if (navCtrl) navCtrl.resetToToday();
+      firedChimeKeys = Object.create(null); // a new day's fire keys start clean, per remind-core.js's date-scoped key
+      lastCheckedMin = null;
       g.Poll.rollover();
       scheduleMidnightRollover();
     }, next.getTime() - now.getTime());

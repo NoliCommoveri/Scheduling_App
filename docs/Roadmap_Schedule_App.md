@@ -127,7 +127,8 @@ school blocks that aggregate a course; and completion that asks *when* it was do
 | **4** | Block mode — collapse/expand into morning/afternoon/evening/night. | ~1.5 h | ✅ Landed |
 | **5** | Placement writes: drag-and-drop, 15-minute snapping, carry-forward, collision warnings. | ~2.5 h | ✅ Landed |
 | **5b** | Duration adjust — "just this one" vs "this and future", and the precedence chain. | ~1.5 h | ✅ Landed |
-| **6** | Completion: the sheet (who by column, when by stepper), earns, Undo both paths, the claim path, done-in-place. | ~2.5 h | ⬜ |
+| **6** | Completion: the sheet (who by column, when by stepper), earns, Undo both paths, the claim path, done-in-place. | ~2.5 h | ✅ Landed |
+| **6b** | Sound — the start-time chime and completion tone, WebAudio unlock, quiet hours, per-child toggle, Settings' Test sound. | ~1.5 h | ✅ Landed |
 | **7** | School blocks — course grouping, the read-only block, the completion rollup. | ~1.5 h | ⬜ |
 | **8** | Week and month views; child colours carried across all three. | ~2.5 h | ⬜ |
 | **9** | The look pass, remaining tests, `CACHE_NAME` bump, on-device shakedown. | ~2 h | ⬜ |

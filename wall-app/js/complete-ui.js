@@ -293,6 +293,11 @@
           showError(result.message || "Couldn't save that — try again.");
           return;
         }
+        // §11.5.2 — the confirmation tone ignores BOTH bounds (quiet hours
+        // and the per-child sound toggle): it fires on a tap, so someone is
+        // standing right here. `Sound.confirm` itself still no-ops silently
+        // if WebAudio was never unlocked this page load.
+        if (g.Sound) g.Sound.confirm();
         g.Poll.pollNow().then(function () {
           setBusy(false);
           close();
