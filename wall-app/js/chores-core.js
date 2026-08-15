@@ -130,6 +130,19 @@
     });
   }
 
+  // §16 Phase 8 (week view) — a star rating from the chore's difficulty
+  // tier, carried on `payload.difficultyTier` (packet.js:538/546, tiers.js's
+  // "D" + 2-digit id) since assignment-core.js:109 first noted it: "carried
+  // rather than read; nothing renders it today." The week view's Chores
+  // sheet is the first reader. One star per tier number (D01 -> 1, D02 -> 2),
+  // 0 for a row with no tier at all or an unparseable one.
+  function difficultyStars(row) {
+    var tier = parsePayload(row.payload).difficultyTier;
+    if (!tier) return 0;
+    var n = parseInt(String(tier).replace(/^D/i, ""), 10);
+    return n > 0 ? n : 0;
+  }
+
   g.ChoresCore = {
     CANON_BLOCKS: CANON_BLOCKS,
     BLOCK_HOURS: BLOCK_HOURS,
@@ -138,6 +151,7 @@
     onDate: onDate,
     claimState: claimState,
     choresForChild: choresForChild,
+    difficultyStars: difficultyStars,
     effectiveBlockHint: effectiveBlockHint,
     blockFromStartMin: blockFromStartMin,
     blockForChip: blockForChip,

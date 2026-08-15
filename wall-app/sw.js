@@ -60,7 +60,17 @@
 // collapses into a "+N" tile. day-ui.js gains the overlap grouping, the
 // overflow tile and its sheet; wall.css gains the narrowed-chip, overflow
 // tile and overflow-sheet-row styles. No new files.
-const CACHE_NAME = "wall-display-shell-v10";
+// v11: §16 Phase 8 — the week view. New file `week-ui.js`: seven day-rows
+// (Sunday-first), each showing that day's events plus a Chores/School token
+// when the respective kind exists that day, opening a read-only kid-picker
+// sheet — this supersedes the TDS's original seven-column design
+// in-session (see week-ui.js's own header). chores-core.js gains
+// `difficultyStars` (the chore's difficulty tier as a star count);
+// school-core.js gains `activityTypeCounts`/`coursesWithTypeCounts` (a
+// course's activity-type breakdown for the School sheet). app.js wires the
+// "week" nav state to it; wall.css gains the week rows, tokens, and detail
+// sheet styles.
+const CACHE_NAME = "wall-display-shell-v11";
 
 const APP_SHELL = [
   "./",
@@ -80,6 +90,7 @@ const APP_SHELL = [
   "./js/poll.js",
   "./js/day-ui.js",
   "./js/complete-ui.js",
+  "./js/week-ui.js",
   "./js/nav-ui.js",
   "./js/settings-ui.js",
   "./js/app.js",

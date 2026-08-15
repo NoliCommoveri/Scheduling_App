@@ -2,8 +2,10 @@
 // TDS_Slice_Wall_Display_App.md §11 (boot states) and
 // TDS_Slice_Wall_Calendar_Redesign.md §16. Phase 2 put the ambient board
 // inside nav-ui.js's persistent shell; Phase 3 replaces that board with
-// `day-ui.js`'s real day view, for any rendered date, not just today. Week
-// and Month still show a placeholder until Phase 8.
+// `day-ui.js`'s real day view, for any rendered date, not just today. Phase 8
+// adds `week-ui.js`'s real week view (rows, not the TDS's original columns —
+// superseded in-session, see week-ui.js's own header). Month still shows a
+// placeholder.
 //
 // Phase 6 wires the completion sheet: `onChipTap` opens `CompleteUi`
 // against `root` — the outer shell element, ONE LEVEL ABOVE
@@ -60,6 +62,7 @@
     if (pollUnsub) { pollUnsub(); pollUnsub = null; }
     g.Poll.stop();
     g.DayUi.stop();
+    g.WeekUi.stop();
     g.CompleteUi.close();
     stopRemindLoop();
     if (navCtrl) { navCtrl.destroy(); navCtrl = null; }
@@ -139,6 +142,7 @@
 
     function showPlaceholder(text) {
       g.DayUi.stop();
+      g.WeekUi.stop();
       navCtrl.contentEl.innerHTML = "";
       var ph = document.createElement("div");
       ph.className = "wall-placeholder";
@@ -163,11 +167,18 @@
       }
 
       if (navState.view === "day") {
+        g.WeekUi.stop();
         g.DayUi.render(navCtrl.contentEl, lastPollState, navState.date, {
           onChipTap: function (row, child) {
             g.CompleteUi.open(root, row, child);
           },
         });
+        return;
+      }
+
+      if (navState.view === "week") {
+        g.DayUi.stop();
+        g.WeekUi.render(navCtrl.contentEl, lastPollState, navState.date, {});
         return;
       }
 
@@ -230,6 +241,7 @@
       // Calendar redesign §4.1/§10.3 — a rollover always lands back on
       // day/today, even if the sidebar had wandered to another view or date.
       g.CompleteUi.close(); // a sheet held open across midnight names a stale row
+      g.WeekUi.stop(); // same reason — the week detail sheet names a stale date
       if (navCtrl) navCtrl.resetToToday();
       firedChimeKeys = Object.create(null); // a new day's fire keys start clean, per remind-core.js's date-scoped key
       lastCheckedMin = null;
