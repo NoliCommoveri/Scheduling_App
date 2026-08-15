@@ -30,6 +30,19 @@
 // (as opposed to a drag) still calls `opts.onChipTap`, reserved for the
 // completion sheet (Phase 6) — this file only ever fires it on a
 // no-movement pointer-up, never as a side effect of a drag.
+//
+// §16 Phase 5b adds the duration-adjust sheet (§3.5.2). The TDS pins the
+// sheet's three actions ("Just this one" / "This and future" / "Use the
+// assigned time") but not the gesture that opens it, and a plain tap on a
+// placed chip is already spoken for (onChipTap, Phase 6). This build adds
+// a LONG-PRESS (held ~550ms with no movement) as the fourth gesture
+// `attachGesture` recognizes, alongside tap and drag — flagged for
+// confirmation rather than pinned in the TDS as settled, since Ray hasn't
+// signed off on it the way §3.3/§3.5's decisions were. Sheet state
+// (`sheetState`) lives at module scope, like `selectedForPlacement`,
+// specifically so a background poll's re-render (every 10 min, or
+// immediately after any write) redraws the open sheet instead of silently
+// closing it out from under whoever is mid-adjustment.
 
 (function (g) {
   "use strict";
@@ -38,6 +51,8 @@
   var GRID_END_MIN = 23 * 60; // 23:00
   var ROW_MIN = 15;
   var DRAG_THRESHOLD_PX = 8; // below this, a pointer-down+up is a TAP, not a drag
+  var LONG_PRESS_MS = 550; // held this long with no movement opens the duration sheet (§16 Phase 5b)
+  var MAX_ADJUST_MIN = 8 * 60; // stepper ceiling; the Worker enforces no max besides "positive multiple of 15"
 
   function el(html) {
     var t = document.createElement("template");
@@ -224,6 +239,36 @@
     });
   }
 
+  // §16 Phase 5b — the `wall_slot_days` half of an optimistic write:
+  // upsert-in-place, mirroring `applyOptimisticSlot`'s shape for `wall_slots`.
+  function applyOptimisticDayOverride(childId, subjectKey, instanceKey, date, durationMin) {
+    var days = current.state.slotDays || (current.state.slotDays = []);
+    var found = null;
+    for (var i = 0; i < days.length; i++) {
+      var d = days[i];
+      if (d.child_id === childId && d.subject_kind === "chore" && d.subject_key === subjectKey &&
+          (d.instance_key || "") === instanceKey && d.date === date) {
+        found = d;
+        break;
+      }
+    }
+    if (found) {
+      found.duration_min = durationMin;
+    } else {
+      days.push({
+        child_id: childId, subject_kind: "chore", subject_key: subjectKey,
+        instance_key: instanceKey, date: date, duration_min: durationMin,
+      });
+    }
+  }
+
+  function applyOptimisticDayOverrideClear(childId, subjectKey, instanceKey, date) {
+    current.state.slotDays = (current.state.slotDays || []).filter(function (d) {
+      return !(d.child_id === childId && d.subject_kind === "chore" && d.subject_key === subjectKey &&
+        (d.instance_key || "") === instanceKey && d.date === date);
+    });
+  }
+
   function flashCollision(rowId, otherRowId) {
     [rowId, otherRowId].forEach(function (id) {
       var chipEl = currentRoot.querySelector('.day-chip[data-assignment-id="' + id + '"]');
@@ -279,6 +324,155 @@
     });
   }
 
+  // ---- duration-adjust sheet (§16 Phase 5b, §3.5.2) -------------------------
+  // Opened by a long-press on a placed chip (attachGesture's onLongPress).
+  // `sheetState` holds only `{row, value}` — everything else (the current
+  // placement, whether it's overridden, the assigned-time label) is
+  // re-derived fresh from `current.state` on every build, so a background
+  // poll landing while the sheet is open never shows it stale data.
+
+  function showDurationSheet(row) {
+    var slotsIdx = g.SlotsCore.indexSlots(current.state.slots);
+    var daysIdx = g.SlotsCore.indexDays(current.state.slotDays);
+    var chip = g.SlotsCore.resolveChip(slotsIdx, daysIdx, row, current.date);
+    if (chip.startMin == null) return; // not placed — the sheet has nothing to adjust
+    sheetState = { row: row, value: chip.durationMin };
+    rerenderNow();
+  }
+
+  function closeDurationSheet() {
+    sheetState = null;
+    rerenderNow();
+  }
+
+  // "This and future" keeps the chore's current start time — a duration
+  // adjustment is never a move — and preserves the collision warning the
+  // same drop/drag path gives (§9): growing a chip can newly overlap a
+  // neighbour just as moving one can.
+  function submitDurationOverride(row, value, scope) {
+    var childId = g.SlotsCore.placementChildId(row);
+    var subjectKey = g.SlotsCore.subjectKeyOf(row);
+    var instanceKey = g.SlotsCore.instanceKeyOf(row);
+    var slot = g.SlotsCore.placementFor(g.SlotsCore.indexSlots(current.state.slots), row);
+    var date = current.date;
+    var fmt = (g.Store.getSettings().timeFormat) || "24h";
+    sheetState = null;
+    rerenderNow();
+    if (!slot) return; // un-placed from under us while the sheet was open
+
+    var startMin = slot.start_min;
+    var write = scope === "day"
+      ? g.WallApi.putSlotDay(childId, "chore", subjectKey, instanceKey, date, value)
+      : g.WallApi.putSlot(childId, "chore", subjectKey, instanceKey, startMin, value);
+
+    write.then(function () {
+      if (scope === "day") applyOptimisticDayOverride(childId, subjectKey, instanceKey, date, value);
+      else applyOptimisticSlot(childId, subjectKey, instanceKey, startMin, value);
+      rerenderNow();
+      var collision = findCollisionForDrop(row, startMin, value);
+      if (collision) {
+        showToast(
+          row.title + " overlaps " + collision.row.title + " at " +
+          g.TimeCore.formatMinutes(collision.chip.startMin, fmt), "warning");
+        flashCollision(row.id, collision.row.id);
+      } else {
+        showToast(row.title + " now " + g.TimeCore.formatDurationMin(value) +
+          (scope === "day" ? " today" : " going forward"));
+      }
+      g.Poll.pollNow();
+    }).catch(function () {
+      showToast("Couldn't change “" + row.title + "”'s duration — try again.", "warning");
+    });
+  }
+
+  // "Use the assigned time" returns the chip to row 3/4 of the §3.5.1 chain
+  // unconditionally — both a day override and a standing one may be in
+  // force at once (someone set "this and future", then "just this one" on
+  // top of it), and leaving either behind would silently disagree with what
+  // the button just promised. Both calls are made regardless of which
+  // override actually exists; deleting/clearing one that was never set is
+  // a no-op, not an error.
+  function submitDurationClear(row) {
+    var childId = g.SlotsCore.placementChildId(row);
+    var subjectKey = g.SlotsCore.subjectKeyOf(row);
+    var instanceKey = g.SlotsCore.instanceKeyOf(row);
+    var slot = g.SlotsCore.placementFor(g.SlotsCore.indexSlots(current.state.slots), row);
+    var date = current.date;
+    sheetState = null;
+    rerenderNow();
+    if (!slot) return;
+    var startMin = slot.start_min;
+
+    Promise.all([
+      g.WallApi.deleteSlotDay(childId, "chore", subjectKey, instanceKey, date),
+      g.WallApi.putSlot(childId, "chore", subjectKey, instanceKey, startMin, null),
+    ]).then(function () {
+      applyOptimisticDayOverrideClear(childId, subjectKey, instanceKey, date);
+      applyOptimisticSlot(childId, subjectKey, instanceKey, startMin, null);
+      rerenderNow();
+      showToast(row.title + " back to the assigned time");
+      g.Poll.pollNow();
+    }).catch(function () {
+      showToast("Couldn't reset “" + row.title + "”'s duration — try again.", "warning");
+    });
+  }
+
+  function buildDurationSheet() {
+    var s = sheetState;
+    var row = s.row;
+    var slotsIdx = g.SlotsCore.indexSlots(current.state.slots);
+    var daysIdx = g.SlotsCore.indexDays(current.state.slotDays);
+    var slot = g.SlotsCore.placementFor(slotsIdx, row);
+    if (!slot) { sheetState = null; return; } // un-placed from under us while open — drop silently
+    var dayOverride = g.SlotsCore.dayOverrideFor(daysIdx, row, current.date);
+    var overridden = g.SlotsCore.isOverridden(slot, dayOverride);
+    var assigned = g.SlotsCore.assignedDurationMin(row);
+
+    var overlay = el(
+      '<div class="duration-sheet-overlay">' +
+        '<div class="duration-sheet-card">' +
+          "<h2>Adjust duration</h2>" +
+          '<div class="duration-sheet-title"></div>' +
+          '<div class="duration-sheet-stepper">' +
+            '<button class="btn ghost dur-step" data-step="-15" type="button">&minus;</button>' +
+            '<div class="duration-sheet-value"></div>' +
+            '<button class="btn ghost dur-step" data-step="15" type="button">+</button>' +
+          "</div>" +
+          (overridden ? '<button class="btn ghost duration-sheet-reset" id="durUseAssigned"></button>' : "") +
+          '<div class="duration-sheet-actions">' +
+            '<button class="btn" id="durFuture">This and future</button>' +
+            '<button class="btn ghost" id="durJustThis">Just this one</button>' +
+            '<button class="btn ghost" id="durCancel">Cancel</button>' +
+          "</div>" +
+        "</div>" +
+      "</div>"
+    );
+    overlay.querySelector(".duration-sheet-title").textContent = row.title;
+    overlay.querySelector(".duration-sheet-value").textContent = g.TimeCore.formatDurationMin(s.value);
+    var resetBtn = overlay.querySelector("#durUseAssigned");
+    if (resetBtn) resetBtn.textContent = "Use the assigned time (" + g.TimeCore.formatDurationMin(assigned) + ")";
+
+    overlay.querySelectorAll(".dur-step").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        s.value = Math.max(ROW_MIN, Math.min(MAX_ADJUST_MIN, s.value + Number(btn.dataset.step)));
+        rerenderNow();
+      });
+    });
+    overlay.addEventListener("click", function (ev) {
+      if (ev.target === overlay) closeDurationSheet(); // backdrop tap cancels
+    });
+    overlay.querySelector("#durCancel").addEventListener("click", closeDurationSheet);
+    if (resetBtn) resetBtn.addEventListener("click", function () { submitDurationClear(row); });
+    overlay.querySelector("#durJustThis").addEventListener("click", function () {
+      submitDurationOverride(row, s.value, "day");
+    });
+    overlay.querySelector("#durFuture").addEventListener("click", function () {
+      submitDurationOverride(row, s.value, "standing");
+    });
+
+    currentRoot.appendChild(overlay);
+  }
+
   function tryToggleSelection(row, child) {
     if (selectedForPlacement && selectedForPlacement.row.id === row.id) {
       selectedForPlacement = null;
@@ -302,25 +496,37 @@
     });
   }
 
-  // Pointer-down+move+up, unified for both gestures a chip or a tray item
+  // Pointer-down+move+up, unified for the gestures a chip or a tray item
   // supports: a small movement is a TAP (`onTap`); past `DRAG_THRESHOLD_PX`
   // it's a DRAG, tracked with a floating ghost and resolved on release by
   // where the pointer let go — the grid body (place/move), the tray row
-  // (un-place), or neither (cancel, nothing written, §3.6).
-  function attachGesture(itemEl, row, onTap) {
+  // (un-place), or neither (cancel, nothing written, §3.6). A stationary
+  // hold past `LONG_PRESS_MS` is a fourth gesture, `onLongPress` (§16
+  // Phase 5b) — passed only for placed chips, never tray items, since it
+  // opens the duration sheet and an unplaced chore has nothing to adjust
+  // yet. Firing it tears down the same listeners a drag or tap would have
+  // used, so a long-press can never also resolve as either.
+  function attachGesture(itemEl, row, onTap, onLongPress) {
     itemEl.addEventListener("pointerdown", function (ev) {
       if (ev.button != null && ev.button !== 0) return;
       var startX = ev.clientX, startY = ev.clientY;
       var pointerId = ev.pointerId;
       var moved = false;
       var ghost = null;
+      var longPressTimer = null;
       var bodyEl = currentRoot.querySelector(".day-grid-body");
       var trayRowEl = currentRoot.querySelector(".day-tray-row");
+
+      function clearLongPress() {
+        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+        itemEl.classList.remove("pressing");
+      }
 
       function onMove(mv) {
         var dx = mv.clientX - startX, dy = mv.clientY - startY;
         if (!moved) {
           if (Math.sqrt(dx * dx + dy * dy) < DRAG_THRESHOLD_PX) return;
+          clearLongPress();
           moved = true;
           ghost = buildGhost(row.title);
           currentRoot.appendChild(ghost);
@@ -335,6 +541,7 @@
       }
 
       function cleanup() {
+        clearLongPress();
         document.removeEventListener("pointermove", onMove);
         document.removeEventListener("pointerup", onUp);
         document.removeEventListener("pointercancel", onUp);
@@ -372,6 +579,15 @@
       document.addEventListener("pointermove", onMove);
       document.addEventListener("pointerup", onUp);
       document.addEventListener("pointercancel", onUp);
+
+      if (onLongPress) {
+        itemEl.classList.add("pressing");
+        longPressTimer = setTimeout(function () {
+          longPressTimer = null;
+          cleanup();
+          onLongPress();
+        }, LONG_PRESS_MS);
+      }
     });
   }
 
@@ -457,12 +673,19 @@
 
   // Time and title share one line (not stacked) because a 15-minute chore
   // with no authored estimate is the common case today (§4.3) and renders
-  // as exactly one grid row — too short for two stacked lines to fit.
+  // as exactly one grid row — too short for two stacked lines to fit. The
+  // duration marker (§3.5.2) only ever appears alongside them when a wall
+  // override is in force — an un-overridden chip carries no duration text
+  // at all, since its height already shows it.
   function chipHtml(placed, fmt) {
+    var durationBadge = placed.chip.overridden
+      ? '<span class="chip-duration">' + escapeHtml(g.TimeCore.formatDurationMin(placed.chip.durationMin)) + "</span>"
+      : "";
     return (
       '<div class="day-chip" data-assignment-id="' + escapeHtml(placed.row.id) + '">' +
         '<span class="chip-time">' + g.TimeCore.formatMinutes(placed.chip.startMin, fmt) + "</span>" +
         '<span class="chip-title">' + escapeHtml(placed.row.title) + "</span>" +
+        durationBadge +
       "</div>"
     );
   }
@@ -495,6 +718,8 @@
       chip.style.height = (rows * rh - 2) + "px"; // 2px gap between chips
       attachGesture(chip, placed.row, function () {
         if (opts.onChipTap) opts.onChipTap(placed.row, entry.child);
+      }, function () {
+        showDurationSheet(placed.row);
       });
       col.appendChild(chip);
     });
@@ -709,6 +934,7 @@
   var lastRenderedDate = null;
   var lastRenderedMode = null;
   var selectedForPlacement = null; // tap-to-place: {row, child} armed by a tray tap, or null
+  var sheetState = null; // duration-adjust sheet: {row, value} while open, or null (§16 Phase 5b)
 
   function setMode(mode) {
     dayMode = mode;
@@ -741,8 +967,10 @@
 
     // Tap-to-place is scoped to one rendered grid; a stale selection
     // carried into a different date or into collapsed block mode (no grid
-    // to tap) would arm a placement nobody can see.
+    // to tap) would arm a placement nobody can see. The duration sheet is
+    // scoped the same way — it names a rendered date via `current.date`.
     if ((isNewDate || isNewMode) && selectedForPlacement) selectedForPlacement = null;
+    if ((isNewDate || isNewMode) && sheetState) sheetState = null;
 
     root.innerHTML = "";
 
@@ -780,6 +1008,12 @@
 
     scroll.appendChild(buildStaleStamp(state, fmt));
     root.appendChild(shell);
+
+    // Re-shown on every render, not just the one that opened it — a
+    // background poll's re-render (every 10 min, or right after any write)
+    // rebuilds `root` from scratch, and without this the sheet would
+    // silently vanish mid-adjustment (§16 Phase 5b).
+    if (sheetState) buildDurationSheet();
 
     var rh = rowHeightPx();
     if (result.body) {
@@ -831,6 +1065,7 @@
     lastRenderedDate = null;
     lastRenderedMode = null;
     selectedForPlacement = null;
+    sheetState = null;
   }
 
   g.DayUi = { render: render, stop: stop };

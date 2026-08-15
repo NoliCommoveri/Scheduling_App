@@ -746,6 +746,27 @@ button {
   text-overflow: ellipsis;
 }
 
+/* §16 Phase 5b — the overridden-chip marker (§3.5.2): rendered only when a
+   wall duration override is in force, never on a chip using the parent's
+   own estimate. The dot is the "small dot" the slice asks for; the italic
+   is the same line. */
+.chip-duration {
+  flex: 0 0 auto;
+  font-size: 0.75rem;
+  font-style: italic;
+  color: var(--text-dim);
+}
+
+.chip-duration::after {
+  content: " \2022";
+}
+
+/* A held chip, before the long-press threshold decides whether it opens
+   the duration sheet — opacity only, no animated box-shadow (§11.2). */
+.day-chip.pressing {
+  opacity: 0.55;
+}
+
 .day-now-line {
   position: absolute;
   left: 0;
@@ -910,4 +931,73 @@ button {
   background: var(--accent);
   color: #1a1408;
   border-color: var(--accent);
+}
+
+/* ---- duration-adjust sheet (§16 Phase 5b, §3.5.2) --------------------------
+   Reuses .settings-overlay's full-screen scrim convention, one z-index
+   above it — the two never open at once, but a higher number here is a
+   cheap guarantee, not a load-bearing one. */
+
+.duration-sheet-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 13, 22, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 11;
+}
+
+.duration-sheet-card {
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: 2rem;
+  width: min(420px, 90vw);
+  text-align: center;
+}
+
+.duration-sheet-card h2 {
+  margin-top: 0;
+}
+
+.duration-sheet-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-bottom: 0.5rem;
+}
+
+.duration-sheet-stepper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.5rem;
+  margin: 1rem 0;
+}
+
+.duration-sheet-value {
+  font-size: 2rem;
+  font-weight: 700;
+  min-width: 6ch;
+  font-variant-numeric: tabular-nums;
+}
+
+.duration-sheet-reset {
+  display: block;
+  width: 100%;
+  margin: 0 0 1rem;
+}
+
+/* Stacked, not `.wiz-actions`' side-by-side row — three full-width buttons
+   with "This and future"/"Just this one"'s longer labels wrap illegibly at
+   two-per-row on the sheet's 420px card. */
+.duration-sheet-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.duration-sheet-actions .btn {
+  width: 100%;
 }

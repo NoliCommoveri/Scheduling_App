@@ -2,10 +2,11 @@
 // Phase 2: pairing and the roster read (TDS_Slice_Wall_Display_App.md §13).
 // Phase 3 (Wall Calendar Redesign) adds the placements read
 // (TDS_Slice_Wall_Calendar_Redesign.md §12). Phase 5 adds the placement
-// WRITES: standing PUT/DELETE on `wall_slots` (§3.2, §12). Completions/
-// rewards/claim calls join in a later phase — the shape (one wall token,
-// childId per call, 401 -> unpaired) is set here so later phases only add
-// routes, not a second convention.
+// WRITES: standing PUT/DELETE on `wall_slots` (§3.2, §12). Phase 5b adds
+// PUT/DELETE on `wall_slot_days` — the §3.5.2 per-day duration override
+// ("just this one"). Completions/rewards/claim calls join in a later
+// phase — the shape (one wall token, childId per call, 401 -> unpaired)
+// is set here so later phases only add routes, not a second convention.
 
 (function (g) {
   "use strict";
@@ -112,6 +113,39 @@
     });
   }
 
+  // §3.5.2/§12 — "just this one": upserts a `wall_slot_days` override for
+  // one date. `durationMin` is required (the Worker's handleWallSlotDayPut
+  // rejects `null` — an override that means nothing is a DELETE, not a PUT
+  // that writes null, worker/index.js).
+  function putSlotDay(childId, subjectKind, subjectKey, instanceKey, date, durationMin) {
+    return request("/api/wall/slots/day", {
+      method: "PUT",
+      body: {
+        childId: childId,
+        subjectKind: subjectKind,
+        subjectKey: subjectKey,
+        instanceKey: instanceKey || "",
+        date: date,
+        durationMin: durationMin,
+      },
+    });
+  }
+
+  // §3.5.2/§12 — clears one date's override; the chip falls back to the
+  // standing override, or the parent's own estimate.
+  function deleteSlotDay(childId, subjectKind, subjectKey, instanceKey, date) {
+    return request("/api/wall/slots/day", {
+      method: "DELETE",
+      body: {
+        childId: childId,
+        subjectKind: subjectKind,
+        subjectKey: subjectKey,
+        instanceKey: instanceKey || "",
+        date: date,
+      },
+    });
+  }
+
   g.WallApi = {
     UnpairedError: UnpairedError,
     pair: pair,
@@ -120,6 +154,8 @@
     getSlots: getSlots,
     putSlot: putSlot,
     deleteSlot: deleteSlot,
+    putSlotDay: putSlotDay,
+    deleteSlotDay: deleteSlotDay,
     request: request,
   };
 })(typeof window !== "undefined" ? window : globalThis);
