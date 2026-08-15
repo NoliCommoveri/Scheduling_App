@@ -1,8 +1,8 @@
 # CLAUDE.md – Build Session Guardrails
 
-**Version:** 2.2  
+**Version:** 2.4  
 **Project:** Homeschool Curriculum & Chore Scheduling System  
-**Last Updated:** 2026-08-13  
+**Last Updated:** 2026-08-15  
 
 ---
 
@@ -40,18 +40,21 @@ Three applications, one shared database, no shared runtime code:
 | **Folder** | `child-app/` | `management-app/` | `wall-app/` |
 | **Scope** | Child UI: plan, complete, rewards, streak | Parent/admin UI: curriculum, pacing, assignment, reporting | Shared family calendar: day/week/month views, chores placed on a 15-minute grid, school blocks, completion |
 | **Runtime Code Sharing** | **FORBIDDEN** | **FORBIDDEN** | **FORBIDDEN** |
-| **Data Flow** | ← `GET /api/plan` · `POST /api/completions` → | → `POST /api/assignments` · `GET /api/assignments` ← | ← `GET /api/wall/children` · `GET /api/wall/plan` · `GET /api/wall/events` · `GET/PUT/DELETE /api/wall/slots` · `PUT/DELETE /api/wall/slots/day` · `POST /api/wall/completions` → |
+| **Data Flow** | ← `GET /api/plan` · `POST /api/completions` → | → `POST /api/assignments` · `GET /api/assignments` ← | ← `GET /api/wall/children` · `GET /api/wall/plan` · `GET /api/wall/events` · `GET/PUT/DELETE /api/wall/slots` · `PUT/DELETE /api/wall/slots/day` · `GET/POST /api/wall/school-blocks` · `PUT/DELETE /api/wall/school-blocks/:id` · `PUT/DELETE /api/wall/school-blocks/:id/courses` · `POST /api/wall/completions` → |
 | **Credential** | Scoped device token (per child) | `SYNC_TOKEN` (parent) | Household-scoped **wall token** (`devices.scope = 'wall'`) |
 
 The Wall App **reads** the active-child roster, chores, events, and — read-only, for school blocks —
 activities; **writes** completions, their earn entries, shared-chore claims, and **its own placement
-tables (`wall_slots`, `wall_slot_days`)**. Nothing else — no waives, no deferments, no grades, no
-messages, no streaks, and nothing whatsoever on an activity row
+tables (`wall_slots`, `wall_slot_days`, `wall_school_blocks`, `wall_school_block_courses`)**. Nothing
+else — no waives, no deferments, no grades, no messages, no streaks, and nothing whatsoever on an
+activity row
 (`TDS_Slice_Wall_Calendar_Redesign.md` §5.1, §12).
 
 **The placement tables widen nothing on `assignments`.** The wall's writes there remain exactly
 `ASSIGNMENT_COMPLETION_FIELDS`. This is the distinction that keeps the row below intact: the wall
-owns two tables of its own, and owns no new column of anyone else's.
+owns four tables of its own — two for a chore's standing time-of-day placement (`wall_slots`,
+`wall_slot_days`), two for a school block's span and membership (`wall_school_blocks`,
+`wall_school_block_courses`) — and owns no new column of anyone else's.
 
 It mirrors several rules from the Child App's pure layer (day membership, the event key, the
 plannability rule); mirroring is **not** sharing, and each mirrored file must name what it mirrors
@@ -178,9 +181,12 @@ The rules that hold across all three:
   `children.active = 1` join, they act for nobody, and they read no child-owned column that could
   be attributed to one. The four bounds above govern routes that *act for a named child*; these do
   not act. See `TDS_Slice_Wall_Calendar_Redesign.md` §7.2.
-- **The wall's own tables (`wall_slots`, `wall_slot_days`) sit outside this scheme entirely.** No
-  other app reads or writes them, they contain no child-owned or parent-owned assignment data, and
-  writing them is never a substitute for writing a column the wall does not own.
+- **The wall's own tables (`wall_slots`, `wall_slot_days`, `wall_school_blocks`,
+  `wall_school_block_courses`) sit outside this scheme entirely.** No other app reads or writes
+  them, they contain no child-owned or parent-owned assignment data, and writing them is never a
+  substitute for writing a column the wall does not own. A school block's `childId` (§5.5) takes
+  no sentinel — a block is always one child's, unlike a `claim` chore's placement (§3.1.2) — but
+  that is a rule about which rows the table holds, not a fifth bound on `assignments`.
 
 ---
 
@@ -318,8 +324,8 @@ Ask explicitly, list the candidate readings, state which you are proceeding with
 
 ## IX. Version & Amendments
 
-**Current Version:** 2.3  
-**Date:** 2026-08-14
+**Current Version:** 2.4  
+**Date:** 2026-08-15
 
 | Version | Date | Change |
 |---------|------|--------|
@@ -330,6 +336,7 @@ Ask explicitly, list the candidate readings, state which you are proceeding with
 | 2.1 | 2026-08-12 | §III.A gains the `claim_group` narrowing (online-required for shared-chore claims only; every other row keeps the local-first path). §VII gains the "Shared chore claims" locked-decision row. Closes the §14 amendment gap left open by `TDS_Slice_Shared_Chores.md` — the SRS modules were updated in commit `9715b50`, this file was not. Authorized by Ray in-session. See `docs/TDS_Slice_Shared_Chores.md` §0.8/§5.7/§14. |
 | 2.3 | 2026-08-14 | **The wall becomes a calendar.** §I.A's Wall column is rewritten: its scope is a shared family calendar, its Data Flow gains the events and slots routes, and its write list gains **its own tables** (`wall_slots`, `wall_slot_days`) while its `assignments` writes stay exactly `ASSIGNMENT_COMPLETION_FIELDS`. Its read list gains activities, read-only, for school blocks. §0's column-ownership row records the case that tested the rule and held — the wall overrides a duration in a table it owns rather than writing the parent-owned `expected_duration_min`. §III.E records that `/api/wall/children` and `/api/wall/events` name no child and are therefore not a fourth exception, and that the wall's own tables sit outside the scheme. §IV.B gains a placement-write check. §VII gains three rows; per-child PIN gating on the wall is repealed. Authorized by Ray in-session, all three narrowings signed off individually. See `docs/TDS_Slice_Wall_Calendar_Redesign.md` §18. |
 | 2.2 | 2026-08-13 | **Third app.** §I.A's isolation table becomes three columns and §I.B's tree gains `wall-app/` (public assets, no `.assetsignore` entry — stated so nobody "fixes" it). §0 records the wall token and that no credential widens column ownership. §III.A gains a second narrowing: all Wall App writes are online-required, scoped to that app. §III.E is restructured around three credential classes and records the one exception to derive-`child_id`-from-token — `/api/wall/*` names the child in the request — with the four bounds that contain it. §IV.B gains two Wall App checks. §VII gains three rows; per-child pairing on the wall is repealed. Authorized by Ray in-session, all three narrowings signed off individually. See `docs/TDS_Slice_Wall_Display_App.md` §6.4, §8.3, §16. |
+| 2.4 | 2026-08-15 | **School blocks widen the wall's write scope a second time.** §I.A's Data Flow cell gains the five `/api/wall/school-blocks*` routes and its write list gains **two more wall-owned tables** (`wall_school_blocks`, `wall_school_block_courses`), alongside `wall_slots`/`wall_slot_days` — restated in the same breath that this widens nothing on `assignments`, whose writes there stay exactly `ASSIGNMENT_COMPLETION_FIELDS`. §III.E's "the wall's own tables" bullet gains the two new tables and a note that a school block's `childId` takes no sentinel (unlike a `claim` chore's placement, §3.1.2) without that being a fifth bound. This is the amendment `TDS_Slice_Wall_Calendar_Redesign.md` §18.1a flagged as required before Phase 7 shipped and not yet put to Ray individually — it is a direct extension of §2.3's already-approved narrowing (the wall may own tables of its own, outside the child-scoping scheme, so long as it widens no `assignments` column) rather than a new kind of departure, so it is recorded here rather than re-litigated as a fourth narrowing. See `docs/TDS_Slice_Wall_Calendar_Redesign.md` §5.5, §18.1a. |
 
 ---
 

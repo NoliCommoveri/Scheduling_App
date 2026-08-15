@@ -26,6 +26,11 @@ import {
   SLOT_SUBJECT_KINDS,
   isValidStartMin,
   isValidSlotDuration,
+  isValidBlockLabel,
+  isValidBlockDuration,
+  isValidCourseName,
+  MAX_BLOCK_LABEL_LEN,
+  MAX_COURSE_NAME_LEN,
 } from './validation.js';
 
 const MAX_BATCH = 500;
@@ -338,6 +343,39 @@ async function routeApi(request, env, ctx, url) {
     return withWall(request, env, ctx, () => handleWallEvents(url, env));
   }
 
+  // ---- Wall Calendar Redesign §5.5, §12 — school blocks (Phase 7) ----
+  //
+  // Like wall_slots/wall_slot_days above, these touch only
+  // wall_school_blocks / wall_school_block_courses, never `assignments` — so
+  // childId is validated against the roster directly (resolveActiveChildId),
+  // not through withWallChild. Unlike a chore placement, there is NO
+  // sentinel here: a block is always one child's (§12, §3.1.2's child-less
+  // row problem doesn't exist for a block).
+  if (pathname === '/api/wall/school-blocks' && method === 'GET') {
+    return withWall(request, env, ctx, () => handleWallSchoolBlocksGet(env));
+  }
+  if (pathname === '/api/wall/school-blocks' && method === 'POST') {
+    return withWall(request, env, ctx, (wall) => withJsonBody(request, (body) =>
+      handleWallSchoolBlockPost(env, wall, body)));
+  }
+  const schoolBlockMatch = /^\/api\/wall\/school-blocks\/([^/]+)$/.exec(pathname);
+  if (schoolBlockMatch && method === 'PUT') {
+    return withWall(request, env, ctx, (wall) => withJsonBody(request, (body) =>
+      handleWallSchoolBlockPut(env, wall, schoolBlockMatch[1], body)));
+  }
+  if (schoolBlockMatch && method === 'DELETE') {
+    return withWall(request, env, ctx, () => handleWallSchoolBlockDelete(env, schoolBlockMatch[1]));
+  }
+  const schoolBlockCoursesMatch = /^\/api\/wall\/school-blocks\/([^/]+)\/courses$/.exec(pathname);
+  if (schoolBlockCoursesMatch && method === 'PUT') {
+    return withWall(request, env, ctx, () => withJsonBody(request, (body) =>
+      handleWallSchoolBlockCoursePut(env, schoolBlockCoursesMatch[1], body)));
+  }
+  if (schoolBlockCoursesMatch && method === 'DELETE') {
+    return withWall(request, env, ctx, () => withJsonBody(request, (body) =>
+      handleWallSchoolBlockCourseDelete(env, schoolBlockCoursesMatch[1], body)));
+  }
+
   return json({ error: 'Not found.' }, 404);
 }
 
@@ -473,10 +511,25 @@ async function withWallChild(env, wall, childId, handler) {
 // server's own copy of a real id) or null when the id is unusable.
 async function resolveSlotChildId(env, childId, subjectKind) {
   if (childId === WALL_SENTINEL_CHILD_ID) {
-    // §3.1.2 — a `claim` chore's placement is one child-less row. A school
-    // placement is always per child, so the sentinel is meaningless there.
+    // §3.1.2 — a `claim` chore's placement is one child-less row.
+    // `subjectKind` can only be 'chore' by the time this runs — SLOT_SUBJECT_
+    // KINDS no longer has a 'school' member (§20) — so this ternary's `: null`
+    // branch is a defensive belt, not a live path.
     return subjectKind === 'chore' ? WALL_SENTINEL_CHILD_ID : null;
   }
+  if (typeof childId !== 'string' || !childId) return null;
+  const row = await env.DB.prepare(
+    `SELECT id FROM children WHERE id = ?1 AND active = 1`
+  ).bind(childId).first();
+  return row ? row.id : null;
+}
+
+// §5.5/§12 — a school block's childId, unlike a chore placement's, never
+// accepts the sentinel: "no sentinel here, a block is always one child's."
+// A separate helper rather than resolveSlotChildId(..., 'school') because
+// that call would silently pass through the (now dead) sentinel branch above
+// — this one simply never looks for it.
+async function resolveActiveChildId(env, childId) {
   if (typeof childId !== 'string' || !childId) return null;
   const row = await env.DB.prepare(
     `SELECT id FROM children WHERE id = ?1 AND active = 1`
@@ -1627,6 +1680,151 @@ async function handleWallEvents(url, env) {
   ).bind(from, to).all();
 
   return json({ ...capRows(results, 'events'), from, to });
+}
+
+// ============================================================================
+// Wall Calendar Redesign (TDS_Slice_Wall_Calendar_Redesign.md) §5.5, §12 —
+// school blocks (Phase 7)
+// ============================================================================
+
+// §5.5/§12 — every school block, household-wide, plus its member courses.
+// Two flat tables, joined client-side — the same shape as
+// handleWallSlotsGet's slots/days split, and for the same reason:
+// wall_school_blocks carries no date (§5.4 — no per-day override for a
+// block's span in v1), so there is nothing here for a window to bound. A
+// block is a standing placement, like everything else in this slice (§3.3).
+async function handleWallSchoolBlocksGet(env) {
+  const { results: blocks } = await env.DB.prepare(
+    `SELECT * FROM wall_school_blocks ORDER BY child_id, start_min`
+  ).all();
+  const { results: blockCourses } = await env.DB.prepare(
+    `SELECT * FROM wall_school_block_courses ORDER BY block_id, course_name`
+  ).all();
+
+  const blocksCapped = blocks.length > MAX_QUERY_ROWS;
+  const coursesCapped = blockCourses.length > MAX_QUERY_ROWS;
+  const body = {
+    blocks: blocksCapped ? blocks.slice(0, MAX_QUERY_ROWS) : blocks,
+    blockCourses: coursesCapped ? blockCourses.slice(0, MAX_QUERY_ROWS) : blockCourses,
+  };
+  if (blocksCapped) body.blocksTruncated = true;
+  if (coursesCapped) body.blockCoursesTruncated = true;
+  return json(body);
+}
+
+// §5.4 — the "+ School" affordance: mints a new block id and drops an empty,
+// unlabeled block at the given span. `startMin`/`durationMin` share
+// wall_slots PUT's exact validation shape, with one difference: a block's
+// duration may never be null (isValidBlockDuration), since there is no
+// assignment-authored estimate underneath it to fall back to (§3.5.1 does
+// not apply to blocks, §20).
+async function handleWallSchoolBlockPost(env, wall, body) {
+  body = body || {};
+  if (!isValidStartMin(body.startMin)) {
+    return json({ error: 'startMin must be a multiple of 15 minutes, 0-1425.' }, 400);
+  }
+  if (!isValidBlockDuration(body.durationMin)) {
+    return json({ error: 'durationMin must be a positive multiple of 15 minutes.' }, 400);
+  }
+  if (body.startMin + body.durationMin > 1440) {
+    return json({ error: 'startMin + durationMin must not run past midnight.' }, 400);
+  }
+  if (!isValidBlockLabel(body.label)) {
+    return json({ error: `label must be at most ${MAX_BLOCK_LABEL_LEN} characters.` }, 400);
+  }
+  const childId = await resolveActiveChildId(env, body.childId);
+  if (!childId) return json({ error: 'childId must be an active child.' }, 400);
+
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  await env.DB.prepare(
+    `INSERT INTO wall_school_blocks (id, child_id, label, start_min, end_min, updated_at, updated_by)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
+  ).bind(id, childId, body.label || null, body.startMin, body.startMin + body.durationMin, now, `wall:${wall.deviceId}`).run();
+
+  return json({ id });
+}
+
+// §5.4 — moves (startMin), resizes (durationMin) or relabels (label) an
+// existing block. Every field is optional and independent — only the keys
+// present in the body change, the rest keep the block's current value.
+// `childId` is deliberately not patchable (§12's table): moving a block
+// between children isn't a modeled operation.
+async function handleWallSchoolBlockPut(env, wall, id, body) {
+  body = body || {};
+  const existing = await env.DB.prepare(`SELECT * FROM wall_school_blocks WHERE id = ?1`).bind(id).first();
+  if (!existing) return json({ error: 'Not found.' }, 404);
+
+  let startMin = existing.start_min;
+  let durationMin = existing.end_min - existing.start_min;
+  if (body.startMin !== undefined) {
+    if (!isValidStartMin(body.startMin)) {
+      return json({ error: 'startMin must be a multiple of 15 minutes, 0-1425.' }, 400);
+    }
+    startMin = body.startMin;
+  }
+  if (body.durationMin !== undefined) {
+    if (!isValidBlockDuration(body.durationMin)) {
+      return json({ error: 'durationMin must be a positive multiple of 15 minutes.' }, 400);
+    }
+    durationMin = body.durationMin;
+  }
+  if (startMin + durationMin > 1440) {
+    return json({ error: 'startMin + durationMin must not run past midnight.' }, 400);
+  }
+  let label = existing.label;
+  if (body.label !== undefined) {
+    if (!isValidBlockLabel(body.label)) {
+      return json({ error: `label must be at most ${MAX_BLOCK_LABEL_LEN} characters.` }, 400);
+    }
+    label = body.label;
+  }
+
+  const now = Date.now();
+  await env.DB.prepare(
+    `UPDATE wall_school_blocks SET start_min = ?1, end_min = ?2, label = ?3, updated_at = ?4, updated_by = ?5 WHERE id = ?6`
+  ).bind(startMin, startMin + durationMin, label, now, `wall:${wall.deviceId}`, id).run();
+
+  return json({ ok: true });
+}
+
+// §5.4 — un-places the block entirely. Cascades to its
+// wall_school_block_courses rows; touches no activity row (§5's write-side
+// rule, unchanged — this deletes a wall-owned row, not a course's own).
+async function handleWallSchoolBlockDelete(env, id) {
+  const result = await env.DB.prepare(`DELETE FROM wall_school_blocks WHERE id = ?1`).bind(id).run();
+  await env.DB.prepare(`DELETE FROM wall_school_block_courses WHERE block_id = ?1`).bind(id).run();
+  return json({ deleted: !!(result.meta && result.meta.changes > 0) });
+}
+
+// §5.2 — checking a box in the membership picker. Idempotent: re-adding an
+// existing member is a no-op, not an error.
+async function handleWallSchoolBlockCoursePut(env, id, body) {
+  body = body || {};
+  if (!isValidCourseName(body.courseName)) {
+    return json({ error: `courseName is required, at most ${MAX_COURSE_NAME_LEN} characters.` }, 400);
+  }
+  const block = await env.DB.prepare(`SELECT id FROM wall_school_blocks WHERE id = ?1`).bind(id).first();
+  if (!block) return json({ error: 'Not found.' }, 404);
+
+  await env.DB.prepare(
+    `INSERT INTO wall_school_block_courses (block_id, course_name) VALUES (?1, ?2)
+     ON CONFLICT (block_id, course_name) DO NOTHING`
+  ).bind(id, body.courseName).run();
+  return json({ ok: true });
+}
+
+// §5.2 — unchecking a box. Deletes only the membership row; the course's own
+// activity rows are untouched.
+async function handleWallSchoolBlockCourseDelete(env, id, body) {
+  body = body || {};
+  if (!isValidCourseName(body.courseName)) {
+    return json({ error: `courseName is required, at most ${MAX_COURSE_NAME_LEN} characters.` }, 400);
+  }
+  const result = await env.DB.prepare(
+    `DELETE FROM wall_school_block_courses WHERE block_id = ?1 AND course_name = ?2`
+  ).bind(id, body.courseName).run();
+  return json({ deleted: !!(result.meta && result.meta.changes > 0) });
 }
 
 // ============================================================================

@@ -47,7 +47,15 @@
 // settings-ui.js gains the Sound section (per-child toggle, Test sound);
 // store.js gains `wall.childPrefs`; wall.css gains the indicator and the
 // sound-section rows.
-const CACHE_NAME = "wall-display-shell-v8";
+// v9: §16 Phase 7 — school blocks (§5, revised 2026-08-15, §20). New file
+// `school-core.js` (pure: per-course completion rollup, block collapse).
+// api.js gains the five school-block calls; poll.js fetches them alongside
+// slots; day-ui.js renders blocks in all three day-view modes, generalizes
+// `attachGesture` for a block's drag/long-press/tap, and always renders the
+// tray header (for "+ School") rather than hiding it when nothing's
+// unplaced; wall.css gains the block chip, the two new sheets, and the
+// always-visible tray's add button.
+const CACHE_NAME = "wall-display-shell-v9";
 
 const APP_SHELL = [
   "./",
@@ -61,6 +69,7 @@ const APP_SHELL = [
   "./js/events-core.js",
   "./js/chores-core.js",
   "./js/slots-core.js",
+  "./js/school-core.js",
   "./js/remind-core.js",
   "./js/sound.js",
   "./js/poll.js",

@@ -17,10 +17,10 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 const repo = new URL('../', import.meta.url);
-for (const file of ['pin-core.js', 'events-core.js', 'chores-core.js', 'slots-core.js', 'time-core.js', 'remind-core.js']) {
+for (const file of ['pin-core.js', 'events-core.js', 'chores-core.js', 'slots-core.js', 'school-core.js', 'time-core.js', 'remind-core.js']) {
   vm.runInThisContext(readFileSync(new URL(`wall-app/js/${file}`, repo), 'utf8'), { filename: file });
 }
-const { PinCore, EventsCore, ChoresCore, SlotsCore, TimeCore, RemindCore } = globalThis;
+const { PinCore, EventsCore, ChoresCore, SlotsCore, SchoolCore, TimeCore, RemindCore } = globalThis;
 
 // ===========================================================  hashing (§12.8)
 
@@ -506,4 +506,90 @@ test('inQuietHours wraps midnight the same way nav-ui.js\'s isNight does', () =>
   assert.equal(RemindCore.inQuietHours(6 * 60, 21, 6), false);
   assert.equal(RemindCore.inQuietHours(20 * 60, 21, 6), false);
   assert.equal(RemindCore.inQuietHours(12 * 60, 12, 12), false); // start === end — never quiet
+});
+
+// ==================================================  school blocks (§14.6)
+
+function activity(childId, courseName, date, status, extra = {}) {
+  return { kind: 'activity', child_id: childId, course_name: courseName, date, status, rescinded_at: null, ...extra };
+}
+
+test('§14.6: a member course is checked only when every non-rescinded activity is complete or waived', () => {
+  const date = '2026-08-15';
+  const allDone = [activity('ellie', 'Math', date, 'complete'), activity('ellie', 'Math', date, 'complete')];
+  assert.equal(SchoolCore.courseRollup(allDone, 'ellie', 'Math', date).checked, true);
+
+  const oneOpen = [activity('ellie', 'Math', date, 'complete'), activity('ellie', 'Math', date, 'pending')];
+  assert.equal(SchoolCore.courseRollup(oneOpen, 'ellie', 'Math', date).checked, false);
+
+  // Waived counts as resolved, not outstanding — matches the rest of the
+  // codebase's own rule (child-app planner-core.js isResolved).
+  const waived = [activity('ellie', 'Math', date, 'complete'), activity('ellie', 'Math', date, 'waived')];
+  const rollup = SchoolCore.courseRollup(waived, 'ellie', 'Math', date);
+  assert.equal(rollup.checked, true);
+  assert.equal(rollup.resolved, 2);
+});
+
+test('§14.6: a member course with no activities that day is neither checked nor unchecked', () => {
+  const rollup = SchoolCore.courseRollup([], 'ellie', 'Math', '2026-08-15');
+  assert.equal(rollup.total, 0);
+  assert.equal(rollup.checked, null);
+});
+
+test('§14.6: rows for another course or another child do not contribute', () => {
+  const date = '2026-08-15';
+  const rows = [
+    activity('ellie', 'Math', date, 'complete'),
+    activity('ellie', 'Science', date, 'pending'), // different course
+    activity('talia', 'Math', date, 'pending'), // different child
+    activity('ellie', 'Math', '2026-08-14', 'pending'), // different date
+  ];
+  const rollup = SchoolCore.courseRollup(rows, 'ellie', 'Math', date);
+  assert.equal(rollup.total, 1);
+  assert.equal(rollup.checked, true);
+});
+
+test('§14.6: a rescinded activity does not count toward the total', () => {
+  const date = '2026-08-15';
+  const rows = [
+    activity('ellie', 'Math', date, 'complete'),
+    activity('ellie', 'Math', date, 'pending', { rescinded_at: 12345 }),
+  ];
+  const rollup = SchoolCore.courseRollup(rows, 'ellie', 'Math', date);
+  assert.equal(rollup.total, 1);
+  assert.equal(rollup.checked, true);
+});
+
+test('§14.6: the block collapses only when every member is checked', () => {
+  const date = '2026-08-15';
+  const rows = [
+    activity('ellie', 'Math', date, 'complete'),
+    activity('ellie', 'Language Arts', date, 'complete'),
+    activity('ellie', 'Geography', date, 'pending'),
+  ];
+  const allDone = SchoolCore.memberRollups(rows, 'ellie', date, ['Math', 'Language Arts']);
+  assert.equal(SchoolCore.isCollapsed(allDone), true);
+
+  const oneOpen = SchoolCore.memberRollups(rows, 'ellie', date, ['Math', 'Language Arts', 'Geography']);
+  assert.equal(SchoolCore.isCollapsed(oneOpen), false);
+});
+
+test('§14.6: a block with no members, or whose members all have zero activities, never collapses', () => {
+  assert.equal(SchoolCore.isCollapsed([]), false);
+
+  const noActivitiesYet = SchoolCore.memberRollups([], 'ellie', '2026-08-15', ['Math', 'Science']);
+  assert.ok(noActivitiesYet.every((r) => r.checked === null));
+  assert.equal(SchoolCore.isCollapsed(noActivitiesYet), false);
+});
+
+test('§14.6a: the membership picker lists exactly that child\'s courses with activities that date, alphabetically', () => {
+  const date = '2026-08-15';
+  const rows = [
+    activity('ellie', 'Math', date, 'pending'),
+    activity('ellie', 'Language Arts', date, 'complete'),
+    activity('talia', 'Geography', date, 'pending'), // different child
+    activity('ellie', 'Science', '2026-08-14', 'pending'), // different date
+    activity('ellie', 'History', date, 'pending', { rescinded_at: 999 }), // rescinded
+  ];
+  assert.deepEqual(SchoolCore.coursesWithActivities(rows, 'ellie', date), ['Language Arts', 'Math']);
 });

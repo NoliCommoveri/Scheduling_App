@@ -28,8 +28,14 @@
   var NUL = "\u0000";
   var DEFAULT_DURATION_MIN = 15; // packet.js:43's own fallback (§3.5)
 
-  // Phase 3 only ever resolves chore rows — school-block subjects
-  // (`subjectKind: 'school'`) arrive with `school-core.js` in Phase 7.
+  // This file only ever resolves chore rows. School blocks (§5, §16 Phase 7)
+  // are NOT a `wall_slots` subject at all — the 2026-08-15 §5 revision (§20)
+  // moved them to their own tables (`school-core.js`, `wall_school_blocks`),
+  // since a block's shape (one span, many member courses) doesn't fit this
+  // file's singleton (child_id, subject_kind, subject_key, instance_key)
+  // key. `subjectKind` is kept as a function rather than inlined 'chore'
+  // everywhere it's used, so a reader doesn't have to wonder whether it
+  // varies.
   function subjectKind(row) {
     return "chore";
   }

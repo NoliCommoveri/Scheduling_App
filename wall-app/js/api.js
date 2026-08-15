@@ -193,6 +193,56 @@
     );
   }
 
+  // §5.5/§12 — every school block, household-wide, plus its member courses
+  // (Phase 7). Two flat tables, joined client-side — same shape as
+  // getSlots()'s slots/days split, and for the same reason: a block carries
+  // no date (§5.4 — no per-day override for a block's span in v1), so there
+  // is nothing here for a window to bound.
+  function getSchoolBlocks() {
+    return request("/api/wall/school-blocks").then(function (res) {
+      return { blocks: res.blocks || [], blockCourses: res.blockCourses || [] };
+    });
+  }
+
+  // §5.4 — mints a new block ("+ School"). `label` may be omitted or null
+  // for the "School" default.
+  function postSchoolBlock(childId, startMin, durationMin, label) {
+    return request("/api/wall/school-blocks", {
+      method: "POST",
+      body: { childId: childId, startMin: startMin, durationMin: durationMin, label: label || null },
+    });
+  }
+
+  // §5.4 — move (startMin), resize (durationMin) or relabel (label) an
+  // existing block. Only the keys present in `fields` change.
+  function putSchoolBlock(id, fields) {
+    return request("/api/wall/school-blocks/" + encodeURIComponent(id), {
+      method: "PUT",
+      body: fields || {},
+    });
+  }
+
+  // §5.4 — un-places the block; the Worker cascades to its membership rows.
+  function deleteSchoolBlock(id) {
+    return request("/api/wall/school-blocks/" + encodeURIComponent(id), { method: "DELETE" });
+  }
+
+  // §5.2 — checking a box in the membership picker. Idempotent.
+  function putSchoolBlockCourse(id, courseName) {
+    return request("/api/wall/school-blocks/" + encodeURIComponent(id) + "/courses", {
+      method: "PUT",
+      body: { courseName: courseName },
+    });
+  }
+
+  // §5.2 — unchecking a box. Removes only the membership row.
+  function deleteSchoolBlockCourse(id, courseName) {
+    return request("/api/wall/school-blocks/" + encodeURIComponent(id) + "/courses", {
+      method: "DELETE",
+      body: { courseName: courseName },
+    });
+  }
+
   g.WallApi = {
     UnpairedError: UnpairedError,
     pair: pair,
@@ -207,6 +257,12 @@
     postRewardEntries: postRewardEntries,
     claim: claim,
     releaseClaim: releaseClaim,
+    getSchoolBlocks: getSchoolBlocks,
+    postSchoolBlock: postSchoolBlock,
+    putSchoolBlock: putSchoolBlock,
+    deleteSchoolBlock: deleteSchoolBlock,
+    putSchoolBlockCourse: putSchoolBlockCourse,
+    deleteSchoolBlockCourse: deleteSchoolBlockCourse,
     request: request,
   };
 })(typeof window !== "undefined" ? window : globalThis);

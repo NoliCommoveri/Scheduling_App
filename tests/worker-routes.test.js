@@ -1260,6 +1260,13 @@ const WALL_ROUTES = [
   ['/api/wall/slots/day', 'PUT', { childId: 'CH-1', subjectKind: 'chore', subjectKey: 'CHORE-1', date: '2026-08-14', durationMin: 30 }],
   ['/api/wall/slots/day', 'DELETE', { childId: 'CH-1', subjectKind: 'chore', subjectKey: 'CHORE-1', date: '2026-08-14' }],
   ['/api/wall/events?from=2026-08-01&to=2026-08-14', 'GET', undefined],
+  // Wall Calendar Redesign §5.5, §12 (Phase 7)
+  ['/api/wall/school-blocks', 'GET', undefined],
+  ['/api/wall/school-blocks', 'POST', { childId: 'CH-1', startMin: 480, durationMin: 60 }],
+  ['/api/wall/school-blocks/BLOCK-1', 'PUT', { startMin: 540 }],
+  ['/api/wall/school-blocks/BLOCK-1', 'DELETE', undefined],
+  ['/api/wall/school-blocks/BLOCK-1/courses', 'PUT', { courseName: 'Math' }],
+  ['/api/wall/school-blocks/BLOCK-1/courses', 'DELETE', { courseName: 'Math' }],
 ];
 
 test('§12.13: a child device token is 401 on every /api/wall/* route', async () => {
@@ -1580,13 +1587,14 @@ test('§12/§14.11a: the sentinel childId is accepted on a chore placement and s
   assert.equal(insert.args[0], '', 'child_id is the sentinel, not a real id');
 });
 
-test('§12/§14.11a: the sentinel childId is refused on a school placement', async () => {
+test('§20/§12: subjectKind "school" is no longer valid on wall_slots — school blocks live in their own tables', async () => {
   const { env, statements } = makeEnv(wallResolver());
   const res = await call(env, '/api/wall/slots', {
     method: 'PUT', token: WALL_TOKEN,
     body: { childId: '', subjectKind: 'school', subjectKey: 'Algebra', startMin: 480 },
   });
   assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /subjectKind must be one of chore/);
   assert.equal(statements.filter((s) => s.sql.includes('wall_slots')).length, 0, 'nothing is written');
 });
 
@@ -1724,6 +1732,213 @@ test('§14.15: a durationMin sent to /api/wall/completions is rejected like any 
   });
   const out = await res.json();
   assert.match(out.rejected[0].error, /Not a child-writable column: durationMin/);
+});
+
+// ================================  Wall Calendar Redesign §5.5, §12 (Phase 7)
+//
+// School blocks live in wall_school_blocks/wall_school_block_courses,
+// touched by NO `assignments` access — so, like the slots routes above,
+// these use a direct active-child check (resolveActiveChildId) rather than
+// withWallChild. Unlike a chore placement's PUT, there is no sentinel here:
+// a block is always one child's (§12's table).
+
+test('§12: POST /api/wall/school-blocks mints an id and stores the span', async () => {
+  const { env, statements } = makeEnv(wallResolver());
+  const res = await call(env, '/api/wall/school-blocks', {
+    method: 'POST', token: WALL_TOKEN,
+    body: { childId: 'CH-1', startMin: 540, durationMin: 90, label: 'Morning School' },
+  });
+  assert.equal(res.status, 200);
+  const out = await res.json();
+  assert.equal(typeof out.id, 'string');
+  assert.ok(out.id.length > 0);
+
+  const insert = statements.find((s) => s.sql.includes('INSERT INTO wall_school_blocks'));
+  assert.ok(insert, 'the block is stored');
+  assert.equal(insert.args[1], 'CH-1');
+  assert.equal(insert.args[2], 'Morning School');
+  assert.equal(insert.args[3], 540, 'start_min');
+  assert.equal(insert.args[4], 630, 'end_min = startMin + durationMin');
+  assert.ok(insert.args.includes('wall:DEV-WALL'), 'provenance matches every other wall write');
+});
+
+test('§12: POST /api/wall/school-blocks refuses the sentinel childId — a block is always one child\'s', async () => {
+  const { env, statements } = makeEnv(wallResolver());
+  const res = await call(env, '/api/wall/school-blocks', {
+    method: 'POST', token: WALL_TOKEN,
+    body: { childId: '', startMin: 540, durationMin: 60 },
+  });
+  assert.equal(res.status, 400);
+  assert.equal(statements.filter((s) => s.sql.includes('wall_school_blocks')).length, 0);
+});
+
+test('§12: POST /api/wall/school-blocks refuses an archived or unknown childId', async () => {
+  for (const childId of ['CH-ARCHIVED', 'CH-NOT-A-CHILD']) {
+    const { env, statements } = makeEnv(wallResolver());
+    const res = await call(env, '/api/wall/school-blocks', {
+      method: 'POST', token: WALL_TOKEN, body: { childId, startMin: 540, durationMin: 60 },
+    });
+    assert.equal(res.status, 400, childId);
+    assert.equal(statements.filter((s) => s.sql.includes('wall_school_blocks')).length, 0);
+  }
+});
+
+test('§12: POST /api/wall/school-blocks validates span and label', async () => {
+  const cases = [
+    { body: { startMin: 1 }, error: /startMin/ },
+    { body: { startMin: 540, durationMin: 10 }, error: /durationMin/ },
+    { body: { startMin: 540, durationMin: null }, error: /durationMin/ }, // unlike a chore, never null
+    { body: { startMin: 1425, durationMin: 30 }, error: /midnight/ },
+    { body: { startMin: 540, durationMin: 60, label: 'x'.repeat(61) }, error: /label/ },
+  ];
+  for (const { body, error } of cases) {
+    const { env } = makeEnv(wallResolver());
+    const res = await call(env, '/api/wall/school-blocks', {
+      method: 'POST', token: WALL_TOKEN, body: { childId: 'CH-1', ...body },
+    });
+    assert.equal(res.status, 400, JSON.stringify(body));
+    assert.match((await res.json()).error, error);
+  }
+});
+
+function schoolBlockResolver(existing, extra = () => ({})) {
+  return wallResolver((sql, args) => {
+    if (sql.startsWith('SELECT * FROM wall_school_blocks WHERE id')) {
+      return { first: args[0] === existing.id ? existing : null };
+    }
+    return extra(sql, args);
+  });
+}
+
+test('§5.4/§12: PUT /api/wall/school-blocks/:id moves/resizes/relabels — only the given fields change', async () => {
+  const existing = { id: 'BLOCK-1', child_id: 'CH-1', label: 'School', start_min: 540, end_min: 600 };
+  const { env, statements } = makeEnv(schoolBlockResolver(existing, (sql) => (
+    sql.startsWith('UPDATE wall_school_blocks') ? { meta: { changes: 1 } } : {}
+  )));
+  const res = await call(env, '/api/wall/school-blocks/BLOCK-1', {
+    method: 'PUT', token: WALL_TOKEN, body: { startMin: 600 },
+  });
+  assert.equal(res.status, 200);
+  const update = statements.find((s) => s.sql.startsWith('UPDATE wall_school_blocks'));
+  assert.equal(update.args[0], 600, 'start_min moved');
+  assert.equal(update.args[1], 660, 'end_min preserves the existing 60-minute duration');
+  assert.equal(update.args[2], 'School', 'label untouched');
+});
+
+test('§5.4/§12: PUT /api/wall/school-blocks/:id on an unknown id is 404', async () => {
+  const { env, statements } = makeEnv(wallResolver((sql) => (
+    sql.startsWith('SELECT * FROM wall_school_blocks WHERE id') ? { first: null } : {}
+  )));
+  const res = await call(env, '/api/wall/school-blocks/NOPE', {
+    method: 'PUT', token: WALL_TOKEN, body: { startMin: 600 },
+  });
+  assert.equal(res.status, 404);
+  assert.equal(statements.filter((s) => s.sql.startsWith('UPDATE wall_school_blocks')).length, 0);
+});
+
+test('§5.4/§12: PUT /api/wall/school-blocks/:id label may be cleared back to null ("School")', async () => {
+  const existing = { id: 'BLOCK-1', child_id: 'CH-1', label: 'Morning School', start_min: 540, end_min: 600 };
+  const { env, statements } = makeEnv(schoolBlockResolver(existing, (sql) => (
+    sql.startsWith('UPDATE wall_school_blocks') ? { meta: { changes: 1 } } : {}
+  )));
+  const res = await call(env, '/api/wall/school-blocks/BLOCK-1', {
+    method: 'PUT', token: WALL_TOKEN, body: { label: null },
+  });
+  assert.equal(res.status, 200);
+  const update = statements.find((s) => s.sql.startsWith('UPDATE wall_school_blocks'));
+  assert.equal(update.args[2], null);
+});
+
+test('§5.4/§12: DELETE /api/wall/school-blocks/:id cascades to its membership rows', async () => {
+  const { env, statements } = makeEnv(wallResolver());
+  const res = await call(env, '/api/wall/school-blocks/BLOCK-1', { method: 'DELETE', token: WALL_TOKEN });
+  assert.equal(res.status, 200);
+  assert.ok(statements.some((s) => s.sql.startsWith('DELETE FROM wall_school_blocks WHERE id')));
+  assert.ok(statements.some((s) => s.sql.startsWith('DELETE FROM wall_school_block_courses WHERE block_id')));
+});
+
+test('§5.2/§12: PUT .../courses adds a member, idempotently', async () => {
+  const { env, statements } = makeEnv(wallResolver((sql) => (
+    sql.startsWith('SELECT id FROM wall_school_blocks WHERE id') ? { first: { id: 'BLOCK-1' } } : {}
+  )));
+  const res = await call(env, '/api/wall/school-blocks/BLOCK-1/courses', {
+    method: 'PUT', token: WALL_TOKEN, body: { courseName: 'Math' },
+  });
+  assert.equal(res.status, 200);
+  const insert = statements.find((s) => s.sql.includes('INSERT INTO wall_school_block_courses'));
+  assert.ok(insert.sql.includes('DO NOTHING'), 're-adding an existing member is a no-op, not an error');
+  assert.deepEqual(insert.args, ['BLOCK-1', 'Math']);
+});
+
+test('§5.2/§12: PUT .../courses on an unknown block is 404', async () => {
+  const { env, statements } = makeEnv(wallResolver((sql) => (
+    sql.startsWith('SELECT id FROM wall_school_blocks WHERE id') ? { first: null } : {}
+  )));
+  const res = await call(env, '/api/wall/school-blocks/NOPE/courses', {
+    method: 'PUT', token: WALL_TOKEN, body: { courseName: 'Math' },
+  });
+  assert.equal(res.status, 404);
+  assert.equal(statements.filter((s) => s.sql.includes('INSERT INTO wall_school_block_courses')).length, 0);
+});
+
+test('§5.2/§12: PUT .../courses rejects a missing or oversized courseName', async () => {
+  for (const courseName of [undefined, '', 'x'.repeat(201)]) {
+    const { env } = makeEnv(wallResolver());
+    const res = await call(env, '/api/wall/school-blocks/BLOCK-1/courses', {
+      method: 'PUT', token: WALL_TOKEN, body: { courseName },
+    });
+    assert.equal(res.status, 400, JSON.stringify(courseName));
+  }
+});
+
+test('§5.2/§12: DELETE .../courses removes only the membership row, never an activity row', async () => {
+  const { env, statements } = makeEnv(wallResolver());
+  const res = await call(env, '/api/wall/school-blocks/BLOCK-1/courses', {
+    method: 'DELETE', token: WALL_TOKEN, body: { courseName: 'Math' },
+  });
+  assert.equal(res.status, 200);
+  const del = statements.find((s) => s.sql.startsWith('DELETE FROM wall_school_block_courses'));
+  assert.deepEqual(del.args, ['BLOCK-1', 'Math']);
+  assert.equal(statements.filter((s) => s.sql.includes('assignments')).length, 0);
+});
+
+test('§12: GET /api/wall/school-blocks returns both tables, household-wide', async () => {
+  const { env } = makeEnv(wallResolver((sql) => {
+    if (sql.startsWith('SELECT * FROM wall_school_blocks')) {
+      return { results: [{ id: 'BLOCK-1', child_id: 'CH-1', start_min: 540, end_min: 600 }] };
+    }
+    if (sql.startsWith('SELECT * FROM wall_school_block_courses')) {
+      return { results: [{ block_id: 'BLOCK-1', course_name: 'Math' }] };
+    }
+    return {};
+  }));
+  const res = await call(env, '/api/wall/school-blocks', { token: WALL_TOKEN });
+  const out = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(out.blocks.length, 1);
+  assert.equal(out.blockCourses.length, 1);
+});
+
+test('§14.15: no school-block route ever touches expected_duration_min or an activity row', async () => {
+  const { env, statements } = makeEnv(wallResolver((sql) => {
+    if (sql.startsWith('SELECT * FROM wall_school_blocks WHERE id')) {
+      return { first: { id: 'BLOCK-1', child_id: 'CH-1', label: null, start_min: 540, end_min: 600 } };
+    }
+    if (sql.startsWith('UPDATE wall_school_blocks')) return { meta: { changes: 1 } };
+    return {};
+  }));
+  await call(env, '/api/wall/school-blocks', {
+    method: 'POST', token: WALL_TOKEN, body: { childId: 'CH-1', startMin: 540, durationMin: 60 },
+  });
+  const putRes = await call(env, '/api/wall/school-blocks/BLOCK-1', {
+    method: 'PUT', token: WALL_TOKEN, body: { durationMin: 90 },
+  });
+  assert.equal(putRes.status, 200);
+  assert.ok(
+    !statements.some((s) => s.sql.includes('expected_duration_min') || s.sql.includes('UPDATE assignments')),
+    'the wall authors a block\'s span directly (§20) — it never touches the parent-owned column, and a ' +
+    'block is not an assignment row at all'
+  );
 });
 
 // ---- §8.3.1: the claim route can now carry the completion sheet's time ----

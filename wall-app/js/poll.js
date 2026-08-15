@@ -50,6 +50,8 @@
     rowsById: Object.create(null),
     slots: [],
     slotDays: [],
+    schoolBlocks: [],
+    schoolBlockCourses: [],
     lastSuccessAt: null,
     lastAttemptAt: null,
     lastError: null,
@@ -70,6 +72,8 @@
       rows: values(state.rowsById),
       slots: state.slots,
       slotDays: state.slotDays,
+      schoolBlocks: state.schoolBlocks,
+      schoolBlockCourses: state.schoolBlockCourses,
       lastSuccessAt: state.lastSuccessAt,
       lastAttemptAt: state.lastAttemptAt,
       lastError: state.lastError,
@@ -123,12 +127,17 @@
         if (!currentIds[id]) delete sinceByChild[id];
       });
       // Placements are household-wide and have no per-child `since` — one
-      // fetch alongside the plan fan-out, not one per child (§12).
+      // fetch alongside the plan fan-out, not one per child (§12). School
+      // blocks (§5.5, Phase 7) are the same shape for the same reason.
       return Promise.all(
         children.map(function (c) { return fetchChildPlan(c, full); })
           .concat([g.WallApi.getSlots().then(function (res) {
             state.slots = res.slots;
             state.slotDays = res.days;
+          })])
+          .concat([g.WallApi.getSchoolBlocks().then(function (res) {
+            state.schoolBlocks = res.blocks;
+            state.schoolBlockCourses = res.blockCourses;
           })])
       );
     }).then(function () {

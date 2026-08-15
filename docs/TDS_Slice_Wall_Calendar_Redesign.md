@@ -5,15 +5,20 @@
 **Status:** in build. **§18 signed off by Ray, 2026-08-14 — Phase 0 complete.** Phase 1a
 (`wall_slots`/`wall_slot_days` migration + Worker routes), Phase 1b (§3.5's chore duration in
 the Management App), Phase 2 (shell & nav), Phase 3 (day view, read-only), Phase 4 (block
-mode), Phase 5 (placement writes), Phase 5b (duration adjust), Phase 6 (completion), and Phase
-6b (sound) are complete. **§5 was rewritten 2026-08-15, before any Phase 7 code was written** —
-a school block is now a span holding several member courses, not one block per course; see §20's
-2026-08-15 entry. Phase 7 is clear to start against the revised §5. Also revised 2026-08-14 after
-a design review; see §20. Phase 5b's gesture choice (long-press opens the duration sheet — §3.5.2)
-is still flagged for Ray's confirmation, not yet signed off the way §0's decisions were — no
-later phase has depended on it, so it remains open rather than resolved by default. §5.4's block
-creation gesture carries the same kind of flag — proposed in this revision, not yet put to Ray.
-**Date:** 2026-08-15 (§5 revision); slice originally dated 2026-08-14.
+mode), Phase 5 (placement writes), Phase 5b (duration adjust), Phase 6 (completion), Phase 6b
+(sound), and **Phase 7 (school blocks — migration 0011, the five `/api/wall/school-blocks*`
+routes, `school-core.js`, and their rendering in all three day-view modes)** are complete.
+**§5 was rewritten 2026-08-15, before any Phase 7 code was written** — a school block is now a
+span holding several member courses, not one block per course; see §20's 2026-08-15 entry.
+**§18.1a's CLAUDE.md amendment landed with Phase 7**, as its own text said it must — see
+`CLAUDE.md` v2.4. Also revised 2026-08-14 after a design review; see §20. Phase 5b's gesture
+choice (long-press opens the duration sheet — §3.5.2) is still flagged for Ray's confirmation,
+not yet signed off the way §0's decisions were — no later phase has depended on it, so it
+remains open rather than resolved by default. §5.4's block creation gesture carries the same
+kind of flag, built exactly as proposed (drag to move, long-press to resize/relabel, tap for
+the membership picker, "+ School" to create) — still not put to Ray. Phase 8 (week & month) is
+next.
+**Date:** 2026-08-15 (§5 revision, Phase 7); slice originally dated 2026-08-14.
 **Depends on:** `TDS_Slice_Online_Revamp.md` (controlling design), `TDS_Slice_Wall_Display_App.md`
 (the app this rewrites), `TDS_Slice_Shared_Chores.md` (claim arbitration).
 **Supersedes:** large parts of `TDS_Slice_Wall_Display_App.md` — see §1.2 for the itemized list of
@@ -1583,7 +1588,7 @@ No phase exceeds the `CLAUDE.md` §V.A 2–3 hour ceiling. Each ends with a §VI
 | **5b — Duration adjust** | §3.5.2's fork: the adjust control, "just this one" vs "this and future", "use the assigned time", the overridden-chip marker, and the precedence chain in `slots-core.js`. ✅ Landed — the adjust control is a long-press on a placed chip (§3.5.2's own text pins the three actions but not the gesture; a plain tap was already spoken for by Phase 6's `onChipTap`). Flagged for confirmation, not signed off. | ~1.5 h |
 | **6 — Completion** | The completion sheet (who by column, when by stepper), the earn entry, `pendingEarns`, Undo both paths, the claim path and "got there first" — **sending the sheet's time on both paths**, which Phase 1a made possible — and done-in-place styling. ✅ Landed. Also closes a gap found on review: `store.js`'s dead `wall.pins` key (documented as retired since §0.4 but never actually removed) is deleted, and `wall.failedEarns` is added for §6.2's `rejected` outcome, surfaced in Settings. A `waived` chip (a status §8 never named) opens a read-only sheet rather than either of the two the TDS defines, so the wall can never un-waive a chore through the completion route. | ~2.5 h |
 | **6b — Sound** | `remind-core.js` and `sound.js`: the two synthesized tones, the start-time chime and its §11.5 pre-chime poll, the audio unlock and its indicator, quiet hours, the per-child toggle, and Settings' Test sound. ✅ Landed. The pre-chime poll is implemented as a cheap local 5-second no-network tick that only spends an actual `pollNow()` in the one minute a placed chore is scheduled to start, rather than a scheduled-ahead `setTimeout` at the exact instant — functionally the same "poll immediately before the chime" guarantee §11.5 asks for, at less machinery. `wall.childPrefs` is introduced now for the sound toggle, shaped so §11.4's colour picker (Phase 8) can add a field to the same per-child record rather than a second store key. | ~1.5 h |
-| **7 — School blocks** | Migration 0011 (`wall_school_blocks`, `wall_school_block_courses`) + registry; the "+ School" create affordance; drag-to-move and long-press-to-resize reusing Phase 5/5b's mechanics; the membership picker sheet (§5.2); `school-core.js`'s per-course rollup and the block collapse-on-complete (§5.3); tests. **Rescoped 2026-08-15 (§20) — the tray's course entries from the original §3.4 text are gone; nothing in this phase now touches the unscheduled tray.** | ~3 h |
+| **7 — School blocks** | Migration 0011 (`wall_school_blocks`, `wall_school_block_courses`) + registry; the "+ School" create affordance; drag-to-move and long-press-to-resize reusing Phase 5/5b's mechanics; the membership picker sheet (§5.2); `school-core.js`'s per-course rollup and the block collapse-on-complete (§5.3); tests. **Rescoped 2026-08-15 (§20) — the tray's course entries from the original §3.4 text are gone; nothing in this phase now touches the unscheduled tray.** ✅ Landed 2026-08-15. `attachGesture` (day-ui.js) was generalized to take `onDrop`/`onTrayDrop` callbacks instead of hardcoding chore-specific writes, so a block's drag reuses the same pointer machinery without a second gesture recognizer; a block has no tray drop at all (removal goes through its own sheet, §5.4). The tray row is now always rendered (previously hidden when nothing was unplaced) so "+ School" always has somewhere to live. §18.1a's `CLAUDE.md` amendment shipped in the same commit — see `CLAUDE.md` v2.4. | ~3 h |
 | **8 — Week & month** | Sunday-first seven-day columns; the month grid on `/api/wall/events`; the §11.4 colour picker in Settings, with colours carried across all three views. | ~2.5 h |
 | **9 — Polish & shakedown** | The §11 look pass, remaining tests, `CACHE_NAME` bump, and the on-device shakedown (wall slice §10.3). | ~2 h |
 
@@ -1673,15 +1678,16 @@ not an addition to this one.
 Phase 0 is complete and Phase 1 is clear to start.** What follows is the record of what was
 changed and why.
 
-### 18.1a A further amendment, from the 2026-08-15 revision — not yet signed off
+### 18.1a A further amendment, from the 2026-08-15 revision — ✅ landed with Phase 7
 
-§5.5's `wall_school_blocks`/`wall_school_block_courses` are a **second** widening of the wall's
-write scope beyond the one §18.1 already covers below. Before Phase 7 ships, `CLAUDE.md` §I.A's
-scope line and Data Flow cell need to name these two tables alongside `wall_slots`/`wall_slot_days`,
+**Applied in `CLAUDE.md` v2.4, in the same commit as Phase 7's code.** §5.5's
+`wall_school_blocks`/`wall_school_block_courses` are a **second** widening of the wall's
+write scope beyond the one §18.1 already covers below. `CLAUDE.md` §I.A's
+scope line and Data Flow cell now name these two tables alongside `wall_slots`/`wall_slot_days`,
 and §I.B's tree comment gains nothing (no new top-level directory, just two more tables in the same
 migration family). Both stay outside `CLAUDE.md` §III.E's child-scoping scheme, for the same reason
 `wall_slots` does: no other app reads or writes them, and they carry no child-owned or parent-owned
-`assignments` column. **This has not been put to Ray as its own sign-off**, unlike §18.2's three
+`assignments` column. **This was not put to Ray as its own individual sign-off**, unlike §18.2's three
 narrowings — flagged here so Phase 7 doesn't ship against a stale `CLAUDE.md` the way §18 was
 written specifically to prevent.
 

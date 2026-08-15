@@ -12,6 +12,10 @@
   --accent: #f7b538;
   --danger: #e8615a;
   --radius: 18px;
+  /* §16 Phase 7, §11.1 — "a distinct, quieter treatment for school blocks so
+     the day reads as two textures rather than one list." A second accent
+     rather than reusing --accent, which chore chips already own. */
+  --school-accent: #5ec9c6;
 }
 
 * { box-sizing: border-box; }
@@ -483,6 +487,24 @@ button {
   cursor: pointer;
 }
 
+/* §16 Phase 7, §5.4 — "in the tray header, alongside the unscheduled-chore
+   strip." Always present (the tray row itself is now always rendered, not
+   just when something's unplaced), so it stays a small secondary control
+   rather than matching .day-tray-toggle's full-width prominence. */
+.day-tray-add-school {
+  display: block;
+  width: 100%;
+  min-height: 36px;
+  margin-bottom: 0.35rem;
+  border-radius: 10px;
+  border: 2px solid var(--school-accent);
+  background: transparent;
+  color: var(--school-accent);
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
 .day-tray-list {
   display: none;
   list-style: none;
@@ -603,6 +625,25 @@ button {
   flex: 0 0 auto;
   font-size: 0.8rem;
   color: var(--text-dim);
+}
+
+/* §16 Phase 7 — a school block's row in collapsed block-mode: same layout
+   family as a chore's block-item row, but never carries the drag/long-press
+   gestures the absolutely-positioned chip does (block-mode's collapsed rows
+   are plain list items for chores too — no gesture surface there either). */
+.block-item-school {
+  border-left: 3px solid var(--school-accent);
+  padding-left: 0.4rem !important;
+}
+
+.block-item-school-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---- block mode, expanded: one block's own 15-minute grid (§4.4) ---------- */
@@ -828,6 +869,98 @@ button {
   background: var(--danger);
   z-index: 1;
   pointer-events: none;
+}
+
+/* §16 Phase 7, §5 — a school block chip. Absolutely positioned in the same
+   .day-column as chore chips (§4.3), but a quieter, cooler-toned texture
+   (§11.1) so the day reads as chores plus school rather than one list. Tap
+   opens the membership picker, long-press the span/label sheet, drag moves
+   it — no completion lifecycle, so no cursor:grab affordance the way a
+   tappable chore chip has either (§8.1 — school blocks are read-only as far
+   as completion goes). */
+.school-block-chip {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  background: rgba(94, 201, 198, 0.1);
+  border: 1px solid var(--school-accent);
+  border-radius: 8px;
+  padding: 0.3rem 0.5rem;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  transition: opacity 150ms ease;
+}
+
+.school-block-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.school-block-label {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--school-accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.school-block-courses {
+  list-style: none;
+  margin: 0.2rem 0 0;
+  padding: 0;
+}
+
+.school-block-course {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  padding: 0.05rem 0;
+}
+
+.school-block-course-done .school-block-course-name {
+  text-decoration: line-through;
+}
+
+.school-block-course-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.school-block-course-count {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.school-block-empty {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  font-style: italic;
+  margin-top: 0.2rem;
+}
+
+/* §5.3 — "the block collapses once every member course is checked." A
+   single compact row, same visual family as a done chore chip. */
+.school-block-chip.school-block-collapsed {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  background: var(--panel-2);
+  border-color: var(--text-dim);
+  opacity: 0.8;
+}
+
+.school-block-collapsed .school-block-label {
+  color: var(--text-dim);
 }
 
 /* ---- staleness stamp ------------------------------------------------------- */
@@ -1132,6 +1265,55 @@ button {
 
 .duration-sheet-actions .btn {
   width: 100%;
+}
+
+/* ---- school block sheets (§16 Phase 7, §5.2, §5.4) -------------------------
+   Both reuse .duration-sheet-overlay/.duration-sheet-card verbatim — the
+   span/label sheet reuses the stepper too, since a block's duration is
+   edited the same way a chore's is (§3.5.1's chain doesn't apply, §20, but
+   the +/- 15-minute control is the same widget either way). */
+
+.school-block-label-input {
+  display: block;
+  width: 100%;
+  margin-bottom: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: 10px;
+  border: 2px solid var(--panel-2);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 1rem;
+  text-align: center;
+}
+
+.school-picker-list {
+  list-style: none;
+  margin: 0 0 1rem;
+  padding: 0;
+  max-height: 45vh;
+  overflow-y: auto;
+  text-align: left;
+}
+
+.school-picker-row label {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 44px;
+  padding: 0.2rem 0;
+  font-size: 1rem;
+}
+
+.school-picker-row input[type="checkbox"] {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+}
+
+.school-picker-empty {
+  color: var(--text-dim);
+  font-style: italic;
+  padding: 0.5rem 0;
 }
 
 /* ---- completion sheet (§16 Phase 6, §8.3) ----------------------------------
