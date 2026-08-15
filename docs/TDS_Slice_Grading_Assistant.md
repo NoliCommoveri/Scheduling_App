@@ -109,7 +109,7 @@ assignment, because a proposal is a draft and there is no ledger property to pro
 |---|---|
 | `assignment_id` | PK. One live proposal per assignment. |
 | `child_id` | Denormalised for query; always matches the assignment's. |
-| `photo_key` | R2 object key for the captured page. |
+| `photo_key` | R2 object key for the captured page. **Nullable, and nulled by the §4.1 sweep** once the course instance finishes — the row outlives the image. |
 | `proposed_score` | REAL. The content score. **Never copied to any `assignments` column by the grading route** — only a parent's accept can move it, and only into `verified_grade` (§1.3). |
 | `items` | JSON: per-item verdict, transcription, reason. |
 | `feedback` | Text addressed to the child. |
@@ -264,7 +264,7 @@ R2 bucket `grading-media`, bound in `wrangler.toml` as `MEDIA`. Free tier: 10 GB
 | Prefix | Contents | Written by |
 |---|---|---|
 | `pages/{assignment_id}` | Captured worksheet photo | Child device, via the Worker |
-| `keys/{lesson_id}` | Answer key PDF | Management App upload |
+| `keys/{lesson_id}` | Answer key PDF — **`lesson_id` is the *template* lesson, never the instance lesson (§4.2)** | Management App upload |
 
 **Neither prefix is ever public.** `wrangler.toml` sets `[assets] directory = "./"`, so
 anything in the repo is world-downloadable — which is why answer keys must live in R2 and
@@ -278,7 +278,76 @@ from GitHub. No CLI step, per §0.
 > **Check before phase 1:** enabling R2 on a Cloudflare account requires a payment method
 > on file even though this usage sits inside the free allowance. That is a two-minute
 > dashboard step, not a bill — but it is a stop-the-world surprise if it is discovered
-> mid-phase.
+> mid-phase. Keep the bucket on the **Standard** storage class: Cloudflare's own footnote
+> is that other storage classes do not count towards the free tier.
+
+### 4.1 Retention — photos are deleted when a course instance finishes
+
+[DECISION] Ray, in-session 2026-08-15.
+Decided: a captured page is deleted from R2 once the **course instance** it belongs to has
+every activity completed. Not on accept, and not never.
+Rationale: the photo's whole value is answering "what did the child actually write" while
+a grade can still be questioned. That window closes when the course does. Deleting at
+accept would throw the evidence away while it is still live; keeping forever accumulates
+images of children's schoolwork for no remaining purpose.
+Locked for: this milestone.
+
+**The unit is the course instance, not the course template and not the `course_name`
+string.** This matters, and it is the reason the rule is exact rather than heuristic:
+
+- An instance is a `courses` record with `state: 'instance'`, and it carries **`childId`**
+  and `instanceToken` (`instances.js:94`). One child, one run of one course.
+- `assignments.course_name` is a denormalised snapshot (`CLAUDE.md` §III.B) and is
+  therefore **not** usable for this — two children on the same course share the string,
+  and a course renamed mid-year breaks the match outright.
+- The link that does work is `assignments.source_id` → the activity id, and activities
+  belong to the instance's own lessons (`stampCourse` mints fresh `LSN-`/activity ids per
+  instance).
+
+**"Finished" is derived, not flagged.** An instance is finished when **every activity
+under it has a terminal assignment** — `status` of `complete` or `waived`, or
+`rescinded_at` set. Deriving it this way rather than from "no pending assignments"
+is what removes the ambiguity: an activity the pacing engine has not generated yet has no
+assignment row at all, so a half-taught course reads as unfinished rather than as
+complete. `isInstanceFinished(activities, assignments)` is a pure function in
+`grading-core.js` and is covered by §9.
+
+**What the sweep does, per finished instance:**
+
+1. Find that instance's assignments, and among them the `grading_reviews` rows with a
+   non-null `photo_key`.
+2. Delete those objects under `pages/{assignment_id}`.
+3. **Null the `photo_key` and leave the rest of the row alone.** The proposed score,
+   items, transcriptions, feedback, `rubric_digest` and `model` all survive — the grading
+   record stays intact and auditable, and only the image goes. A null `photo_key` is the
+   review UI's signal to render "page no longer stored" instead of a broken image.
+4. Never touch `verified_grade` or `grade`. Retention removes evidence, never a grade.
+
+**Answer keys are not swept, and are keyed to the template.** See §4.2.
+
+**Trigger.** The sweep is a single query and runs from the Management App — on load and
+from Settings → Database, alongside the existing browser-driven operations. No Worker cron
+and no CLI, per `CLAUDE.md` §0. It runs automatically rather than asking each time, which
+is what "delete after the course ends" means; if that proves too silent in practice,
+gating it behind a confirmation is a one-line change and no schema change.
+
+### 4.2 Answer keys must be keyed to the *template* lesson, not the instance lesson
+
+§4's table says answer keys live at `keys/{lesson_id}`. Left as written that is a bug, and
+this slice's own instance model is what exposes it: `stampCourse` mints **new** lesson ids
+for every instance (`instances.js:107`), so three children stamped from one template have
+three different `lesson_id` values for the same page of the same book. The parent would be
+asked to upload the identical answer key once per child, and the §6 cache prefix would
+differ per child — losing exactly the saving the key-first ordering exists to produce.
+
+**Therefore:** `keys/{lesson_id}` uses the **template** lesson id — `sourceTemplateId`'s
+lesson, resolved from the instance lesson at request time. One upload serves every child
+and every future instance of that course, and grading three children's copies of one
+lesson genuinely shares one cached prefix (§6).
+
+It also settles the retention question for keys: **an answer key is never swept.** It
+belongs to the curriculum, not to a child's run of it, and one child finishing a course
+says nothing about whether a sibling is still working through the same book.
 
 ---
 
@@ -408,7 +477,7 @@ alike, which is the failure §0.4 already separates the axes to avoid.
 | **Vary them; never ship one "gold" example** | A single exemplar freezes behaviour around itself. Several deliberately different ones teach a boundary instead of a template. |
 | **Real answers only** | Taken from actual pages the children wrote. See §7.1. |
 | **Prefer near-misses** | The pre-build test's failure codes rank **L** (too lenient) as the dangerous, silent failure and **H** (too harsh) as the visible, self-correcting one. The examples that carry information are therefore the wrong answers that *look* acceptable. A clearly-wrong answer teaches nothing the model did not already know. |
-| **Watch the spill onto untested subjects** | §12.4 flags math as unvalidated. A set drawn entirely from short-phrase reading answers will make the grader worse at anything shaped differently, so per-course scoping (§7.2c) is load-bearing, not tidiness. |
+| **Watch the spill onto untested subjects** | §12.3 flags math as unvalidated. A set drawn entirely from short-phrase reading answers will make the grader worse at anything shaped differently, so per-course scoping (§7.2c) is load-bearing, not tidiness. |
 
 **Cost is not the reason to keep the set small.** Examples sit in the rubric layer, above
 the cache breakpoint in §6's ordering, so after the first grading of a lesson they are read
@@ -458,6 +527,11 @@ dependency.
 4. **Score normalization** — PARTIAL as half under `partialCredit`, `BLANK` and `UNSURE`
    excluded from the denominator, empty-denominator guard; and the effective-grade helper
    from §1.3 (`verified_grade` wins, `grade` when null, null when both are null).
+5. **`isInstanceFinished`** (§4.1) — finished when every activity has a `complete`,
+   `waived` or rescinded assignment; **not** finished when an activity has no assignment
+   row at all (the ungenerated-week case that a "no pending rows" test would get wrong);
+   not finished with one activity still pending; and an instance with no activities is
+   not finished rather than trivially finished.
 
 The prompt assembly and the grading call itself are not unit-testable and are covered by
 the §10 acceptance checks against a real database.
@@ -474,7 +548,7 @@ the §10 acceptance checks against a real database.
 | **4** | Management App | Rubric authoring — household defaults + per-course sparse override, including the `houseRules` editor seeded per §7.4 | ~2h |
 | **5** | Management App | Review surface: proposal, accept/override → `verified_grade`; effective-grade helper wired into `reporting.js` and the CSV export (§1.3) | ~3h |
 | **6** | Child App | Capture UI: camera input, online-required submit, proposal display | ~2.5h |
-| **7** | Management App | Remediation report over `mechanics_findings` | ~1.5h |
+| **7** | Management App | Remediation report over `mechanics_findings`; the §4.1 retention sweep | ~2h |
 | **8** | — | Acceptance checks below against a real database, budget-device smoke test, re-run of the kept scoring sheet (§7.2a) | ~1.5h |
 
 **~17.5 hours across eight sessions.** Up from the ~12h first estimate: the tunable rubric
@@ -511,7 +585,16 @@ free to abandon.
    (`usage.cache_read_input_tokens > 0`).
 10. An answer key is not fetchable without a token, and does not appear in the public asset
     bundle.
-11. After a parent verifies a grade, the child's next `/api/plan` response **contains**
+11. **Retention (§4.1).** With one child's course instance fully completed and a sibling
+    still mid-way through an instance stamped from the same template: the finished child's
+    pages are gone from R2, their `grading_reviews` rows survive with `photo_key` null and
+    every score and transcription intact, the sibling's pages are untouched, and the
+    answer key under `keys/{template_lesson_id}` is untouched. A grade — `grade` or
+    `verified_grade` — is not altered by the sweep on either child.
+12. An instance with one activity not yet generated does **not** sweep. This is the case
+    §4.1 exists to get right, and a "no pending assignments" implementation passes every
+    other check while failing this one.
+13. After a parent verifies a grade, the child's next `/api/plan` response **contains**
     `verified_grade` and the child's cached row retains it, while no child-facing screen
     renders it. This check exists to catch the well-intentioned "fix" §0.8 warns about —
     a column quietly filtered out at the route or in `decorate()` would pass every other
@@ -548,27 +631,21 @@ not by implication, which is how the previous draft of this slice left it.
 
 ## 12. Open items
 
-1. **Photo retention in R2.** The privacy half of this item is **closed** — see §11: Ray
-   accepted, explicitly and in-session on 2026-08-15, that images of the children's work
-   go to the Anthropic API. What is still open is narrower: whether a captured page should
-   be deleted from R2 once its proposal is accepted. Deciding it now is a one-line change
-   in the accept route; deciding it later means a cleanup job for whatever has piled up by
-   then, so it is worth a minute before phase 1. **Recommendation: keep them.** A photo is
-   the evidence behind a grade, it is what makes a re-grade or a disagreement resolvable,
-   `grading_reviews.photo_key` points at it, and §4's arithmetic puts a year at ~1.4 GB
-   against a 10 GB allowance. Deleting is easy to add later *for new rows*; the thing that
-   gets expensive is the backlog, and at this volume there effectively isn't one.
-2. **The 20-page accuracy test is unrun.** No longer a gate, but it is the tuning corpus
+1. **The 20-page accuracy test is unrun.** No longer a gate, but it is the tuning corpus
    for phase 3's prompt *and* the regression baseline for §7.2a. See
    `Grading_Assistant_Pre_Build_Test.md`. Running it before phase 3 rather than after
    would save a tuning round and is the input §7.1 depends on.
-3. **Fry level mapping is a guess** until real results exist. One constant, §3.1.
-4. **Math is unvalidated.** Every accuracy claim in this slice rests on reading
+2. **Fry level mapping is a guess** until real results exist. One constant, §3.1.
+3. **Math is unvalidated.** Every accuracy claim in this slice rests on reading
    comprehension, where the answer is a short phrase. Shown-work math is a different
    problem and should not be enabled on a course until tested separately — and §7.3's
    spill warning applies directly.
-5. **Re-grade policy.** §1.1 says a re-grade replaces the row. If you later want grading
-   history per assignment, that is a second table, not a change to this one.
+4. **Re-grade policy.** §1.1 says a re-grade replaces the row. If you later want grading
+   history per assignment, that is a second table, not a change to this one. Note the
+   interaction with §4.1: once an instance finishes and its photos are swept, a re-grade
+   is no longer possible for those pages. That is the intended trade and is the reason the
+   sweep waits for the course to end rather than firing on accept.
 
-*(Whether the child sees the verified number was open in the previous draft and is now
-decided — not in this build, without foreclosing it later. See §0.8.)*
+*(Two items were open in the previous draft and are now decided: whether the child sees
+the verified number — no, without foreclosing it, §0.8 — and photo retention — deleted
+when the course instance finishes, §4.1. Privacy is closed at §11.)*
