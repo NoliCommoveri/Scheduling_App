@@ -168,6 +168,17 @@ export function isValidCourseName(value) {
   return typeof value === 'string' && value.length > 0 && value.length <= MAX_COURSE_NAME_LEN;
 }
 
+// ---- grading assistant (Grading_Assistant §1.1, §5, Phase 1) ----
+
+// A lesson id, same "opaque, nothing parses it" treatment CLAUDE.md's ID rule
+// gives every other identifier here — bounded so nobody turns the R2 key into
+// a path-traversal vector or a multi-KB query string.
+export const MAX_LESSON_ID_LEN = 200;
+
+export function isValidLessonId(value) {
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_LESSON_ID_LEN;
+}
+
 // ---- curriculum mirror (§5.1) ----
 
 export function validateChange(change) {
