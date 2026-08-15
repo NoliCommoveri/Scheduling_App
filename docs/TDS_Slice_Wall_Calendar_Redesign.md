@@ -6,11 +6,14 @@
 (`wall_slots`/`wall_slot_days` migration + Worker routes), Phase 1b (§3.5's chore duration in
 the Management App), Phase 2 (shell & nav), Phase 3 (day view, read-only), Phase 4 (block
 mode), Phase 5 (placement writes), Phase 5b (duration adjust), Phase 6 (completion), and Phase
-6b (sound) are complete; Phase 7 (school blocks) is clear to start. Revised 2026-08-14 after a
-design review; see §20. Phase 5b's gesture choice (long-press opens the duration sheet — §3.5.2)
+6b (sound) are complete. **§5 was rewritten 2026-08-15, before any Phase 7 code was written** —
+a school block is now a span holding several member courses, not one block per course; see §20's
+2026-08-15 entry. Phase 7 is clear to start against the revised §5. Also revised 2026-08-14 after
+a design review; see §20. Phase 5b's gesture choice (long-press opens the duration sheet — §3.5.2)
 is still flagged for Ray's confirmation, not yet signed off the way §0's decisions were — no
-later phase has depended on it, so it remains open rather than resolved by default.
-**Date:** 2026-08-14.
+later phase has depended on it, so it remains open rather than resolved by default. §5.4's block
+creation gesture carries the same kind of flag — proposed in this revision, not yet put to Ray.
+**Date:** 2026-08-15 (§5 revision); slice originally dated 2026-08-14.
 **Depends on:** `TDS_Slice_Online_Revamp.md` (controlling design), `TDS_Slice_Wall_Display_App.md`
 (the app this rewrites), `TDS_Slice_Shared_Chores.md` (claim arbitration).
 **Supersedes:** large parts of `TDS_Slice_Wall_Display_App.md` — see §1.2 for the itemized list of
@@ -50,9 +53,13 @@ blocks in the sections that own them rather than re-argued.
    in 5-minute steps. `completed_at` records what the sheet says, not when the finger landed.
    §8.3.
 
-7. **School blocks are read-only aggregates.** A school block is a placement whose subject is a
-   *course*, not a single assignment. It renders the day's activities for that course, cannot be
-   ticked, and shows as complete when every activity for that course on that day is complete. §5.
+7. **School blocks are read-only aggregates — and a block now holds several courses, not one.**
+   A school block is a placement of a *time span* for one child, containing whichever courses the
+   family puts in it (`"School: 0900–1130 — Math, Language Arts, Geography"`). It renders each
+   member course's activities, cannot be ticked itself, shows a checkmark beside each course as
+   that course's activities finish, and collapses to a compact done state once every member course
+   is checked. **Revised 2026-08-15**, before Phase 7 code existed, from the original
+   one-block-per-course model — see §20. §5.
 
 8. **Overlap is normal.** Two things may share a slot. The only warning is two **private**
    (non-shared) chores for the **same child** overlapping, and it is a warning, never a block. §9.
@@ -209,7 +216,7 @@ The **subject** is whichever stable identity the row class has:
 | Row class | Subject key | Why |
 |---|---|---|
 | Chore | `source_id` + `instance_key` | `source_id` is the chore's curriculum id and is stable across days (`packet.js:544`). `instance_key` distinguishes three-dishes-a-day occurrences of one chore (`migrations/0006`), which must be placeable at three different times. |
-| School block | `course_name` | An activity's `source_id` is the *activity's* id and differs every day, so it cannot key a standing arrangement. `course_name` is the only course identity on the row (`packet.js:521`). §5.2 states the cost of that honestly. |
+| School block | a server-minted block id | **Revised 2026-08-15 (§20).** A school block is no longer keyed by a course at all — a child may have several blocks a day, each holding a *set* of member courses (§5). Its shape (one span, many members) doesn't fit the `(child_id, subject_kind, subject_key, instance_key)` singleton key below, so it lives in its own tables, not `wall_slots`. §5.5. |
 | Event | — | Events are not placeable. They carry their own freeform `payload.time` and are family-wide. §7.1. |
 
 #### 3.1.1 Identity is minted, never a name — and the placement key relies on that
@@ -353,6 +360,13 @@ CREATE TABLE IF NOT EXISTS wall_slot_days (
 `wall_slots` answers **when** and, optionally, **for how long**. `wall_slot_days` answers "…except
 on this one day." Neither ever touches an `assignments` column — §3.5 is where that matters.
 
+**The `'school'` value in `subject_kind`'s comment above is now historical.** It described the
+pre-2026-08-15 model, where a school block *was* a `wall_slots` row keyed by `course_name`. That
+model was never built — Phase 7 hadn't started — so there is nothing to migrate away from. Migration
+0010 is applied and stays exactly as applied (`CLAUDE.md` §II.4: never edit an applied migration);
+`wall_slots` simply ends up used for `'chore'` only, and school blocks get their own tables in a new
+migration, §5.5.
+
 `instance_key` is `NOT NULL DEFAULT ''` for exactly the reason `migrations/0006` gives at length:
 `NULL = NULL` is never true in SQLite, so a nullable component of a natural key silently disables
 every comparison that uses it.
@@ -390,25 +404,14 @@ A chore the wall has never been told a time for is **not hidden and not guessed 
 **unscheduled tray** at the top of its child's column — a compact, always-visible strip reading
 `Not scheduled · 3`, expanding to the list, each item draggable into the grid.
 
-**Unplaced courses sit in the same tray, and this is what makes a school block creatable at all.**
-§5.1 defines a school block as a *placement* whose subject is a course — so without an entry in the
-tray there is no gesture anywhere in the app that brings the first one into existence, and a child's
-school work would be invisible on the wall rather than merely unplaced. The tray therefore lists two
-item classes, visually distinguished the way their chips are (§11.1):
-
-- **one entry per unplaced chore**, as above;
-- **one entry per course that has non-rescinded activities for that child on the rendered date and
-  no `subject_kind = 'school'` placement** — labelled with the course name and its activity count
-  (`Algebra · 4`), draggable into the grid exactly as a chore is. Dropping it writes the school
-  placement, and from the next render it is a block (§5).
-
-Grouping the day's activities by `course_name` is `school-core.js`'s job either way (§5.3), so the
-tray's course list is the same computation with the placed courses filtered out — no new fetch and
-no new pure module.
-
-A course whose block is placed leaves the tray, like a chore. A course with no activities that day
-is not in the tray at all: there is nothing to schedule, and an empty-set entry would be an
-invitation to place a block that would render as empty (§5.3).
+**Courses are not tray items, and school blocks are created a different way (§5.4).** An earlier
+draft of this section put an unplaced-course entry in this tray, on the reasoning that dragging a
+course out was the only gesture that could bring a block into existence. That reasoning no longer
+holds after §5's 2026-08-15 revision (§20): a block is a span that can hold *several* member
+courses, chosen from a checklist, so "drag this one course onto the grid" doesn't describe the
+action a family actually takes any more — there's no longer a one-to-one course-to-block mapping to
+drag into place. The tray therefore goes back to listing **chores only**. §5.4 describes how a block
+itself gets created, and §5.2 how courses get added to one.
 
 The alternative — deriving a slot from `block_hint` (morning → 9:00 and so on) — was rejected. It
 would put chores on the grid at times nobody chose, and since a placement is a standing default
@@ -526,8 +529,10 @@ Locked for: nothing yet — this is the one open item Phase 5b leaves for
 - **Both overrides are wall-scoped.** The Child App and the Management App never read `wall_slots`
   and are unaffected; pacing continues to use the parent's estimate, untouched. The wall's opinion
   about how long the bins take does not leak into next term's schedule.
-- Adjusting is available on chore chips **and** school blocks (§5.4), because "hogging two blocks"
-  is exactly as annoying when the thing hogging them is a course.
+- This precedence chain, and the long-press sheet that edits it, is a **chore-only** mechanism.
+  **Revised 2026-08-15 (§20):** a school block no longer has an assignment-authored estimate to sit
+  on top of — its span is authored directly, not derived — so there is no chain for a block to join.
+  §5.4 gives blocks their own, simpler resize gesture rather than reusing this one.
 - Duration overrides snap to 15-minute multiples, matching the grid. The parent's estimate does not
   (§3.5) — a 20-minute activity keeps 20 and occupies two rows.
 
@@ -661,71 +666,185 @@ back through the week would show the same overdue chore on every day at once.
 
 ## 5. School blocks
 
+**Revised 2026-08-15, before any Phase 7 code was written — see §20.** The original model (§5 as it
+stood on 2026-08-14) keyed a block to a single course, created by dragging that course out of the
+unscheduled tray. This section replaces that model outright: a block is now a **span of time**
+holding a **set of member courses**, matching how the family actually talks about the school day —
+`"School: 0900–1130 — Math, Language Arts, Geography"`, `"School: 1300–1400 — Science, Spelling"`.
+Nothing about the write-side rule changes: the wall still has no code path, button, or route that
+writes anything to an activity row (§18.2's third narrowing, untouched).
+
 ### 5.1 What they are
 
 ```
-[DECISION] School blocks are read-only course aggregates
-Decided: a placement of `subject_kind = 'school'` whose subject is a course
-  name. It renders that course's activities for that day, is never tappable,
-  and renders as complete when every one of that day's non-rescinded activities
-  for that course is complete.
-Rationale: Ray, 2026-08-14 — "I want to be able to set School 'blocks' that
-  they can pull in course level information on. it should be read only on wall
-  app, but move to complete when all assignments for a particular course are
-  finished."
-Consequence: this REPEALS the read half of wall slice §5.1's "kind='activity'
-  is ignored entirely." The write half is untouched and absolute: the wall has
-  no code path, no button, and no route that writes anything to an activity
-  row. School work is still completed on the child's own tablet.
-Locked for: this slice.
+[DECISION] A school block is a span holding several member courses
+Decided: a placement, in its own `wall_school_blocks` row (§5.5) naming a
+  time span (start_min/end_min) for one child, plus a set of member courses
+  chosen from that child's course list. It renders each member course's activities for
+  the day, is never tappable itself, shows a checkmark beside each member
+  course once that course's day is done, and collapses to a compact done
+  state once every member course is checked.
+Rationale: corrected 2026-08-15, in review before Phase 7 began — the
+  original one-course-per-block model didn't match how a family actually
+  schedules a school day: several courses share one sitting ("School:
+  9:00-11:30 -- math, language arts, geography"), and a child may have more
+  than one such sitting in a day. Superseded before any code existed to
+  migrate away from, so this is a correction to the design, not a rebuild.
+Consequence: this still REPEALS the read half of wall slice §5.1's
+  "kind='activity' is ignored entirely" — a block reads activity rows for
+  each of its member courses. The write half is untouched and absolute.
+Consequence: the per-course rollup (§5.3) is now the primary signal — a
+  family reads "which courses are left," not just a single count — and the
+  block-level complete state is derived FROM the per-course state, not
+  computed independently. There is exactly one rollup, read two ways.
+Locked for: this slice, superseding this section's 2026-08-14 text.
 ```
 
-The block shows: the course name, the count (`3 of 5 done`), and the day's activity titles listed
-beneath at a smaller size. It is a window onto the course, not a control for it.
+The block shows: its label (§5.1.1), its time span, and one row per member course — course name,
+that course's activity count (`3 of 5`), and a checkmark once that count's denominator is met. It is
+a window onto several courses, not a control for any of them.
 
-**A block is created by dragging the course out of the unscheduled tray** (§3.4), which is the only
-gesture that creates one — read-only means it cannot be *ticked*, not that it cannot be *placed*.
-Un-placing it (§12's `DELETE /api/wall/slots`) returns the course to the tray; it never deletes
-anything of the course's own, because the wall owns nothing of the course's own.
+#### 5.1.1 Naming a block
 
-### 5.2 The `course_name` key, and what it costs
+A block's label defaults to **"School"** and may be overridden with a custom label per instance
+(e.g. "Morning School" / "Afternoon School") — set at creation or edited later from the same sheet
+that manages membership (§5.2). The label is cosmetic only: it is not a key, carries no identity, and
+is not what distinguishes two same-day blocks for a child — their (possibly overlapping) time spans
+do that, the same way two chore chips at different times are distinguished by `start_min`, not by
+title.
 
-An activity row's `source_id` is the *activity's* id and differs every day, so it cannot key a
-standing placement. `course_name` is the only course identity the row carries (`packet.js:521`
-snapshots it from `session.maps.courseName`), and it is a **denormalized text snapshot** by design
-(`CLAUDE.md` §III.B).
+### 5.2 Membership: which courses are in a block
 
-The cost, stated rather than discovered later: **renaming a course in the Management App orphans
-its school block.** Old rows keep the old snapshot, new rows carry the new name, and the placement
-matches whichever string it was created with. The block does not break or error — it simply stops
-matching new rows and shows as empty, and the fix is to place it again.
+A block starts empty. Courses are added and removed from a **course picker sheet**, opened by
+tapping the block: a checklist of that child's courses that have non-rescinded activities for the
+rendered date, with already-member courses pre-checked. Checking a course adds it; unchecking removes
+it. This replaces the 2026-08-14 draft's "drag a course out of the tray" gesture (§3.4) — there is no
+longer a single course a drag could be dragging, since a block can hold several.
 
-This is accepted because renaming a course mid-year is rare, the failure is visible rather than
-silent, and the alternative (threading a course-instance id through `payload` in `packet.js` and
-into every activity row) is a Management App change for a wall feature, which §I.A's isolation rule
-points away from.
+A course with no activities that date does not appear in the picker: there is nothing to add, and an
+empty-set membership row would be an invitation to a block that renders as empty for that course
+(§5.3). A course removed from a block (or one whose activities are later rescinded to zero) simply
+disappears from that block's row list on the next render — its assignment rows are untouched, because
+the wall owns nothing of the course's own.
 
-### 5.3 Completion rollup
+#### 5.2.1 The `course_name` key, and what it costs
 
-A school block is complete when, for its child, its course, and the rendered date, every
-non-rescinded `kind='activity'` row is `status='complete'`. Waived rows count as resolved, not as
-outstanding. A block with **no** activities that day renders as empty, not as complete — an empty
-set is not an achievement.
+Membership is stored as `course_name`, not a course id, for the same reason the pre-2026-08-15 draft
+used it as the whole subject key: an activity row's `source_id` is the *activity's* id and differs
+every day, so it cannot key a standing relationship. `course_name` is the only course identity the
+row carries (`packet.js:521`, snapshotted from `session.maps.courseName`), and it is a
+**denormalized text snapshot** by design (`CLAUDE.md` §III.B).
 
-This is computed in `school-core.js` (§13), pure, from rows already in hand. It costs no new fetch:
-the plan window already returns activity rows and the wall has simply been discarding them.
+The cost is the same one the original draft named, now scoped to a membership row instead of a whole
+block: **renaming a course in the Management App orphans its membership in every block it was in.**
+Old activity rows keep the old snapshot, new ones carry the new name, and a membership row matches
+whichever string it was created with. Nothing errors — that member's row in the block simply stops
+matching new activities and its count reads `0 of 0`, and the fix is to re-check it in the picker.
+Accepted for the reason §17.5 gives: renaming a course mid-year is rare, the failure is visible
+rather than silent, and threading a course-instance id through `packet.js` is a Management App change
+for a wall feature.
 
-### 5.4 How tall a school block is
+### 5.3 Completion: per-course checkmarks, and the block collapses
 
-Row 3 of §3.5.1's chain reads differently for a block than for a chore: a block has no single
-assignment, so its natural duration is the **sum of that day's non-rescinded activity durations**
-for that course, each falling back to 15 minutes. A five-activity course with no estimates is
-therefore 75 minutes tall, which is a defensible first guess and exactly the kind of thing Ray will
-want to correct — so rows 1 and 2 of the chain (the per-day and standing overrides) apply to school
-blocks unchanged, keyed by `subject_kind = 'school'`.
+A member course is checked when, for its child, that course, and the rendered date, every
+non-rescinded `kind='activity'` row is `status='complete'`. Waived rows count as resolved, not
+outstanding. A member course with **no** activities that day is not checked and not unchecked — it
+simply has nothing to show that date (§5.2 keeps it out of the picker in the first place, so this is
+the rare case of a course whose activities were all rescinded after being added).
 
-A block whose activities are all complete keeps its height. Nothing resizes on completion, for the
-same reason nothing moves (§8.4).
+**The block collapses once every member course is checked.** There is no independent block-level
+rollup to keep in sync — "all members checked" *is* the complete state, read off the same per-course
+computation the checkmarks already use. A collapsed block shrinks to a single compact row (label,
+time span, a single checkmark) instead of its full course list; tapping it again re-expands to the
+picker. A block with **no members**, or whose members all have zero activities that day, renders as
+empty and is never collapsed — an empty set is not an achievement, same rule the original draft
+stated for the single-course case.
+
+This is computed in `school-core.js` (§13), pure, from activity rows already in hand — the plan
+window already returns them and the wall has simply been discarding them. Per-member checkmarks are
+one grouping pass over the same rows the old single-course rollup used; nothing new is fetched.
+
+Refresh timing is unchanged from everything else on the wall: a checkmark (and the block's collapse)
+appears on the next poll — the 10-minute ambient cadence, or immediately after any on-device
+interaction (§10) — not the instant the child taps complete on their own tablet. The wall has no push
+path; §6.4's online-required, no-outbox rule was never about instant cross-device sync.
+
+### 5.4 Creating and sizing a block
+
+```
+[DECISION] How a block is created and resized
+Decided: a "+ School" affordance (in the tray header, alongside the
+  unscheduled-chore strip) mints a new block id and drops an empty,
+  unlabeled block into that child's column at a default span (60 minutes, at
+  the next free slot). From there it is an ordinary chip: DRAG to move it
+  (§16 Phase 5's existing placement-write mechanism — this also sets its
+  standing start time, carried forward per §3.3), and LONG-PRESS to open a
+  sheet that sets its end time (equivalently, its duration) and its label
+  (§5.1.1). Tapping it (a plain tap, not a long-press) opens the membership
+  picker (§5.2).
+Rationale: proposed in this revision to reuse exactly the mechanics Phase 5
+  and 5b already built for chores — drag-to-place and long-press-to-adjust —
+  rather than inventing a drag-to-draw-a-range gesture from scratch. The only
+  genuinely new pieces are the "+ School" affordance that mints an empty
+  block, and the tap target being a membership picker instead of a
+  completion sheet.
+Consequence: a block's span is a standing placement like everything else in
+  this slice (§3.3) — set once, carried forward until moved or resized.
+  There is no per-day override for a block's span in v1, matching §17.1's
+  deferred treatment of per-day start-time overrides for chores.
+Consequence: unlike a chore chip, a block's long-press sheet has no
+  precedence chain to display (§3.5.1 no longer applies to blocks) — it
+  edits `wall_school_blocks.end_min` directly, with no "just this one" /
+  "this and future" fork, because there is no assignment-authored estimate
+  underneath it to fall back to or to diverge from.
+Not put to Ray — flagged here for confirmation, the same way §3.5.2's
+  duration-adjust gesture was, rather than argued as settled.
+Locked for: nothing yet.
+```
+
+Deleting a block (long-press sheet → remove) un-places it entirely — its member courses' activity
+rows are untouched, and the courses simply have no block to show in until a new one is created or
+they're added to another. This mirrors the "un-placing never deletes the thing itself" rule §5's
+original draft stated for the single-course case.
+
+### 5.5 Where blocks live
+
+```sql
+-- migrations/0011_wall_school_blocks.sql
+CREATE TABLE IF NOT EXISTS wall_school_blocks (
+  id            TEXT    PRIMARY KEY,       -- server-minted, like every other id
+  child_id      TEXT    NOT NULL,
+  label         TEXT,                      -- NULL = render as "School"
+  start_min     INTEGER NOT NULL,          -- minutes from local midnight, % 15 == 0
+  end_min       INTEGER NOT NULL,          -- > start_min, % 15 == 0
+  updated_at    INTEGER NOT NULL,
+  updated_by    TEXT    NOT NULL           -- 'wall:<deviceId>'
+);
+
+CREATE TABLE IF NOT EXISTS wall_school_block_courses (
+  block_id      TEXT    NOT NULL REFERENCES wall_school_blocks(id),
+  course_name   TEXT    NOT NULL,          -- see §5.2.1's cost
+  PRIMARY KEY (block_id, course_name)
+);
+```
+
+These sit beside `wall_slots`/`wall_slot_days`, not inside them (§3.2's migration 0010 stays exactly
+as applied — `CLAUDE.md` §II.4). A block's shape — one span, many members — doesn't fit the
+`(child_id, subject_kind, subject_key, instance_key)` singleton key `wall_slots` uses, and trying to
+force it in was what made the 2026-08-14 draft wrong: it would have needed one `wall_slots` row per
+member course, which is exactly the "N copies of a fact with one value" shape §3.1.2's `claim`
+decision already rejected for a different reason.
+
+Both tables are wall-owned in exactly the sense §3.2's `[DECISION]` block already established for
+`wall_slots`: written only by the wall, read only by the wall, and outside `CLAUDE.md` §III.E's
+child-scoping scheme entirely. Registered in `management-app/worker/migrations.js` in the same
+commit that adds it, applied from Settings → Database in the browser, never a CLI (`CLAUDE.md`
+§III.D).
+
+**This does widen the wall's write scope a second time**, beyond the `wall_slots`/`wall_slot_days`
+widening §18.1 already recorded — two more wall-owned tables, still touching no column of
+`assignments` outside `ASSIGNMENT_COMPLETION_FIELDS`. `CLAUDE.md` §I.A's Data Flow cell needs a
+further amendment before Phase 7 ships; see §18's note on this revision.
 
 ---
 
@@ -1247,17 +1366,26 @@ by 20 seconds of inactivity — a menu left open on a wall display is a broken w
 | `/api/wall/slots/day` | PUT | `{ childId, subjectKind, subjectKey, instanceKey?, date, durationMin }` | §3.5.2's "just this one". Same validation, plus a well-formed `date`. |
 | `/api/wall/slots/day` | DELETE | `{ childId, subjectKind, subjectKey, instanceKey?, date }` | Clears the per-day override; the chip falls back down the chain. |
 | `/api/wall/events` | GET | `?from=&to=` | §7.2. Household-scoped, deduped, 62-day cap. |
+| `/api/wall/school-blocks` | GET | `?from=&to=` | **NEW, §5.5, Phase 7.** Every block, household-wide, with its member courses, inside the window. |
+| `/api/wall/school-blocks` | POST | `{ childId, startMin, durationMin, label? }` | **NEW.** Mints a block id (§5.4's "+ School"). Same `startMin`/`durationMin` validation as `/api/wall/slots` PUT; `childId` must be a member of `children WHERE active = 1` — no sentinel here, a block is always one child's. |
+| `/api/wall/school-blocks/:id` | PUT | `{ startMin?, durationMin?, label? }` | **NEW.** Moves/resizes/relabels an existing block (§5.4's drag and long-press). `childId` is not patchable — moving a block between children isn't a modeled operation; delete and recreate. |
+| `/api/wall/school-blocks/:id` | DELETE | — | **NEW.** Un-places the block. Cascades to its `wall_school_block_courses` rows; touches no activity row (§5's write-side rule, unchanged). |
+| `/api/wall/school-blocks/:id/courses` | PUT | `{ courseName }` | **NEW.** Adds a member (§5.2's picker, checking a box). Idempotent — re-adding an existing member is a no-op, not an error. |
+| `/api/wall/school-blocks/:id/courses` | DELETE | `{ courseName }` | **NEW.** Removes a member (unchecking a box). Deletes only the membership row; the course's own activity rows are untouched. |
 
 `withWall` gates every route above; a `scope='child'` token is 401 on them and a wall token stays 401
 on the device routes (wall slice §8.2).
 
-**The `childId` rule on all four slots routes**, stated once because it is the only place this slice
-softens a validation:
+**The `childId` rule on the four `wall_slots` routes**, stated once because it is the only place this
+slice softens a validation:
 
 > `childId` is either a member of `children WHERE active = 1`, **or** the empty-string sentinel —
 > and the sentinel is accepted only when `subjectKind === 'chore'` (§3.1.2). Anything else is a 400.
-> A school placement is always per child, so `''` is meaningless there and is refused rather than
-> stored.
+
+**Revised 2026-08-15 (§20):** this rule no longer has a `subjectKind === 'school'` case to carve out.
+`wall_slots` doesn't hold school rows at all any more — §5.5's `wall_school_blocks` routes above take
+a plain `childId` with no sentinel, because a block was never a candidate for the `claim`-chore
+child-less-row problem §3.1.2 solved; it's always exactly one child's board.
 
 This is not a fourth exception to `CLAUDE.md` §III.E, and the reason is the one §III.E already
 records: `wall_slots` and `wall_slot_days` sit **outside** the child-scoping scheme entirely. No
@@ -1304,7 +1432,7 @@ wall-app/
 └── js/
     ├── app.js             boot, view routing, rollover timer, interaction->poll
     ├── store.js           localStorage: token, settings, pendingEarns  (wall.pins retired)
-    ├── api.js             + slots and events calls
+    ├── api.js             + slots, events and school-block calls (§5.5)
     ├── poll.js            10-minute cadence, day map, since-merge, month cache
     ├── setup.js           first-run wizard: admin PIN, pair the display        (unchanged)
     ├── nav-ui.js          hamburger, sidebar, date stepper, Today
@@ -1312,11 +1440,12 @@ wall-app/
     ├── chores-core.js     PURE — the on-day rule, generalized past "today"
     ├── slots-core.js      PURE — placement lookup (per-child and claim-group),
     │                             carry-forward, duration chain, collisions
-    ├── school-core.js     PURE — course grouping, the completion rollup, and the
-    │                             tray's unplaced-course list (§3.4)
+    ├── school-core.js     PURE — course grouping, the per-course completion rollup,
+    │                             and the block-collapse check (§5.3, revised 2026-08-15)
     ├── remind-core.js     PURE — which chores are due to chime, and when (§11.5)
     ├── sound.js           WebAudio: the two tones, the unlock gesture, quiet hours
-    ├── day-ui.js          the grid, columns, blocks, now-line, tray, drag
+    ├── day-ui.js          the grid, columns, school blocks + membership picker,
+    │                             now-line, tray, drag
     ├── week-ui.js         seven-day columns
     ├── month-ui.js        month grid of events
     ├── complete-ui.js     the completion sheet: time stepper, undo, claim
@@ -1353,19 +1482,27 @@ App or the Management App**, mirroring included.
 3. **Carry-forward (§3.3)** — one placement answers for every future date the chore recurs on.
 4. **The duration precedence chain (§3.5.1)** — a per-day override beats a standing override beats
    `expected_duration_min` beats 15 minutes; clearing the per-day override falls back exactly one
-   step, not all the way; a school block with no overrides sums its activities' durations (§5.4),
-   and a block with no activities that day has no height rather than a zero one.
+   step, not all the way. **This chain is chore-only** (revised 2026-08-15, §20) — a school block's
+   span is authored directly (§5.4) and is asserted separately in (6).
 5. **Collisions (§9)** — two private chores for one child overlapping warns; the same pair for two
    different children does not; a shared chore overlapping a private one does not; partial overlap
    (4:00+30min vs 4:15) is detected where a slot-equality test would miss it. The overlap is
    computed from the resolved duration, so an override that shortens a chip can *clear* a warning.
-6. **School rollup (§5.3)** — complete only when every non-rescinded activity for that course and
-   date is complete; waived counts as resolved; **no activities that day renders empty, not
-   complete**; rows for another course or another child do not contribute.
-   - **(6a) The unscheduled tray (§3.4)** — it holds both classes: an unplaced chore, and a course
-     with activities that day and no school placement. A course whose block is placed leaves the
-     tray; a course with no activities that day is never in it. This is the test that would have
-     caught a school block being undiscoverable, so it asserts the tray's *contents*, not its count.
+6. **School blocks, revised model (§5, §20's 2026-08-15 entry)** — a member course is checked only
+   when every non-rescinded activity for that course and date is complete; waived counts as
+   resolved; a member course with no activities that day is neither checked nor unchecked; rows for
+   another course or another child do not contribute. **The block collapses only when every member
+   is checked** — a block with one of three members still open does not collapse; a block with zero
+   members, or whose members all have zero activities that day, renders empty and never collapses.
+   - **(6a) Membership (§5.2)** — the picker lists exactly that child's courses with activities that
+     date; checking a course adds it to the block and it appears in that block's row list on the next
+     render; unchecking removes it without touching any activity row; a course absent from every
+     block's membership is simply not shown anywhere on the wall that day (there is no tray fallback
+     for an unassigned course — this is the deliberate consequence of §3.4's course-entry repeal).
+   - **(6b) Creation and sizing (§5.4)** — "+ School" mints an empty, unlabeled block at its default
+     span; dragging it sets a new standing start time carried forward per §3.3; long-press opens the
+     span/label editor, not a precedence-chain sheet (item 4 above already asserts that chain doesn't
+     apply here).
 7. **Events dedupe (§7)** — unchanged behaviour, re-asserted against the new month window: three
    children's rows for one event on one day collapse to one; a multi-day event yields one entry per
    day with the right span label.
@@ -1446,7 +1583,7 @@ No phase exceeds the `CLAUDE.md` §V.A 2–3 hour ceiling. Each ends with a §VI
 | **5b — Duration adjust** | §3.5.2's fork: the adjust control, "just this one" vs "this and future", "use the assigned time", the overridden-chip marker, and the precedence chain in `slots-core.js`. ✅ Landed — the adjust control is a long-press on a placed chip (§3.5.2's own text pins the three actions but not the gesture; a plain tap was already spoken for by Phase 6's `onChipTap`). Flagged for confirmation, not signed off. | ~1.5 h |
 | **6 — Completion** | The completion sheet (who by column, when by stepper), the earn entry, `pendingEarns`, Undo both paths, the claim path and "got there first" — **sending the sheet's time on both paths**, which Phase 1a made possible — and done-in-place styling. ✅ Landed. Also closes a gap found on review: `store.js`'s dead `wall.pins` key (documented as retired since §0.4 but never actually removed) is deleted, and `wall.failedEarns` is added for §6.2's `rejected` outcome, surfaced in Settings. A `waived` chip (a status §8 never named) opens a read-only sheet rather than either of the two the TDS defines, so the wall can never un-waive a chore through the completion route. | ~2.5 h |
 | **6b — Sound** | `remind-core.js` and `sound.js`: the two synthesized tones, the start-time chime and its §11.5 pre-chime poll, the audio unlock and its indicator, quiet hours, the per-child toggle, and Settings' Test sound. ✅ Landed. The pre-chime poll is implemented as a cheap local 5-second no-network tick that only spends an actual `pollNow()` in the one minute a placed chore is scheduled to start, rather than a scheduled-ahead `setTimeout` at the exact instant — functionally the same "poll immediately before the chime" guarantee §11.5 asks for, at less machinery. `wall.childPrefs` is introduced now for the sound toggle, shaped so §11.4's colour picker (Phase 8) can add a field to the same per-child record rather than a second store key. | ~1.5 h |
-| **7 — School blocks** | `school-core.js`, course grouping, the read-only block, the rollup, **and the tray's course entries (§3.4) — the gesture that creates a block at all**. | ~2 h |
+| **7 — School blocks** | Migration 0011 (`wall_school_blocks`, `wall_school_block_courses`) + registry; the "+ School" create affordance; drag-to-move and long-press-to-resize reusing Phase 5/5b's mechanics; the membership picker sheet (§5.2); `school-core.js`'s per-course rollup and the block collapse-on-complete (§5.3); tests. **Rescoped 2026-08-15 (§20) — the tray's course entries from the original §3.4 text are gone; nothing in this phase now touches the unscheduled tray.** | ~3 h |
 | **8 — Week & month** | Sunday-first seven-day columns; the month grid on `/api/wall/events`; the §11.4 colour picker in Settings, with colours carried across all three views. | ~2.5 h |
 | **9 — Polish & shakedown** | The §11 look pass, remaining tests, `CACHE_NAME` bump, and the on-device shakedown (wall slice §10.3). | ~2 h |
 
@@ -1475,9 +1612,10 @@ job, deferred until the constants prove wrong in the room.
 columns stop being readable at two metres and the design would need horizontal paging — which wall
 slice §10.2 forbids — or a different arrangement entirely.
 
-**17.5 A course-instance id on activity rows.** Would make school blocks survive a course rename
-(§5.2). It is a Management App change (`packet.js`) for a wall feature, so it waits for a second
-reason to exist.
+**17.5 A course-instance id on activity rows.** Would make school-block membership survive a course
+rename (§5.2.1 — revised 2026-08-15 to describe a membership row rather than a whole block, same
+cost either way). It is a Management App change (`packet.js`) for a wall feature, so it waits for a
+second reason to exist.
 
 **17.6 Structured event times.** `payload.time` is freeform display text (Module 07 §2.7), so it
 cannot be sorted chronologically, cannot be placed on the grid, and cannot obey §11.3's time-format
@@ -1534,6 +1672,18 @@ not an addition to this one.
 **✅ Signed off by Ray in-session, 2026-08-14 — all three narrowings of §18.2, individually.
 Phase 0 is complete and Phase 1 is clear to start.** What follows is the record of what was
 changed and why.
+
+### 18.1a A further amendment, from the 2026-08-15 revision — not yet signed off
+
+§5.5's `wall_school_blocks`/`wall_school_block_courses` are a **second** widening of the wall's
+write scope beyond the one §18.1 already covers below. Before Phase 7 ships, `CLAUDE.md` §I.A's
+scope line and Data Flow cell need to name these two tables alongside `wall_slots`/`wall_slot_days`,
+and §I.B's tree comment gains nothing (no new top-level directory, just two more tables in the same
+migration family). Both stay outside `CLAUDE.md` §III.E's child-scoping scheme, for the same reason
+`wall_slots` does: no other app reads or writes them, and they carry no child-owned or parent-owned
+`assignments` column. **This has not been put to Ray as its own sign-off**, unlike §18.2's three
+narrowings — flagged here so Phase 7 doesn't ship against a stale `CLAUDE.md` the way §18 was
+written specifically to prevent.
 
 ### 18.1 `CLAUDE.md` → v2.3
 
@@ -1636,6 +1786,24 @@ Nothing in this slice is now waiting on an answer.
 ---
 
 ## 20. Revision log
+
+### 2026-08-15 — §5 rewritten, before Phase 7 code
+
+Before Phase 7 started, review found the 2026-08-14 §5 model didn't match how the family actually
+schedules school: one block per course, created by dragging a single course out of the tray, versus
+the real pattern of several courses sharing one sitting (`"School: 0900-1130 -- Math, Language Arts,
+Geography"`) with possibly more than one sitting a day. Nothing elsewhere in the slice depended on
+the old shape yet — no code existed — so this is a correction, not a migration.
+
+| # | Changed | Section |
+|---|---|---|
+| 1 | A block's subject changed from one course to a minted block id holding a **set** of member courses, added/removed via a course-picker sheet opened by tapping the block, rather than created by dragging a course out of the tray. | §3.1, §3.4, §5.1, §5.2 |
+| 2 | Block placements moved out of `wall_slots` (whose singleton key can't express "one span, many members") into two new tables, `wall_school_blocks` and `wall_school_block_courses` — migration 0011, additive, `wall_slots`/migration 0010 untouched. | §3.2, §5.5 |
+| 3 | A block's span is now **authored directly** (drag to place, long-press to resize) instead of derived from summing member activity durations — so §3.5.1's precedence chain no longer applies to blocks. | §3.5.1, §5.4 |
+| 4 | Completion became **per-course**: each member course gets its own checkmark as its activities finish, refreshed on the existing poll cadence; the block collapses to a compact done state once every member is checked, rather than the block computing one independent rollup. | §5.3 |
+| 5 | A block gained an optional custom label (default "School"), since two same-day blocks for one child ("Morning School" / "Afternoon School") need something a bare time span doesn't give a reader at a glance. | §5.1.1 |
+| 6 | The block-creation gesture ("+ School" affordance, then reuse Phase 5/5b's drag-to-move and long-press-to-resize) is proposed but **not put to Ray** — flagged the same way §3.5.2's gesture choice was, not asserted as settled. | §5.4 |
+| 7 | This is a **second** widening of the wall's write scope beyond §18.1's `wall_slots`/`wall_slot_days` one, and it has not yet been signed off the way §18.2's three narrowings were. | §18.1a |
 
 ### 2026-08-14 — design review, before Phase 1a
 
