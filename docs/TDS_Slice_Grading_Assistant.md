@@ -57,7 +57,22 @@ existing route's contract.
    already reach D1 inside `records` (`store = 'courses'`, `worker/index.js:61`) via the
    existing sync push, and the Worker reads them with `json_extract` exactly as migration
    `0002` does for children.
-8. **Grading is online-required, and there is no offline capture.** Same class of
+8. **The child is not shown the verified number in this build — hidden in the UI, never
+   stripped from the data.** Ray's call, in-session 2026-08-15: initially the child's
+   tablet shows only what the child recorded. Showing the verified number later must stay
+   a rendering change, so **two things must not be "tidied up" in the name of this
+   decision**: `/api/plan` stays `SELECT *` (`worker/index.js:1862`), and
+   `assignment-core.js`'s `decorate()` keeps copying the whole row
+   (`assignment-core.js:98`). Both already behave this way, so `verified_grade` will reach
+   the device and persist in its cache with no work at all; a future session need only
+   render it. Filtering the column out at the route or in `decorate()` would turn a
+   one-line display change into an API change plus a client cache rebuild — do not do it.
+   **This is concealment, not secrecy:** the value sits on the device and is readable with
+   developer tools. That is not a credential concern — it is the child's own grade, on
+   their own device, already scoped to their own `child_id` — and §III.E's threat model is
+   about credentials, not about what a curious child can find in local storage. No
+   household setting is built for this now; the decision is only not to foreclose it.
+9. **Grading is online-required, and there is no offline capture.** Same class of
    narrowing as `claim_group` rows (§III.A) and the Wall App — not a new kind of
    departure. A capture with no network shows a message and the child tries again later;
    nothing is queued. **The child app's outbox is not extended.** It carries typed JSON
@@ -136,6 +151,7 @@ A single nullable `REAL`, added by `0014`. Parent-owned.
 | **The effective grade** | `verified_grade` when non-null, otherwise `grade`. One helper, in the Management App's reporting layer. |
 | **Reporting** | `reporting.js:102` and `:137` switch from `row.grade` to the effective grade. Averages therefore reflect the parent's correction where one exists, and the child's self-report where it does not. |
 | **CSV export** | `reporting.js:167` gains a `verified_grade` column beside the existing `grade` rather than replacing it — an export that silently collapsed the two would destroy the distinction the columns exist to hold. |
+| **What the child sees** | Nothing, in this build — and the column is nonetheless delivered to the device and cached there untouched, so showing it later is a rendering change. Read §0.8 before "optimising" either the plan route or `decorate()`. |
 
 **Why this is not a widening.** §III.B's rule is that the parent writes the top half and
 the child writes the bottom half, and that the two sets are disjoint. Adding a column to
@@ -424,7 +440,7 @@ dependency.
 | `.assetsignore` | **No change needed** — `docs/`, `*.md`, `migrations/` and `management-app/worker/` are already excluded. The word list and `grading-core.js` live under `worker/`, so they inherit that exclusion. Answer keys never enter the tree at all (§4). |
 | Vanilla JS, no build step | Intact in all three browser apps. The Worker is bundled, as always. |
 | Free tier only | **NARROWED.** See §11. |
-| Local-first | **Narrowed, existing class.** §0.8. The Child App's completion guarantee is untouched; only grading requires a connection. |
+| Local-first | **Narrowed, existing class.** §0.9. The Child App's completion guarantee is untouched; only grading requires a connection. |
 
 ---
 
@@ -495,6 +511,11 @@ free to abandon.
    (`usage.cache_read_input_tokens > 0`).
 10. An answer key is not fetchable without a token, and does not appear in the public asset
     bundle.
+11. After a parent verifies a grade, the child's next `/api/plan` response **contains**
+    `verified_grade` and the child's cached row retains it, while no child-facing screen
+    renders it. This check exists to catch the well-intentioned "fix" §0.8 warns about —
+    a column quietly filtered out at the route or in `decorate()` would pass every other
+    check here and still cost a future session an API change.
 
 ---
 
@@ -520,17 +541,23 @@ extension of an already-approved narrowing. It is a new one:
   §I.A is being amended anyway, not because it is a fourth departure.
 
 Also recorded: **images of children's work leave the household** for a third-party API.
-Accepted by implication rather than by explicit statement; §12.1.
+**Accepted explicitly by Ray, in-session, 2026-08-15**, after being put to him directly —
+not by implication, which is how the previous draft of this slice left it.
 
 ---
 
 ## 12. Open items
 
-1. **Retention and privacy, stated explicitly.** Raised twice in-session; accepted by
-   implication rather than answered. Before phase 3 spends a cent, Ray should say plainly
-   whether he accepts children's handwriting going to the Anthropic API, and whether
-   captured photos should be deleted from R2 after a proposal is accepted (a one-line
-   change now, a migration later).
+1. **Photo retention in R2.** The privacy half of this item is **closed** — see §11: Ray
+   accepted, explicitly and in-session on 2026-08-15, that images of the children's work
+   go to the Anthropic API. What is still open is narrower: whether a captured page should
+   be deleted from R2 once its proposal is accepted. Deciding it now is a one-line change
+   in the accept route; deciding it later means a cleanup job for whatever has piled up by
+   then, so it is worth a minute before phase 1. **Recommendation: keep them.** A photo is
+   the evidence behind a grade, it is what makes a re-grade or a disagreement resolvable,
+   `grading_reviews.photo_key` points at it, and §4's arithmetic puts a year at ~1.4 GB
+   against a 10 GB allowance. Deleting is easy to add later *for new rows*; the thing that
+   gets expensive is the backlog, and at this volume there effectively isn't one.
 2. **The 20-page accuracy test is unrun.** No longer a gate, but it is the tuning corpus
    for phase 3's prompt *and* the regression baseline for §7.2a. See
    `Grading_Assistant_Pre_Build_Test.md`. Running it before phase 3 rather than after
@@ -542,7 +569,6 @@ Accepted by implication rather than by explicit statement; §12.1.
    spill warning applies directly.
 5. **Re-grade policy.** §1.1 says a re-grade replaces the row. If you later want grading
    history per assignment, that is a second table, not a change to this one.
-6. **Whether a child ever sees the verified number.** §1.3 stores both, but nothing in
-   this slice decides what the child's tablet displays when the two differ. Defaulting to
-   showing the verified number when present is the obvious choice; it is called out here
-   because it is a parenting decision rather than a technical one.
+
+*(Whether the child sees the verified number was open in the previous draft and is now
+decided — not in this build, without foreclosing it later. See §0.8.)*
