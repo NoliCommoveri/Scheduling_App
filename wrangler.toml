@@ -41,6 +41,16 @@ type = "Text"
 globs = ["**/*.sql"]
 fallthrough = true
 
+# Grading Assistant §4 — media never lives in the tree (answer keys would be
+# world-downloadable under [assets] above) and is never public: both prefixes
+# (pages/{assignmentId}, keys/{lessonId}) are Worker-mediated and token-gated.
+# Bucket creation is a dashboard action, per §4 and CLAUDE.md's no-CLI rule —
+# this binding resolves once a bucket named "grading-media" exists there; until
+# then the binding is simply absent, same as DB would be before D1 is wired up.
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "grading-media"
+
 # SYNC_TOKEN is a secret, never a [vars] entry. Set it on the deployed Worker
 # under Settings → Variables and Secrets, type Secret (not Text). Secrets do
 # work from the dashboard — unlike bindings, they are stored separately from

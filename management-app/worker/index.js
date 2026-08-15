@@ -31,9 +31,13 @@ import {
   isValidCourseName,
   MAX_BLOCK_LABEL_LEN,
   MAX_COURSE_NAME_LEN,
+  isValidLessonId,
 } from './validation.js';
 
 const MAX_BATCH = 500;
+// Grading Assistant §4 — generous headroom under R2's free-tier 10 GB; a
+// scanned answer key runs a few hundred KB to a few MB.
+const MAX_ANSWER_KEY_BYTES = 20 * 1024 * 1024;
 const DEFAULT_SNAPSHOT_LIMIT = 2000;
 const MAX_SNAPSHOT_LIMIT = 5000;
 const PAIR_CODE_TTL_MS = 15 * 60 * 1000;
@@ -226,6 +230,17 @@ async function routeApi(request, env, ctx, url) {
   }
   if (pathname === '/api/messages/read' && method === 'POST') {
     return withParent(request, env, () => handleMessagesRead(request, env));
+  }
+
+  // ---- Grading Assistant (Grading_Assistant §5, Phase 1) — parent only ----
+  //
+  // The other three §5 routes (page capture, review read-back, remediation
+  // report) are Phase 3/7 — the grading call itself and the tables it reads
+  // don't exist yet. This is the media half only: an answer key never enters
+  // the tree (it would be world-downloadable under [assets]) and is never
+  // public — Worker-mediated, token-gated, same as a photo will be.
+  if (pathname === '/api/grading/keys' && method === 'POST') {
+    return withParent(request, env, () => handleGradingKeyUpload(request, env, url));
   }
 
   // ---- Child — unauthenticated (§5.4) ----
@@ -2366,6 +2381,41 @@ async function handleMessagesRead(request, env) {
   ).bind(now, ...ids).run();
 
   return json({ read: (result.meta && result.meta.changes) || 0, readAt: now });
+}
+
+// ============================================================================
+// Grading Assistant (Grading_Assistant §4, §5, Phase 1) — media only.
+// The grading call itself, and the tables its proposals land in, are Phase 3.
+// ============================================================================
+
+// A parent uploads an answer key PDF for a lesson, stored at keys/{lessonId}
+// — never in the tree, never public (§4). Not multipart: the whole request
+// body is the file, `lessonId` rides the query string the way a placement's
+// `childId` rides it on the wall's DELETE routes elsewhere in this file.
+async function handleGradingKeyUpload(request, env, url) {
+  if (!env.MEDIA) {
+    return json({ error: 'R2 binding "MEDIA" is not configured on this Worker.' }, 500);
+  }
+
+  const lessonId = url.searchParams.get('lessonId');
+  if (!isValidLessonId(lessonId)) {
+    return json({ error: 'A lessonId query parameter is required.' }, 400);
+  }
+
+  const contentType = (request.headers.get('Content-Type') || '').toLowerCase();
+  if (!contentType.startsWith('application/pdf')) {
+    return json({ error: 'Content-Type must be application/pdf.' }, 400);
+  }
+
+  const bytes = await request.arrayBuffer();
+  if (bytes.byteLength === 0) return json({ error: 'Request body must not be empty.' }, 400);
+  if (bytes.byteLength > MAX_ANSWER_KEY_BYTES) {
+    return json({ error: `Answer key must be at most ${MAX_ANSWER_KEY_BYTES} bytes.` }, 413);
+  }
+
+  const key = `keys/${lessonId}`;
+  await env.MEDIA.put(key, bytes, { httpMetadata: { contentType: 'application/pdf' } });
+  return json({ ok: true, key });
 }
 
 // ============================================================================

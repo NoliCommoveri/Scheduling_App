@@ -15,6 +15,8 @@ import m0008 from '../../migrations/0008_drop_sequence_no.sql';
 import m0009 from '../../migrations/0009_wall_device_scope.sql';
 import m0010 from '../../migrations/0010_wall_slots.sql';
 import m0011 from '../../migrations/0011_wall_school_blocks.sql';
+import m0012 from '../../migrations/0012_grading_reviews.sql';
+import m0013 from '../../migrations/0013_mechanics_findings.sql';
 
 export const MIGRATIONS = [
   { name: '0001_online_revamp_init.sql', sql: m0001 },
@@ -28,4 +30,6 @@ export const MIGRATIONS = [
   { name: '0009_wall_device_scope.sql', sql: m0009 },
   { name: '0010_wall_slots.sql', sql: m0010 },
   { name: '0011_wall_school_blocks.sql', sql: m0011 },
+  { name: '0012_grading_reviews.sql', sql: m0012 },
+  { name: '0013_mechanics_findings.sql', sql: m0013 },
 ];
