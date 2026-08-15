@@ -27,15 +27,17 @@
 // does the events band. `collision-flash`/the toast give §9's warning a
 // place to show without ever refusing the write. Un-placing is the mirror
 // gesture: drag a placed chip back onto the tray row. A placed chip's TAP
-// (as opposed to a drag) still calls `opts.onChipTap`, reserved for the
-// completion sheet (Phase 6) — this file only ever fires it on a
-// no-movement pointer-up, never as a side effect of a drag.
+// (as opposed to a drag) calls `opts.onChipTap`, which app.js wires to
+// `CompleteUi.open` (§16 Phase 6) — this file only ever fires it on a
+// no-movement pointer-up, never as a side effect of a drag, and owns
+// nothing about the sheet itself beyond the done-in-place chip styling
+// (§8.4, chipHtml/blockItemHtml below).
 //
 // §16 Phase 5b adds the duration-adjust sheet (§3.5.2). The TDS pins the
 // sheet's three actions ("Just this one" / "This and future" / "Use the
 // assigned time") but not the gesture that opens it, and a plain tap on a
-// placed chip is already spoken for (onChipTap, Phase 6). This build adds
-// a LONG-PRESS (held ~550ms with no movement) as the fourth gesture
+// placed chip is already spoken for (onChipTap). This build adds a
+// LONG-PRESS (held ~550ms with no movement) as the fourth gesture
 // `attachGesture` recognizes, alongside tap and drag — flagged for
 // confirmation rather than pinned in the TDS as settled, since Ray hasn't
 // signed off on it the way §3.3/§3.5's decisions were. Sheet state
@@ -43,6 +45,13 @@
 // specifically so a background poll's re-render (every 10 min, or
 // immediately after any write) redraws the open sheet instead of silently
 // closing it out from under whoever is mid-adjustment.
+//
+// §16 Phase 6 adds the completion sheet itself (`complete-ui.js`) and the
+// done-in-place styling below (§8.4) — no other change to this file. The
+// sheet's own DOM lives outside `day-ui.js`'s render target on purpose
+// (see complete-ui.js's `open` doc comment), the same reason the duration
+// sheet above has to redraw itself on every render rather than living
+// undisturbed alongside it.
 
 (function (g) {
   "use strict";
@@ -677,15 +686,25 @@
   // duration marker (§3.5.2) only ever appears alongside them when a wall
   // override is in force — an un-overridden chip carries no duration text
   // at all, since its height already shows it.
+  // §8.4 — done-in-place: a completed chip keeps its slot and gains a
+  // check, a muted fill (the day-chip-done class, wall.css), a strike on
+  // the title, and the completion time added as a label alongside the
+  // planned start time it already shows. Nothing moves, nothing collapses.
   function chipHtml(placed, fmt) {
+    var row = placed.row;
+    var done = row.status === "complete";
     var durationBadge = placed.chip.overridden
       ? '<span class="chip-duration">' + escapeHtml(g.TimeCore.formatDurationMin(placed.chip.durationMin)) + "</span>"
       : "";
+    var doneBadge = done && row.completed_at != null
+      ? '<span class="chip-done-time">' + escapeHtml(g.TimeCore.formatDate(new Date(row.completed_at), fmt)) + "</span>"
+      : "";
     return (
-      '<div class="day-chip" data-assignment-id="' + escapeHtml(placed.row.id) + '">' +
+      '<div class="day-chip' + (done ? " day-chip-done" : "") + '" data-assignment-id="' + escapeHtml(row.id) + '">' +
+        (done ? '<span class="chip-check">&#10003;</span>' : "") +
         '<span class="chip-time">' + g.TimeCore.formatMinutes(placed.chip.startMin, fmt) + "</span>" +
-        '<span class="chip-title">' + escapeHtml(placed.row.title) + "</span>" +
-        durationBadge +
+        '<span class="chip-title">' + escapeHtml(row.title) + "</span>" +
+        durationBadge + doneBadge +
       "</div>"
     );
   }
@@ -833,11 +852,21 @@
     });
   }
 
+  // §8.4, mirrored for block mode's list rows — same four appearance
+  // changes as chipHtml, just laid out inline rather than absolutely
+  // positioned.
   function blockItemHtml(item, fmt) {
+    var row = item.row;
+    var done = row.status === "complete";
     var time = item.chip.startMin != null
       ? '<span class="block-item-time">' + g.TimeCore.formatMinutes(item.chip.startMin, fmt) + "</span>"
       : "";
-    return "<li>" + time + '<span class="block-item-title">' + escapeHtml(item.row.title) + "</span></li>";
+    var doneBadge = done && row.completed_at != null
+      ? '<span class="block-item-done-time">' + escapeHtml(g.TimeCore.formatDate(new Date(row.completed_at), fmt)) + "</span>"
+      : "";
+    return "<li" + (done ? ' class="block-item-done"' : "") + ">" +
+      (done ? '<span class="chip-check">&#10003;</span>' : "") + time +
+      '<span class="block-item-title">' + escapeHtml(row.title) + "</span>" + doneBadge + "</li>";
   }
 
   function buildBlockRow(blockName, perChildBuckets, opts, expandBlock) {

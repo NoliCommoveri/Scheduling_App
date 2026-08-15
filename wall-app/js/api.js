@@ -4,9 +4,10 @@
 // (TDS_Slice_Wall_Calendar_Redesign.md §12). Phase 5 adds the placement
 // WRITES: standing PUT/DELETE on `wall_slots` (§3.2, §12). Phase 5b adds
 // PUT/DELETE on `wall_slot_days` — the §3.5.2 per-day duration override
-// ("just this one"). Completions/rewards/claim calls join in a later
-// phase — the shape (one wall token, childId per call, 401 -> unpaired)
-// is set here so later phases only add routes, not a second convention.
+// ("just this one"). Phase 6 adds the write path itself: completions,
+// reward entries, and the arbitrated claim/release (§6.1-§6.5, §8.3.1) —
+// the shape (one wall token, childId per call, 401 -> unpaired) set above
+// only ever needed adding routes, never a second convention.
 
 (function (g) {
   "use strict";
@@ -146,6 +147,52 @@
     });
   }
 
+  // §6.1/§8.3 — an ordinary completion batch. `X-Outbox-Protocol: 2` so a
+  // transient database fault comes back as a `deferred` row (§11.7 in the
+  // Worker) rather than a flat 503 the wall would have no way to act on
+  // differently from a permanent rejection.
+  function postCompletions(childId, completions) {
+    return request("/api/wall/completions", {
+      method: "POST",
+      headers: { "X-Outbox-Protocol": "2" },
+      body: { childId: childId, completions: completions },
+    });
+  }
+
+  // §6.2 — the earn entry (or, with a negative `amount`, its Undo
+  // reversal). Same protocol header, same reason: a fault must come back
+  // as `deferred` so `wall.pendingEarns` — the only retry queue in the
+  // app — knows to keep the row rather than treat it as refused.
+  function postRewardEntries(childId, entries) {
+    return request("/api/wall/rewards/entries", {
+      method: "POST",
+      headers: { "X-Outbox-Protocol": "2" },
+      body: { childId: childId, entries: entries },
+    });
+  }
+
+  // §6.3/§8.3.1 — the arbitrated claim. `childId` is this route's own
+  // parameter, carried INSIDE the JSON body (worker/index.js destructures
+  // it out before `CLAIM_BODY_KEYS` sees the rest) — unlike the release
+  // below, which puts it on the query string instead. `fields` carries
+  // `completedAt` (§8.3.1) and optionally `grade`/`completionNote`.
+  function claim(childId, assignmentId, fields) {
+    return request("/api/wall/assignments/" + encodeURIComponent(assignmentId) + "/claim", {
+      method: "POST",
+      body: Object.assign({ childId: childId }, fields || {}),
+    });
+  }
+
+  // §6.5/§8.5 — release, for Undo's shared-chore path. `childId` rides the
+  // query string: the Worker's DELETE route never parses a body at all, so
+  // sending one would just be bytes nobody reads.
+  function releaseClaim(childId, assignmentId) {
+    return request(
+      "/api/wall/assignments/" + encodeURIComponent(assignmentId) + "/claim?childId=" + encodeURIComponent(childId),
+      { method: "DELETE" }
+    );
+  }
+
   g.WallApi = {
     UnpairedError: UnpairedError,
     pair: pair,
@@ -156,6 +203,10 @@
     deleteSlot: deleteSlot,
     putSlotDay: putSlotDay,
     deleteSlotDay: deleteSlotDay,
+    postCompletions: postCompletions,
+    postRewardEntries: postRewardEntries,
+    claim: claim,
+    releaseClaim: releaseClaim,
     request: request,
   };
 })(typeof window !== "undefined" ? window : globalThis);

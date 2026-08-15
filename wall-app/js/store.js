@@ -2,21 +2,22 @@
 // IndexedDB, no outbox, no packet: the wall holds four keys and nothing else.
 //
 //   wall.token         — the one household-scoped bearer credential
-//   wall.pins          — [{ childId, pinSalt, pinHash, failCount, lockedUntil }]
 //   wall.settings       — { adminPinSalt, adminPinHash, dimStartHour, dimEndHour, shellVersion, timeFormat }
 //   wall.pendingEarns   — [{ id, childId, assignmentId, category, amount, reason, earnedAt, attempts }]
+//   wall.failedEarns    — [{ id, childId, assignmentId, category, amount, reason, at }]
 //
-// A child's PIN row survives archive/un-archive (§3.3) because nothing here
-// ever deletes a row except an explicit reset — the roster, not this store,
-// decides who is currently shown.
+// `wall.pins` — per-child PIN records — is RETIRED (Wall Calendar Redesign
+// §0.4, §1.2). Per-child PIN gating was never built (Phase 4a of the
+// superseded slice does not exist in the tree), so this is dead storage
+// with no reader anywhere in the app, not a migration of live data.
 
 (function (g) {
   "use strict";
 
   var KEY_TOKEN = "wall.token";
-  var KEY_PINS = "wall.pins";
   var KEY_SETTINGS = "wall.settings";
   var KEY_PENDING_EARNS = "wall.pendingEarns";
+  var KEY_FAILED_EARNS = "wall.failedEarns";
 
   var DEFAULT_SETTINGS = {
     adminPinSalt: null,
@@ -60,36 +61,6 @@
     localStorage.removeItem(KEY_TOKEN);
   }
 
-  // ---- PINs -----------------------------------------------------------------
-
-  function getPins() {
-    return readJson(KEY_PINS, []);
-  }
-
-  function getPinRecord(childId) {
-    return getPins().find(function (r) { return r.childId === childId; }) || null;
-  }
-
-  function setPinRecord(childId, patch) {
-    var pins = getPins();
-    var existing = pins.find(function (r) { return r.childId === childId; });
-    var next = Object.assign(
-      { childId: childId, pinSalt: null, pinHash: null, failCount: 0, lockedUntil: null },
-      existing,
-      patch
-    );
-    var out = pins.filter(function (r) { return r.childId !== childId; });
-    out.push(next);
-    writeJson(KEY_PINS, out);
-    return next;
-  }
-
-  // Admin-only reset (settings-ui.js) — clears the PIN but keeps the child's
-  // row so a fresh setPinRecord call finds no stale lockout state next time.
-  function resetPinRecord(childId) {
-    setPinRecord(childId, { pinSalt: null, pinHash: null, failCount: 0, lockedUntil: null });
-  }
-
   // ---- settings -------------------------------------------------------------
 
   function getSettings() {
@@ -112,17 +83,27 @@
     writeJson(KEY_PENDING_EARNS, list);
   }
 
+  // ---- failed earns (§6.2's `rejected` outcome — surfaced, not silently
+  // dropped, so a permanently-refused entry stays visible to an admin
+  // rather than vanishing from an append-only ledger with no trace) -------
+
+  function getFailedEarns() {
+    return readJson(KEY_FAILED_EARNS, []);
+  }
+
+  function setFailedEarns(list) {
+    writeJson(KEY_FAILED_EARNS, list);
+  }
+
   g.Store = {
     getToken: getToken,
     setToken: setToken,
     clearToken: clearToken,
-    getPins: getPins,
-    getPinRecord: getPinRecord,
-    setPinRecord: setPinRecord,
-    resetPinRecord: resetPinRecord,
     getSettings: getSettings,
     setSettings: setSettings,
     getPendingEarns: getPendingEarns,
     setPendingEarns: setPendingEarns,
+    getFailedEarns: getFailedEarns,
+    setFailedEarns: setFailedEarns,
   };
 })(typeof window !== "undefined" ? window : globalThis);
