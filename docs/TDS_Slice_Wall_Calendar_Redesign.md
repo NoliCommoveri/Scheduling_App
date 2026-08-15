@@ -5,10 +5,10 @@
 **Status:** in build. **§18 signed off by Ray, 2026-08-14 — Phase 0 complete.** Phase 1a
 (`wall_slots`/`wall_slot_days` migration + Worker routes), Phase 1b (§3.5's chore duration in
 the Management App), Phase 2 (shell & nav), Phase 3 (day view, read-only), Phase 4 (block
-mode), Phase 5 (placement writes), and Phase 5b (duration adjust) are complete; Phase 6
-(completion) is clear to start. Revised 2026-08-14 after a design review; see §20. Phase 5b's
-gesture choice (long-press opens the duration sheet — §3.5.2) is flagged for Ray's
-confirmation, not yet signed off the way §0's decisions were.
+mode), Phase 5 (placement writes), Phase 5b (duration adjust), and Phase 6 (completion) are
+complete; Phase 6b (sound) is clear to start. Revised 2026-08-14 after a design review; see
+§20. Phase 5b's gesture choice (long-press opens the duration sheet — §3.5.2) is flagged for
+Ray's confirmation, not yet signed off the way §0's decisions were.
 **Date:** 2026-08-14.
 **Depends on:** `TDS_Slice_Online_Revamp.md` (controlling design), `TDS_Slice_Wall_Display_App.md`
 (the app this rewrites), `TDS_Slice_Shared_Chores.md` (claim arbitration).
@@ -1443,7 +1443,7 @@ No phase exceeds the `CLAUDE.md` §V.A 2–3 hour ceiling. Each ends with a §VI
 | **4 — Block mode** | Collapse/expand into the four blocks, block hours, unplaced-chore placement by `block_hint`. ✅ Landed. | ~1.5 h |
 | **5 — Placement writes** | Drag-and-drop and tap-to-place, 15-minute snapping, the slots API, carry-forward, collision warnings (§9 — at the drag, against that day's rows), and §3.1.2's split: per-child placements for `each`, the single child-less row for `claim`. ✅ Landed. | ~2.5 h |
 | **5b — Duration adjust** | §3.5.2's fork: the adjust control, "just this one" vs "this and future", "use the assigned time", the overridden-chip marker, and the precedence chain in `slots-core.js`. ✅ Landed — the adjust control is a long-press on a placed chip (§3.5.2's own text pins the three actions but not the gesture; a plain tap was already spoken for by Phase 6's `onChipTap`). Flagged for confirmation, not signed off. | ~1.5 h |
-| **6 — Completion** | The completion sheet (who by column, when by stepper), the earn entry, `pendingEarns`, Undo both paths, the claim path and "got there first" — **sending the sheet's time on both paths**, which Phase 1a made possible — and done-in-place styling. | ~2.5 h |
+| **6 — Completion** | The completion sheet (who by column, when by stepper), the earn entry, `pendingEarns`, Undo both paths, the claim path and "got there first" — **sending the sheet's time on both paths**, which Phase 1a made possible — and done-in-place styling. ✅ Landed. Also closes a gap found on review: `store.js`'s dead `wall.pins` key (documented as retired since §0.4 but never actually removed) is deleted, and `wall.failedEarns` is added for §6.2's `rejected` outcome, surfaced in Settings. A `waived` chip (a status §8 never named) opens a read-only sheet rather than either of the two the TDS defines, so the wall can never un-waive a chore through the completion route. | ~2.5 h |
 | **6b — Sound** | `remind-core.js` and `sound.js`: the two synthesized tones, the start-time chime and its §11.5 pre-chime poll, the audio unlock and its indicator, quiet hours, the per-child toggle, and Settings' Test sound. | ~1.5 h |
 | **7 — School blocks** | `school-core.js`, course grouping, the read-only block, the rollup, **and the tray's course entries (§3.4) — the gesture that creates a block at all**. | ~2 h |
 | **8 — Week & month** | Sunday-first seven-day columns; the month grid on `/api/wall/events`; the §11.4 colour picker in Settings, with colours carried across all three views. | ~2.5 h |

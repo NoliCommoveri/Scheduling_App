@@ -580,6 +580,22 @@ button {
   white-space: nowrap;
 }
 
+/* §8.4, mirrored for block mode's inline rows — see .day-chip-done above. */
+.day-block-list li.block-item-done {
+  opacity: 0.75;
+}
+
+.block-item-done .block-item-title {
+  text-decoration: line-through;
+  color: var(--text-dim);
+}
+
+.block-item-done-time {
+  flex: 0 0 auto;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
 /* ---- block mode, expanded: one block's own 15-minute grid (§4.4) ---------- */
 
 .day-block-expanded-header {
@@ -767,6 +783,34 @@ button {
   opacity: 0.55;
 }
 
+/* §8.4 — done-in-place: the chip keeps its slot, height and left border
+   colour cue for overlap (§9); only its fill and the title read as
+   finished. No animation — a flat, permanent state, not a transition to
+   watch happen. */
+.day-chip.day-chip-done {
+  background: var(--panel-2);
+  border-left-color: var(--text-dim);
+  opacity: 0.75;
+  cursor: pointer;
+}
+
+.day-chip-done .chip-title {
+  text-decoration: line-through;
+  color: var(--text-dim);
+}
+
+.chip-check {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.chip-done-time {
+  flex: 0 0 auto;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+
 .day-now-line {
   position: absolute;
   left: 0;
@@ -933,6 +977,43 @@ button {
   border-color: var(--accent);
 }
 
+/* ---- failed-earns list (§16 Phase 6, §6.2) --------------------------------
+   `.settings-row` is normally a two-column flex row (label vs. control);
+   this one stacks instead, since a list of arbitrary length doesn't fit
+   beside a fixed-width label the way a toggle group does. */
+
+.settings-row-column {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.failed-earns-list {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+}
+
+.failed-earn-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--panel-2);
+}
+
+.failed-earn-text {
+  color: var(--danger);
+  font-size: 0.9rem;
+}
+
+.failed-earn-dismiss {
+  min-height: 44px;
+  padding: 0 1rem;
+  font-size: 0.9rem;
+  flex: 0 0 auto;
+}
+
 /* ---- duration-adjust sheet (§16 Phase 5b, §3.5.2) --------------------------
    Reuses .settings-overlay's full-screen scrim convention, one z-index
    above it — the two never open at once, but a higher number here is a
@@ -1000,4 +1081,102 @@ button {
 
 .duration-sheet-actions .btn {
   width: 100%;
+}
+
+/* ---- completion sheet (§16 Phase 6, §8.3) ----------------------------------
+   Same overlay convention as the duration sheet and Settings — a full-screen
+   scrim, one card centred on it. Lives outside day-ui.js's render target
+   (complete-ui.js's `open` doc comment), so its own z-index only has to
+   clear the content beneath it, not coordinate with the duration sheet —
+   the two can never be open at once (a chip is either placed, opening this
+   one on tap, or being long-pressed, opening that one; never both). */
+
+.complete-sheet-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 13, 22, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 11;
+}
+
+.complete-sheet-card {
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: 2rem;
+  width: min(420px, 90vw);
+  text-align: center;
+}
+
+.complete-sheet-card.busy {
+  opacity: 0.7;
+}
+
+.complete-sheet-child {
+  color: var(--text-dim);
+  font-size: 0.95rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.complete-sheet-title {
+  margin: 0.25rem 0 1rem;
+}
+
+.complete-sheet-stepper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.5rem;
+  margin: 1rem 0;
+}
+
+.complete-sheet-value {
+  font-size: 1.6rem;
+  font-weight: 700;
+  min-width: 12ch;
+  font-variant-numeric: tabular-nums;
+}
+
+.complete-sheet-note {
+  color: var(--text-dim);
+  font-size: 0.9rem;
+  margin-bottom: 0.5rem;
+}
+
+.complete-sheet-done-label {
+  font-size: 1.1rem;
+  color: var(--text-dim);
+  margin: 1rem 0;
+}
+
+/* ---- completion toast — "Talia got there first!", the refresh notice, and
+   Undo's confirmation. Same visual language as .wall-toast (day-ui.js) but
+   its own class: this file's overlay sits above day-ui.js's render target,
+   so a toast anchored to the SAME host has to be its own element too. ---- */
+
+.complete-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 2rem;
+  transform: translate(-50%, 12px);
+  opacity: 0;
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 0.7rem 1.3rem;
+  border-radius: 12px;
+  font-size: 1.05rem;
+  font-weight: 600;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  transition: opacity 200ms ease, transform 200ms ease;
+  pointer-events: none;
+  z-index: 12;
+  max-width: 80%;
+  text-align: center;
+}
+
+.complete-toast.visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
 }

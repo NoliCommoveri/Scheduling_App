@@ -4,6 +4,16 @@
 // inside nav-ui.js's persistent shell; Phase 3 replaces that board with
 // `day-ui.js`'s real day view, for any rendered date, not just today. Week
 // and Month still show a placeholder until Phase 8.
+//
+// Phase 6 wires the completion sheet: `onChipTap` opens `CompleteUi`
+// against `root` — the outer shell element, ONE LEVEL ABOVE
+// `navCtrl.contentEl` — because `renderContent()` below replaces
+// `contentEl`'s subtree wholesale on every poll (background cadence or the
+// pollNow() a write triggers), and an overlay living inside it would be
+// torn out from under whoever is mid-completion. Phase 6 also drains
+// `wall.pendingEarns` (§6.2's retry queue) on every successful poll, not
+// just right after a write, so a reward that failed to send gets another
+// chance on the ordinary 10-minute cadence too.
 
 (function (g) {
   "use strict";
@@ -35,6 +45,7 @@
     if (pollUnsub) { pollUnsub(); pollUnsub = null; }
     g.Poll.stop();
     g.DayUi.stop();
+    g.CompleteUi.close();
     if (navCtrl) { navCtrl.destroy(); navCtrl = null; }
     if (midnightTimer) { clearTimeout(midnightTimer); midnightTimer = null; }
   }
@@ -83,9 +94,8 @@
 
       if (navState.view === "day") {
         g.DayUi.render(navCtrl.contentEl, lastPollState, navState.date, {
-          onChipTap: function (/* row, child */) {
-            // The completion sheet is Phase 6. Tapping a chip is a no-op
-            // until then, same posture ambient-ui.js took with tile taps.
+          onChipTap: function (row, child) {
+            g.CompleteUi.open(root, row, child);
           },
         });
         return;
@@ -103,6 +113,10 @@
       }
       lastPollState = state;
       renderContent();
+      // §6.2 — drained on every successful poll, not just right after a
+      // write. A fault here must never block rendering: it is a queue
+      // state change, not a page state, so it is fired and forgotten.
+      if (!state.lastError) g.CompleteUi.drainPendingEarns();
     });
 
     g.Poll.start();
@@ -143,6 +157,7 @@
     midnightTimer = setTimeout(function () {
       // Calendar redesign §4.1/§10.3 — a rollover always lands back on
       // day/today, even if the sidebar had wandered to another view or date.
+      g.CompleteUi.close(); // a sheet held open across midnight names a stale row
       if (navCtrl) navCtrl.resetToToday();
       g.Poll.rollover();
       scheduleMidnightRollover();

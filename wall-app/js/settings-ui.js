@@ -1,9 +1,10 @@
 // settings-ui.js — the admin gate and the Settings panel
 // (TDS_Slice_Wall_Display_App.md §4.5). Phase 2 scope: the PIN gate itself,
 // re-pairing the display, and the shell reload button §10.2 requires. Wall
-// Calendar Redesign Phase 3 adds the time-format control (§11.3). Failed
-// earns join in a later phase, once there are earns to manage; per-child PIN
-// management does not join at all — repealed, §2.3.
+// Calendar Redesign Phase 3 adds the time-format control (§11.3). Phase 6
+// adds the failed-earns list (§6.2's `rejected` outcome — an admin's only
+// window into an append-only ledger entry that will never retry on its
+// own). Per-child PIN management does not join at all — repealed, §2.3.
 
 (function (g) {
   "use strict";
@@ -76,6 +77,14 @@
               '<button class="btn ghost time-fmt-btn" id="timeFmt12" data-fmt="12h">12-hour</button>' +
             '</div>' +
           '</div>' +
+          '<div class="settings-row settings-row-column" id="failedEarnsRow">' +
+            '<div>' +
+              '<div class="settings-row-title">Failed rewards</div>' +
+              '<div class="settings-row-help">Chores that completed but could not credit a reward. ' +
+                'Fix the reward category in the Management App, then adjust the balance from there.</div>' +
+            "</div>" +
+            '<ul class="failed-earns-list"></ul>' +
+          "</div>" +
           '<div class="settings-row">' +
             '<div>' +
               '<div class="settings-row-title">Re-pair this display</div>' +
@@ -110,6 +119,33 @@
         paintFmtButtons();
       });
     });
+
+    // §6.2's `rejected` outcome, surfaced rather than dropped — the row is
+    // never retried (it will never work), so this list is the only trace
+    // left of a reward that did not land. Cleared per-row once an admin has
+    // acted on it in the Management App; nothing here writes to D1.
+    var failedRow = body.querySelector("#failedEarnsRow");
+    var failedList = body.querySelector(".failed-earns-list");
+    function paintFailedEarns() {
+      var failed = g.Store.getFailedEarns();
+      failedRow.style.display = failed.length ? "" : "none";
+      failedList.innerHTML = "";
+      failed.forEach(function (entry) {
+        var li = el(
+          '<li class="failed-earn-row">' +
+            '<span class="failed-earn-text"></span>' +
+            '<button class="btn ghost failed-earn-dismiss" type="button">Dismiss</button>' +
+          "</li>"
+        );
+        li.querySelector(".failed-earn-text").textContent = entry.category + " " + entry.amount + " — " + entry.reason;
+        li.querySelector(".failed-earn-dismiss").addEventListener("click", function () {
+          g.Store.setFailedEarns(g.Store.getFailedEarns().filter(function (e) { return e.id !== entry.id; }));
+          paintFailedEarns();
+        });
+        failedList.appendChild(li);
+      });
+    }
+    paintFailedEarns();
 
     body.querySelector("#settingsDone").addEventListener("click", function () { onClose(); });
 

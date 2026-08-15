@@ -33,7 +33,13 @@
 // (assignedDurationMin), time-core.js (formatDurationMin), and wall.css
 // (the sheet, the chip duration marker, the press state) all change.
 // No new files.
-const CACHE_NAME = "wall-display-shell-v6";
+// v7: §16 Phase 6 — the completion sheet. New file `complete-ui.js` (the
+// write path: completions, reward entries, claim/release, the pending- and
+// failed-earns queues). api.js gains the four write calls; day-ui.js gains
+// done-in-place chip styling (§8.4); settings-ui.js gains the failed-earns
+// list; store.js retires the dead `wall.pins` key and adds `wall.failedEarns`;
+// wall.css gains the sheet, the done-chip styles, and the toast.
+const CACHE_NAME = "wall-display-shell-v7";
 
 const APP_SHELL = [
   "./",
@@ -49,6 +55,7 @@ const APP_SHELL = [
   "./js/slots-core.js",
   "./js/poll.js",
   "./js/day-ui.js",
+  "./js/complete-ui.js",
   "./js/nav-ui.js",
   "./js/settings-ui.js",
   "./js/app.js",
