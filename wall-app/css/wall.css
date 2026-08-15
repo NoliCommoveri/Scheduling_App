@@ -203,6 +203,14 @@ button {
   flex: 0 0 auto;
 }
 
+.wall-topbar-nav {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
 .wall-topbar-label {
   flex: 1 1 auto;
   font-size: 1.3rem;
@@ -211,6 +219,15 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Day/week/month stepper, directly on the topbar rather than behind the
+   hamburger — the sidebar's own stepper (.datestep-btn) survives alongside
+   it for when the sidebar is already open. */
+.topbar-nav-btn {
+  min-width: 48px;
+  min-height: 48px;
+  font-size: 1.3rem;
 }
 
 .wall-clock {
