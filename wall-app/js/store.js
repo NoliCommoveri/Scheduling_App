@@ -5,6 +5,11 @@
 //   wall.settings       — { adminPinSalt, adminPinHash, dimStartHour, dimEndHour, shellVersion, timeFormat }
 //   wall.pendingEarns   — [{ id, childId, assignmentId, category, amount, reason, earnedAt, attempts }]
 //   wall.failedEarns    — [{ id, childId, assignmentId, category, amount, reason, at }]
+//   wall.childPrefs     — { [childId]: { soundOn } } — §16 Phase 6b's per-child
+//                          sound toggle (§11.5.2). §11.4's colour picker is the
+//                          same record, keyed the same way; Phase 8 adds a
+//                          `colour` field to each entry rather than a second
+//                          store key, per §11.4's own text.
 //
 // `wall.pins` — per-child PIN records — is RETIRED (Wall Calendar Redesign
 // §0.4, §1.2). Per-child PIN gating was never built (Phase 4a of the
@@ -18,6 +23,7 @@
   var KEY_SETTINGS = "wall.settings";
   var KEY_PENDING_EARNS = "wall.pendingEarns";
   var KEY_FAILED_EARNS = "wall.failedEarns";
+  var KEY_CHILD_PREFS = "wall.childPrefs";
 
   var DEFAULT_SETTINGS = {
     adminPinSalt: null,
@@ -95,6 +101,22 @@
     writeJson(KEY_FAILED_EARNS, list);
   }
 
+  // ---- per-child prefs (§11.4/§11.5 — sound now, colour joins in Phase 8) --
+
+  function getChildPrefs() {
+    return readJson(KEY_CHILD_PREFS, {});
+  }
+
+  // Merges one child's fields into their existing record rather than
+  // replacing it, so setting `soundOn` today never clobbers a `colour`
+  // Phase 8 writes tomorrow.
+  function setChildPref(childId, patch) {
+    var all = getChildPrefs();
+    all[childId] = Object.assign({}, all[childId], patch);
+    writeJson(KEY_CHILD_PREFS, all);
+    return all[childId];
+  }
+
   g.Store = {
     getToken: getToken,
     setToken: setToken,
@@ -105,5 +127,7 @@
     setPendingEarns: setPendingEarns,
     getFailedEarns: getFailedEarns,
     setFailedEarns: setFailedEarns,
+    getChildPrefs: getChildPrefs,
+    setChildPref: setChildPref,
   };
 })(typeof window !== "undefined" ? window : globalThis);

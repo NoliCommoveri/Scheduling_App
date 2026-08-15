@@ -11,6 +11,11 @@
 // Only Day view has real content behind it until Phase 3 (day) and Phase 8
 // (week/month); the caller is responsible for showing a placeholder for the
 // rest, this file only owns navigation.
+//
+// §16 Phase 6b adds the §11.5.1 "tap to enable sound" indicator to the
+// topbar. This file already owns the one shell-wide "a tap happened
+// anywhere" listener (previously only for night-dim suppression), so
+// `Sound.unlock()` rides the same listener rather than a second one.
 
 (function (g) {
   "use strict";
@@ -68,6 +73,7 @@
         '<div class="wall-topbar">' +
           '<button class="hamburger-btn icon-btn" aria-label="Menu">&#9776;</button>' +
           '<div class="wall-topbar-label"></div>' +
+          '<div class="sound-indicator" title="Tap anywhere to enable sound">&#128263;</div>' +
           '<div class="wall-clock"></div>' +
           '<button class="refresh-btn icon-btn" aria-label="Refresh now">&#8635;</button>' +
         '</div>' +
@@ -100,6 +106,7 @@
     var sidebar = shell.querySelector(".wall-sidebar");
     var scrim = shell.querySelector(".wall-sidebar-scrim");
     var topbarLabel = shell.querySelector(".wall-topbar-label");
+    var soundIndicator = shell.querySelector(".sound-indicator");
     var clockEl = shell.querySelector(".wall-clock");
     var dateLabelEl = shell.querySelector("#navDateLabel");
     var viewBtns = shell.querySelectorAll(".sidebar-view-btn");
@@ -192,12 +199,23 @@
     shell.querySelector(".refresh-btn").addEventListener("click", fireRefresh);
 
     // A tap anywhere clears night-dim for the rest of this page load (wall
-    // slice §10.2) and, while the sidebar is open, resets its idle timer.
+    // slice §10.2), unlocks WebAudio for the rest of it too (§11.5.1), and,
+    // while the sidebar is open, resets its idle timer.
     shell.addEventListener("pointerdown", function () {
       dimSuppressed = true;
       updateLiveBits();
+      if (g.Sound) g.Sound.unlock();
       if (state.sidebarOpen) armIdleTimer();
     });
+
+    // Registered only while still locked — `Sound.unlock()` notifies its
+    // listeners exactly once (the first real unlock) and never again, so a
+    // listener added on a later mount (settings closing, a re-pair) after
+    // that has already happened would sit forever unfired.
+    if (g.Sound) {
+      if (g.Sound.isUnlocked()) soundIndicator.style.display = "none";
+      else g.Sound.onUnlock(function () { soundIndicator.style.display = "none"; });
+    }
 
     function updateLiveBits() {
       var now = new Date();

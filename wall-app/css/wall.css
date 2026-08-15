@@ -217,6 +217,15 @@ button {
   flex: 0 0 auto;
 }
 
+/* §16 Phase 6b, §11.5.1 — shown only until the first tap of this page load
+   unlocks WebAudio; a wall that is quiet for a reason nobody can see is
+   worse than one that says so. */
+.sound-indicator {
+  font-size: 1.2rem;
+  opacity: 0.7;
+  flex: 0 0 auto;
+}
+
 .wall-content {
   flex: 1 1 auto;
   min-height: 0;
@@ -1005,6 +1014,48 @@ button {
 .failed-earn-text {
   color: var(--danger);
   font-size: 0.9rem;
+}
+
+/* ---- sound section (§16 Phase 6b, §11.5.2) --------------------------------
+   Same row/list shape as the failed-earns list above — a per-child toggle
+   is a second variable-length list next to a fixed-width label. */
+
+.sound-child-list {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+}
+
+.sound-child-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--panel-2);
+}
+
+.sound-child-name {
+  font-size: 1rem;
+}
+
+.sound-child-toggle {
+  min-height: 44px;
+  min-width: 64px;
+  padding: 0 1rem;
+  font-size: 0.9rem;
+  flex: 0 0 auto;
+}
+
+.sound-child-toggle.active {
+  background: var(--accent);
+  color: #1a1408;
+  border-color: var(--accent);
+}
+
+#testSoundBtn {
+  align-self: flex-start;
+  margin-top: 0.75rem;
 }
 
 .failed-earn-dismiss {
