@@ -795,6 +795,59 @@ button {
   border-left-color: var(--danger);
 }
 
+/* §9 display correction — a same-slot cluster (day-ui.js's
+   groupOverlappingChips) shares the column side by side instead of
+   stacking chips on top of one another. At that width the single-line
+   time+title convention doesn't fit, so a narrowed chip drops it: the time
+   gets its own line and the title wraps to a second rather than ellipsing
+   away the reason two things landed in one slot. day-ui.js pairs this with
+   a taller inline height (NARROW_CHIP_MIN_H) so the wrapped text has room,
+   even past what the chore's own duration would draw. */
+.day-chip.day-chip-narrow {
+  flex-wrap: wrap;
+  align-content: flex-start;
+  align-items: flex-start;
+  padding: 0.3rem 0.4rem;
+}
+
+.day-chip.day-chip-narrow .chip-time {
+  flex: 0 0 100%;
+}
+
+.day-chip.day-chip-narrow .chip-title {
+  flex: 1 1 100%;
+  font-size: 0.8rem;
+  white-space: normal;
+  /* Clamped at exactly two lines with an ellipsis past that, rather than
+     left to wrap however many words a narrow column forces — a long title
+     stays predictable at the height NARROW_CHIP_MIN_H budgets for instead
+     of spilling a third line past the chip's edge. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The "+N" a cluster's third-and-later chip collapses into — same
+   footprint as a chip, tapped to open the rest (buildOverflowTile /
+   showOverflowSheet, day-ui.js). Never a refusal, never a hide. */
+.day-chip.day-chip-overflow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--panel-2);
+  border-left-color: var(--text-dim);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.chip-overflow-count {
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+}
+
 .chip-time {
   flex: 0 0 auto;
   font-size: 0.75rem;
@@ -1314,6 +1367,24 @@ button {
   color: var(--text-dim);
   font-style: italic;
   padding: 0.5rem 0;
+}
+
+/* The overflow-sheet's rows (showOverflowSheet, day-ui.js) reuse
+   .school-picker-list for the scrolling card but need their own row
+   layout — .strip-time/.strip-title (day-strip-list, above) rather than
+   a checkbox label. */
+.overflow-sheet-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  min-height: 44px;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--panel-2);
+  cursor: pointer;
+}
+
+.overflow-sheet-row:last-child {
+  border-bottom: none;
 }
 
 /* ---- completion sheet (§16 Phase 6, §8.3) ----------------------------------
