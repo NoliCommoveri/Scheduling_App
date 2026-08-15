@@ -115,7 +115,12 @@ export function validateCompletionValue(key, value) {
 
 // ---- wall placements (Wall Calendar Redesign §3.2, §12) ----
 
-export const SLOT_SUBJECT_KINDS = new Set(['chore', 'school']);
+// 'school' is REMOVED as of the 2026-08-15 §5 revision (§20): a school block
+// is now a span holding several member courses, which doesn't fit
+// wall_slots' singleton (child_id, subject_kind, subject_key, instance_key)
+// key. School blocks get their own tables (§5.5) instead — wall_slots ends
+// up used for 'chore' only.
+export const SLOT_SUBJECT_KINDS = new Set(['chore']);
 
 // A placement's clock position: minutes from local midnight, snapped to the
 // 15-minute grid (§4.3). `1440` itself (midnight of the next day) is excluded
@@ -133,6 +138,34 @@ export function isValidStartMin(value) {
 export function isValidSlotDuration(value) {
   if (value === null) return true;
   return Number.isInteger(value) && value > 0 && value % 15 === 0;
+}
+
+// ---- school blocks (Wall Calendar Redesign §5.5, §12, Phase 7) ----
+
+// A block's label is optional and cosmetic only (§5.1.1) — not a key, just a
+// display string swapped for "School" when absent. Bounded so nobody
+// free-types a paragraph into a chip read from two metres.
+export const MAX_BLOCK_LABEL_LEN = 60;
+
+export function isValidBlockLabel(value) {
+  if (value === null || value === undefined) return true; // NULL = render as "School"
+  return typeof value === 'string' && value.length <= MAX_BLOCK_LABEL_LEN;
+}
+
+// A block's span is required at creation (§5.4) — unlike wall_slots'
+// duration_min, which is allowed to be null to CLEAR a standing override
+// (§3.5.1), a block with no duration is meaningless. Same 15-minute grid,
+// null excluded.
+export function isValidBlockDuration(value) {
+  return isValidSlotDuration(value) && value !== null;
+}
+
+// A course name snapshot, matching an activity row's own denormalized
+// course_name (§5.2.1) — the only course identity either row carries.
+export const MAX_COURSE_NAME_LEN = 200;
+
+export function isValidCourseName(value) {
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_COURSE_NAME_LEN;
 }
 
 // ---- curriculum mirror (§5.1) ----

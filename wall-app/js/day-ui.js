@@ -52,6 +52,21 @@
 // (see complete-ui.js's `open` doc comment), the same reason the duration
 // sheet above has to redraw itself on every render rather than living
 // undisturbed alongside it.
+//
+// §16 Phase 7 adds school blocks (§5, revised 2026-08-15 — a block is a span
+// holding several member courses, §20). They are NOT chore rows and do not
+// go through SlotsCore — they live in their own state
+// (`state.schoolBlocks`/`state.schoolBlockCourses`, poll.js) and their own
+// tables (migration 0011). `attachGesture` is generalized from a
+// chore-specific `onTap`/`onLongPress` pair to also take `onDrop`/
+// `onTrayDrop` callbacks, so the same pointer-gesture machinery serves a
+// school block's drag-to-move without hardcoding SlotsCore/commitPlacement
+// calls into it — a block's tap opens the membership picker (§5.2), its
+// long-press opens a span/label editor (§5.4, with no precedence chain to
+// show, unlike the chore duration sheet), and it has no tray drop at all
+// (removal goes through the sheet, §5.4's "long-press sheet → remove"). The
+// "+ School" affordance lives in the tray header (`buildTrayCell`), which is
+// therefore now always rendered rather than hidden when nothing's unplaced.
 
 (function (g) {
   "use strict";
@@ -192,6 +207,42 @@
     var ghost = el('<div class="drag-ghost"></div>');
     ghost.textContent = title;
     return ghost;
+  }
+
+  // §16 Phase 7 — school blocks (§5). A block lives in its own table
+  // (wall_school_blocks/wall_school_block_courses), not wall_slots, and has
+  // no `assignments` row of its own — so these helpers work from
+  // `state.schoolBlocks`/`state.schoolBlockCourses` directly rather than
+  // through SlotsCore, which only ever resolves chore rows (§3.1's table).
+
+  function blocksForChild(state, childId) {
+    return (state.schoolBlocks || []).filter(function (b) { return b.child_id === childId; });
+  }
+
+  function membersOf(state, blockId) {
+    return (state.schoolBlockCourses || [])
+      .filter(function (c) { return c.block_id === blockId; })
+      .map(function (c) { return c.course_name; });
+  }
+
+  function blockLabel(block) {
+    return block.label || "School";
+  }
+
+  // The full read for one block on one rendered date: its member courses'
+  // rollups (§5.3) and whether every one of them is checked.
+  function blockEntry(state, child, block, date) {
+    var members = membersOf(state, block.id);
+    var rollups = g.SchoolCore.memberRollups(state.rows, child.id, date, members);
+    return { block: block, rollups: rollups, collapsed: g.SchoolCore.isCollapsed(rollups) };
+  }
+
+  // Adapts a block entry to the shape buildStrip (§4.3's early/late strips)
+  // already expects from a chore — {row: {title}, chip: {startMin}} — so a
+  // block placed outside 06:00-23:00 shows there too rather than being
+  // silently dropped.
+  function blockStripItem(be) {
+    return { row: { title: blockLabel(be.block) }, chip: { startMin: be.block.start_min } };
   }
 
   function positionGhost(ghost, x, y) {
@@ -508,14 +559,20 @@
   // Pointer-down+move+up, unified for the gestures a chip or a tray item
   // supports: a small movement is a TAP (`onTap`); past `DRAG_THRESHOLD_PX`
   // it's a DRAG, tracked with a floating ghost and resolved on release by
-  // where the pointer let go — the grid body (place/move), the tray row
-  // (un-place), or neither (cancel, nothing written, §3.6). A stationary
-  // hold past `LONG_PRESS_MS` is a fourth gesture, `onLongPress` (§16
-  // Phase 5b) — passed only for placed chips, never tray items, since it
-  // opens the duration sheet and an unplaced chore has nothing to adjust
-  // yet. Firing it tears down the same listeners a drag or tap would have
-  // used, so a long-press can never also resolve as either.
-  function attachGesture(itemEl, row, onTap, onLongPress) {
+  // where the pointer let go — the grid body calls `onDrop(startMin)`, the
+  // tray row calls `onTrayDrop()` (either may be omitted: a school block has
+  // no tray to drop onto, §16 Phase 7 — un-placing one goes through its own
+  // sheet instead, §5.4), or neither (cancel, nothing written, §3.6). A
+  // stationary hold past `LONG_PRESS_MS` is a fourth gesture, `onLongPress`
+  // (§16 Phase 5b) — passed only for already-placed items, since it opens an
+  // adjust sheet and an unplaced chore has nothing to adjust yet. Firing it
+  // tears down the same listeners a drag or tap would have used, so a
+  // long-press can never also resolve as either.
+  //
+  // `title` is a plain string (not a row/block object) so this stays generic
+  // over whatever the caller is dragging — a chore row and a school block
+  // carry the title in different places.
+  function attachGesture(itemEl, title, onTap, onLongPress, onDrop, onTrayDrop) {
     itemEl.addEventListener("pointerdown", function (ev) {
       if (ev.button != null && ev.button !== 0) return;
       var startX = ev.clientX, startY = ev.clientY;
@@ -537,7 +594,7 @@
           if (Math.sqrt(dx * dx + dy * dy) < DRAG_THRESHOLD_PX) return;
           clearLongPress();
           moved = true;
-          ghost = buildGhost(row.title);
+          ghost = buildGhost(title);
           currentRoot.appendChild(ghost);
           itemEl.classList.add("drag-source");
           if (bodyEl) bodyEl.classList.add("drop-armed");
@@ -574,13 +631,13 @@
         var overBody = !overTray && bodyEl && pointInRect(up.clientX, up.clientY, bodyEl.getBoundingClientRect());
 
         if (overTray) {
-          if (g.SlotsCore.placementFor(g.SlotsCore.indexSlots(current.state.slots), row)) unplace(row);
-          return; // already unplaced (dragged from the tray itself) — no-op
+          if (onTrayDrop) onTrayDrop();
+          return;
         }
         if (!overBody || !current.range) return; // dropped nowhere valid — cancel, nothing written (§3.6)
 
         var virtual = startMinFromPointer(up.clientY, bodyEl, current.range.start, current.range.end);
-        commitPlacement(row, virtual % 1440);
+        if (onDrop) onDrop(virtual % 1440);
       }
 
       ev.preventDefault();
@@ -611,13 +668,26 @@
     var li = el("<li></li>");
     li.textContent = row.title;
     if (selectedForPlacement && selectedForPlacement.row.id === row.id) li.classList.add("selected");
-    attachGesture(li, row, function () { tryToggleSelection(row, child); });
+    attachGesture(li, row.title, function () { tryToggleSelection(row, child); }, null,
+      function (startMin) { commitPlacement(row, startMin); },
+      function () {
+        // Dragged from the tray back onto the tray itself — already
+        // unplaced, so this is a no-op rather than an error.
+        if (g.SlotsCore.placementFor(g.SlotsCore.indexSlots(current.state.slots), row)) unplace(row);
+      });
     return li;
   }
 
+  // §5.4 — "+ School", alongside the unscheduled-chore strip, so it always
+  // shows even when nothing is unscheduled (§16 Phase 7 widens the tray row
+  // from "hidden unless something's unplaced" to "always visible" for
+  // exactly this reason).
   function buildTrayCell(entry) {
     var n = entry.unplaced.length;
     var cell = el('<div class="day-tray-cell"></div>');
+    var addBtn = el('<button class="day-tray-add-school" type="button">+ School</button>');
+    addBtn.addEventListener("click", function () { createSchoolBlock(entry.child); });
+    cell.appendChild(addBtn);
     if (!n) return cell;
     var toggle = el('<button class="day-tray-toggle">Not scheduled &middot; ' + n + "</button>");
     var list = el('<ul class="day-tray-list"></ul>');
@@ -629,11 +699,227 @@
   }
 
   function buildTrayRow(perChild) {
-    var any = perChild.some(function (c) { return c.unplaced.length > 0; });
     var wrap = el('<div class="day-tray-row"><div class="day-gutter-spacer"></div></div>');
-    if (!any) return wrap;
     perChild.forEach(function (entry) { wrap.appendChild(buildTrayCell(entry)); });
     return wrap;
+  }
+
+  // §5.4 — "a default span (60 minutes, at the next free slot)". Scans this
+  // child's OTHER blocks for the first 15-minute-aligned 60-minute gap in
+  // the grid range; falls back to the top of the grid if none exists (an
+  // edge case — the day is already covered — left to a drag to sort out,
+  // rather than refusing to create the block at all, since overlap is
+  // allowed everywhere except §9's private-chore case, which blocks never
+  // trigger).
+  var DEFAULT_BLOCK_DURATION_MIN = 60;
+
+  function nextFreeBlockStart(state, childId, durationMin) {
+    var existing = blocksForChild(state, childId);
+    var start = GRID_START_MIN;
+    var limit = GRID_END_MIN - durationMin;
+    while (start <= limit) {
+      var end = start + durationMin;
+      var overlaps = existing.some(function (b) { return start < b.end_min && b.start_min < end; });
+      if (!overlaps) return start;
+      start += ROW_MIN;
+    }
+    return GRID_START_MIN;
+  }
+
+  function createSchoolBlock(child) {
+    var startMin = nextFreeBlockStart(current.state, child.id, DEFAULT_BLOCK_DURATION_MIN);
+    g.WallApi.postSchoolBlock(child.id, startMin, DEFAULT_BLOCK_DURATION_MIN, null).then(function (res) {
+      current.state.schoolBlocks = (current.state.schoolBlocks || []).concat([{
+        id: res.id, child_id: child.id, label: null,
+        start_min: startMin, end_min: startMin + DEFAULT_BLOCK_DURATION_MIN,
+      }]);
+      rerenderNow();
+      showToast("School block added to " + child.name);
+      g.Poll.pollNow();
+    }).catch(function () {
+      showToast("Couldn't add a school block — try again.", "warning");
+    });
+  }
+
+  // §5.4 — drag moves a block, setting a new standing start time (§3.3);
+  // duration and label are untouched. `block` is a live reference into
+  // `current.state.schoolBlocks` (blocksForChild filters, it doesn't clone),
+  // so mutating it in place is enough to keep the render in sync —
+  // the same optimistic-update shape applyOptimisticSlot uses for chores.
+  function moveSchoolBlock(block, startMin) {
+    var durationMin = block.end_min - block.start_min;
+    var fmt = (g.Store.getSettings().timeFormat) || "24h";
+    g.WallApi.putSchoolBlock(block.id, { startMin: startMin }).then(function () {
+      block.start_min = startMin;
+      block.end_min = startMin + durationMin;
+      rerenderNow();
+      showToast(blockLabel(block) + " moved to " + g.TimeCore.formatMinutes(startMin, fmt));
+      g.Poll.pollNow();
+    }).catch(function () {
+      showToast("Couldn't move “" + blockLabel(block) + "” — try again.", "warning");
+    });
+  }
+
+  // ---- school block span/label sheet (§5.4 — long-press on a block) --------
+  // No precedence chain to display here (§3.5.1 doesn't apply to blocks,
+  // §20) — this edits wall_school_blocks.end_min and .label directly, with
+  // no "just this one"/"this and future" fork, unlike the chore duration
+  // sheet above.
+
+  function showBlockSheet(block) {
+    blockSheetState = { block: block, value: block.end_min - block.start_min, label: block.label || "" };
+    rerenderNow();
+  }
+
+  function closeBlockSheet() {
+    blockSheetState = null;
+    rerenderNow();
+  }
+
+  function removeSchoolBlock(block) {
+    blockSheetState = null;
+    rerenderNow();
+    g.WallApi.deleteSchoolBlock(block.id).then(function () {
+      current.state.schoolBlocks = (current.state.schoolBlocks || []).filter(function (b) { return b.id !== block.id; });
+      current.state.schoolBlockCourses = (current.state.schoolBlockCourses || [])
+        .filter(function (c) { return c.block_id !== block.id; });
+      rerenderNow();
+      showToast(blockLabel(block) + " removed");
+      g.Poll.pollNow();
+    }).catch(function () {
+      showToast("Couldn't remove “" + blockLabel(block) + "” — try again.", "warning");
+    });
+  }
+
+  function submitBlockSheet() {
+    var s = blockSheetState;
+    var block = s.block;
+    var newLabel = s.label.trim() || null;
+    var newDuration = s.value;
+    blockSheetState = null;
+    rerenderNow();
+    g.WallApi.putSchoolBlock(block.id, { durationMin: newDuration, label: newLabel }).then(function () {
+      block.end_min = block.start_min + newDuration;
+      block.label = newLabel;
+      rerenderNow();
+      showToast(blockLabel(block) + " updated");
+      g.Poll.pollNow();
+    }).catch(function () {
+      showToast("Couldn't update “" + blockLabel(block) + "” — try again.", "warning");
+    });
+  }
+
+  function buildBlockSheet() {
+    var s = blockSheetState;
+    var overlay = el(
+      '<div class="duration-sheet-overlay school-block-sheet-overlay">' +
+        '<div class="duration-sheet-card">' +
+          "<h2>Edit school block</h2>" +
+          '<input class="school-block-label-input" type="text" placeholder="School" maxlength="60">' +
+          '<div class="duration-sheet-stepper">' +
+            '<button class="btn ghost dur-step" data-step="-15" type="button">&minus;</button>' +
+            '<div class="duration-sheet-value"></div>' +
+            '<button class="btn ghost dur-step" data-step="15" type="button">+</button>' +
+          "</div>" +
+          '<div class="duration-sheet-actions">' +
+            '<button class="btn" id="blockSave">Save</button>' +
+            '<button class="btn ghost" id="blockRemove">Remove block</button>' +
+            '<button class="btn ghost" id="blockCancel">Cancel</button>' +
+          "</div>" +
+        "</div>" +
+      "</div>"
+    );
+    var labelInput = overlay.querySelector(".school-block-label-input");
+    labelInput.value = s.label;
+    labelInput.addEventListener("input", function () { s.label = labelInput.value; });
+    overlay.querySelector(".duration-sheet-value").textContent = g.TimeCore.formatDurationMin(s.value);
+
+    overlay.querySelectorAll(".dur-step").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        s.value = Math.max(ROW_MIN, Math.min(MAX_ADJUST_MIN, s.value + Number(btn.dataset.step)));
+        rerenderNow();
+      });
+    });
+    overlay.addEventListener("click", function (ev) {
+      if (ev.target === overlay) closeBlockSheet();
+    });
+    overlay.querySelector("#blockCancel").addEventListener("click", closeBlockSheet);
+    overlay.querySelector("#blockRemove").addEventListener("click", function () { removeSchoolBlock(s.block); });
+    overlay.querySelector("#blockSave").addEventListener("click", submitBlockSheet);
+
+    currentRoot.appendChild(overlay);
+    labelInput.focus();
+  }
+
+  // ---- school block membership picker (§5.2 — a plain tap on a block) ------
+
+  function showMembershipSheet(block) {
+    membershipSheetState = { block: block };
+    rerenderNow();
+  }
+
+  function closeMembershipSheet() {
+    membershipSheetState = null;
+    rerenderNow();
+  }
+
+  function toggleMembership(block, courseName, checked) {
+    var write = checked
+      ? g.WallApi.putSchoolBlockCourse(block.id, courseName)
+      : g.WallApi.deleteSchoolBlockCourse(block.id, courseName);
+    write.then(function () {
+      if (checked) {
+        current.state.schoolBlockCourses = (current.state.schoolBlockCourses || [])
+          .concat([{ block_id: block.id, course_name: courseName }]);
+      } else {
+        current.state.schoolBlockCourses = (current.state.schoolBlockCourses || [])
+          .filter(function (c) { return !(c.block_id === block.id && c.course_name === courseName); });
+      }
+      rerenderNow();
+      g.Poll.pollNow();
+    }).catch(function () {
+      showToast("Couldn't update that course — try again.", "warning");
+      rerenderNow();
+    });
+  }
+
+  function buildMembershipSheet() {
+    var s = membershipSheetState;
+    var block = s.block;
+    var courses = g.SchoolCore.coursesWithActivities(current.state.rows, block.child_id, current.date);
+    var memberSet = Object.create(null);
+    membersOf(current.state, block.id).forEach(function (name) { memberSet[name] = true; });
+
+    var overlay = el(
+      '<div class="duration-sheet-overlay school-picker-overlay">' +
+        '<div class="duration-sheet-card">' +
+          "<h2></h2>" +
+          '<ul class="school-picker-list"></ul>' +
+          '<div class="duration-sheet-actions">' +
+            '<button class="btn" id="pickerDone">Done</button>' +
+          "</div>" +
+        "</div>" +
+      "</div>"
+    );
+    overlay.querySelector("h2").textContent = blockLabel(block) + " courses";
+    var list = overlay.querySelector(".school-picker-list");
+    if (!courses.length) {
+      list.appendChild(el('<li class="school-picker-empty">No courses assigned today.</li>'));
+    }
+    courses.forEach(function (name) {
+      var li = el('<li class="school-picker-row"><label><input type="checkbox"><span></span></label></li>');
+      var checkbox = li.querySelector("input");
+      checkbox.checked = !!memberSet[name];
+      li.querySelector("span").textContent = name;
+      checkbox.addEventListener("change", function () { toggleMembership(block, name, checkbox.checked); });
+      list.appendChild(li);
+    });
+    overlay.addEventListener("click", function (ev) {
+      if (ev.target === overlay) closeMembershipSheet();
+    });
+    overlay.querySelector("#pickerDone").addEventListener("click", closeMembershipSheet);
+
+    currentRoot.appendChild(overlay);
   }
 
   // ---- early/late strips (§4.3 — never hidden, never clamped; grid mode only,
@@ -709,6 +995,68 @@
     );
   }
 
+  // §5.1/§5.3 — a school block chip: its label, its time span, and one row
+  // per member course with its own count and checkmark — or, once every
+  // member is checked, a single compact collapsed line (§5.3's "the block
+  // collapses"). Never tappable in the sense a chore chip is (§8.1 — school
+  // blocks are read-only as far as completion goes); a tap here opens the
+  // membership picker instead (attachGesture's onTap in buildColumn).
+  function schoolBlockChipHtml(be, fmt) {
+    var block = be.block;
+    var span = g.TimeCore.formatMinutes(block.start_min, fmt) + "–" + g.TimeCore.formatMinutes(block.end_min, fmt);
+    if (be.collapsed) {
+      return (
+        '<div class="school-block-chip school-block-collapsed" data-block-id="' + escapeHtml(block.id) + '">' +
+          '<span class="chip-check">&#10003;</span>' +
+          '<span class="school-block-label">' + escapeHtml(blockLabel(block)) + "</span>" +
+          '<span class="chip-time">' + span + "</span>" +
+        "</div>"
+      );
+    }
+    var rows = be.rollups.map(function (r) {
+      var done = r.checked === true;
+      var count = r.total ? '<span class="school-block-course-count">' + r.resolved + " of " + r.total + "</span>" : "";
+      return (
+        '<li class="school-block-course' + (done ? " school-block-course-done" : "") + '">' +
+          (done ? '<span class="chip-check">&#10003;</span>' : "") +
+          '<span class="school-block-course-name">' + escapeHtml(r.courseName) + "</span>" + count +
+        "</li>"
+      );
+    }).join("");
+    return (
+      '<div class="school-block-chip" data-block-id="' + escapeHtml(block.id) + '">' +
+        '<div class="school-block-header">' +
+          '<span class="school-block-label">' + escapeHtml(blockLabel(block)) + "</span>" +
+          '<span class="chip-time">' + span + "</span>" +
+        "</div>" +
+        (rows ? '<ul class="school-block-courses">' + rows + "</ul>"
+          : '<div class="school-block-empty">No courses yet — tap to add</div>') +
+      "</div>"
+    );
+  }
+
+  // The block-mode (collapsed) list-row equivalent of the chip above —
+  // inline rather than absolutely positioned, matching blockItemHtml's
+  // layout for a chore. A single summary line rather than one <li> per
+  // member course: block-mode rows are already compact by design (§4.4).
+  function schoolBlockListItemHtml(be, fmt) {
+    var block = be.block;
+    var span = g.TimeCore.formatMinutes(block.start_min, fmt) + "–" + g.TimeCore.formatMinutes(block.end_min, fmt);
+    var summary = be.collapsed
+      ? "All courses done"
+      : be.rollups.map(function (r) {
+          return r.courseName + (r.checked === true ? " ✓" : "");
+        }).join(", ") || "No courses yet";
+    return (
+      '<li class="block-item-school' + (be.collapsed ? " block-item-done" : "") + '">' +
+        (be.collapsed ? '<span class="chip-check">&#10003;</span>' : "") +
+        '<span class="block-item-time">' + span + "</span>" +
+        '<span class="block-item-title">' + escapeHtml(blockLabel(block)) + "</span>" +
+        '<span class="block-item-school-summary">' + escapeHtml(summary) + "</span>" +
+      "</li>"
+    );
+  }
+
   function buildGutter(rh, rangeStart, rangeEnd) {
     var gutter = el('<div class="day-gutter"></div>');
     var hStart = rangeStart / 60;
@@ -735,11 +1083,33 @@
       var chip = el(chipHtml(placed, opts.fmt));
       chip.style.top = top + "px";
       chip.style.height = (rows * rh - 2) + "px"; // 2px gap between chips
-      attachGesture(chip, placed.row, function () {
+      attachGesture(chip, placed.row.title, function () {
         if (opts.onChipTap) opts.onChipTap(placed.row, entry.child);
       }, function () {
         showDurationSheet(placed.row);
+      }, function (startMin) {
+        commitPlacement(placed.row, startMin);
+      }, function () {
+        unplace(placed.row);
       });
+      col.appendChild(chip);
+    });
+    (entry.blocks || []).forEach(function (be) {
+      var top = ((be.topMin - rangeStart) / ROW_MIN) * rh;
+      var rows = Math.max(1, Math.ceil((be.block.end_min - be.block.start_min) / ROW_MIN));
+      var chip = el(schoolBlockChipHtml(be, opts.fmt));
+      chip.style.top = top + "px";
+      chip.style.height = (rows * rh - 2) + "px";
+      // Tap opens the membership picker (§5.2); long-press opens the
+      // span/label editor (§5.4); drag moves it, setting a new standing
+      // start time (§3.3) — no tray drop, a block is removed from its sheet.
+      attachGesture(chip, blockLabel(be.block), function () {
+        showMembershipSheet(be.block);
+      }, function () {
+        showBlockSheet(be.block);
+      }, function (startMin) {
+        moveSchoolBlock(be.block, startMin);
+      }, null);
       col.appendChild(chip);
     });
     return col;
@@ -803,7 +1173,15 @@
         if (chip.startMin >= GRID_END_MIN) { late.push({ row: row, chip: chip }); return; }
         placed.push({ row: row, chip: chip, topMin: chip.startMin });
       });
-      return { child: child, placed: placed, unplaced: unplaced, early: early, late: late };
+      var blocks = [];
+      blocksForChild(state, child.id).forEach(function (block) {
+        var be = blockEntry(state, child, block, date);
+        if (block.start_min < GRID_START_MIN) { early.push(blockStripItem(be)); return; }
+        if (block.start_min >= GRID_END_MIN) { late.push(blockStripItem(be)); return; }
+        be.topMin = block.start_min;
+        blocks.push(be);
+      });
+      return { child: child, placed: placed, unplaced: unplaced, early: early, late: late, blocks: blocks };
     });
   }
 
@@ -835,13 +1213,18 @@
       var buckets = { morning: [], afternoon: [], evening: [], night: [] };
       chores.forEach(function (row) {
         var chip = g.SlotsCore.resolveChip(slotsIdx, daysIdx, row, date);
-        buckets[g.ChoresCore.blockForChip(row, chip)].push({ row: row, chip: chip });
+        buckets[g.ChoresCore.blockForChip(row, chip)].push({ kind: "chore", row: row, chip: chip });
+      });
+      blocksForChild(state, child.id).forEach(function (block) {
+        var be = blockEntry(state, child, block, date);
+        buckets[g.ChoresCore.blockFromStartMin(block.start_min)].push({ kind: "school", entry: be });
       });
       g.ChoresCore.CANON_BLOCKS.forEach(function (b) {
         // Placed items first, ordered by time; unplaced last (§6's convention
         // for week view, reused here for the same reason: a time beats no time).
         buckets[b].sort(function (a, bItem) {
-          var at = a.chip.startMin, bt = bItem.chip.startMin;
+          var at = a.kind === "school" ? a.entry.block.start_min : a.chip.startMin;
+          var bt = bItem.kind === "school" ? bItem.entry.block.start_min : bItem.chip.startMin;
           if (at == null && bt == null) return 0;
           if (at == null) return 1;
           if (bt == null) return -1;
@@ -856,6 +1239,7 @@
   // changes as chipHtml, just laid out inline rather than absolutely
   // positioned.
   function blockItemHtml(item, fmt) {
+    if (item.kind === "school") return schoolBlockListItemHtml(item.entry, fmt);
     var row = item.row;
     var done = row.status === "complete";
     var time = item.chip.startMin != null
@@ -885,7 +1269,8 @@
         items.forEach(function (item) {
           var li = el(blockItemHtml(item, opts.fmt));
           li.addEventListener("click", function () {
-            if (opts.onChipTap) opts.onChipTap(item.row, entry.child);
+            if (item.kind === "school") showMembershipSheet(item.entry.block);
+            else if (opts.onChipTap) opts.onChipTap(item.row, entry.child);
           });
           list.appendChild(li);
         });
@@ -935,7 +1320,14 @@
         if (chip.startMin == null) { unplaced.push(row); return; }
         placed.push({ row: row, chip: chip, topMin: g.ChoresCore.blockVirtualMin(chip.startMin, blockName) });
       });
-      return { child: child, placed: placed, unplaced: unplaced };
+      var blocks = [];
+      blocksForChild(state, child.id).forEach(function (block) {
+        if (g.ChoresCore.blockFromStartMin(block.start_min) !== blockName) return;
+        var be = blockEntry(state, child, block, date);
+        be.topMin = g.ChoresCore.blockVirtualMin(block.start_min, blockName);
+        blocks.push(be);
+      });
+      return { child: child, placed: placed, unplaced: unplaced, blocks: blocks };
     });
   }
 
@@ -964,6 +1356,8 @@
   var lastRenderedMode = null;
   var selectedForPlacement = null; // tap-to-place: {row, child} armed by a tray tap, or null
   var sheetState = null; // duration-adjust sheet: {row, value} while open, or null (§16 Phase 5b)
+  var blockSheetState = null; // school block span/label sheet: {block, value, label} while open, or null (§16 Phase 7)
+  var membershipSheetState = null; // school block membership picker: {block} while open, or null (§16 Phase 7)
 
   function setMode(mode) {
     dayMode = mode;
@@ -1000,6 +1394,8 @@
     // scoped the same way — it names a rendered date via `current.date`.
     if ((isNewDate || isNewMode) && selectedForPlacement) selectedForPlacement = null;
     if ((isNewDate || isNewMode) && sheetState) sheetState = null;
+    if ((isNewDate || isNewMode) && blockSheetState) blockSheetState = null;
+    if ((isNewDate || isNewMode) && membershipSheetState) membershipSheetState = null;
 
     root.innerHTML = "";
 
@@ -1043,6 +1439,8 @@
     // rebuilds `root` from scratch, and without this the sheet would
     // silently vanish mid-adjustment (§16 Phase 5b).
     if (sheetState) buildDurationSheet();
+    if (blockSheetState) buildBlockSheet();
+    if (membershipSheetState) buildMembershipSheet();
 
     var rh = rowHeightPx();
     if (result.body) {
@@ -1095,6 +1493,8 @@
     lastRenderedMode = null;
     selectedForPlacement = null;
     sheetState = null;
+    blockSheetState = null;
+    membershipSheetState = null;
   }
 
   g.DayUi = { render: render, stop: stop };

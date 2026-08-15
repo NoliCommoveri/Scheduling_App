@@ -26,6 +26,11 @@ import {
   SLOT_SUBJECT_KINDS,
   isValidStartMin,
   isValidSlotDuration,
+  isValidBlockLabel,
+  isValidBlockDuration,
+  isValidCourseName,
+  MAX_BLOCK_LABEL_LEN,
+  MAX_COURSE_NAME_LEN,
 } from '../management-app/worker/validation.js';
 
 // The registry cannot be imported: it `import`s `.sql` files, which only
@@ -124,8 +129,36 @@ test('isValidSlotDuration accepts null (clears an override) and positive multipl
   }
 });
 
-test('SLOT_SUBJECT_KINDS is exactly chore and school', () => {
-  assert.deepEqual([...SLOT_SUBJECT_KINDS].sort(), ['chore', 'school']);
+test('§20: SLOT_SUBJECT_KINDS is exactly chore — school blocks moved to their own tables', () => {
+  assert.deepEqual([...SLOT_SUBJECT_KINDS].sort(), ['chore']);
+});
+
+// -------------------------------- school blocks (§5.5, §12, Phase 7) -------
+
+test('isValidBlockLabel allows null/undefined (renders as "School") and bounds a string', () => {
+  assert.equal(isValidBlockLabel(null), true);
+  assert.equal(isValidBlockLabel(undefined), true);
+  assert.equal(isValidBlockLabel('Morning School'), true);
+  assert.equal(isValidBlockLabel('x'.repeat(MAX_BLOCK_LABEL_LEN)), true);
+  assert.equal(isValidBlockLabel('x'.repeat(MAX_BLOCK_LABEL_LEN + 1)), false);
+  assert.equal(isValidBlockLabel(42), false);
+});
+
+test('isValidBlockDuration is isValidSlotDuration with null excluded — a block always has a span', () => {
+  assert.equal(isValidBlockDuration(null), false);
+  for (const ok of [15, 30, 300]) assert.equal(isValidBlockDuration(ok), true, `${ok} should be valid`);
+  for (const bad of [0, -15, 10, 1.5, '30', undefined]) {
+    assert.equal(isValidBlockDuration(bad), false, `${JSON.stringify(bad)} should be invalid`);
+  }
+});
+
+test('isValidCourseName requires a non-empty, bounded string', () => {
+  assert.equal(isValidCourseName('Math'), true);
+  assert.equal(isValidCourseName(''), false);
+  assert.equal(isValidCourseName('x'.repeat(MAX_COURSE_NAME_LEN)), true);
+  assert.equal(isValidCourseName('x'.repeat(MAX_COURSE_NAME_LEN + 1)), false);
+  assert.equal(isValidCourseName(null), false);
+  assert.equal(isValidCourseName(undefined), false);
 });
 
 test('validateCompletionValue bounds childBlockHint', () => {
