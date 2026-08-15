@@ -26,10 +26,32 @@
     return t.content.firstElementChild;
   }
 
+  function pad2(n) { return n < 10 ? "0" + n : "" + n; }
+
   // Mirrors poll.js's own todayLocal/addDays rather than re-deriving them,
   // so the nav's idea of "today" can never drift from the poll's.
   function todayLocal() { return g.Poll.todayLocal(); }
   function addDays(iso, n) { return g.Poll.addDays(iso, n); }
+
+  // Calendar-month step, not a fixed 30 days — landing on the 31st and
+  // stepping forward a month clamps to the target month's last day rather
+  // than overflowing into the month after.
+  function addMonths(iso, n) {
+    var parts = iso.split("-").map(Number);
+    var target = new Date(parts[0], parts[1] - 1 + n, 1);
+    var daysInTarget = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+    target.setDate(Math.min(parts[2], daysInTarget));
+    return target.getFullYear() + "-" + pad2(target.getMonth() + 1) + "-" + pad2(target.getDate());
+  }
+
+  // Mirrors week-ui.js's own dayOfWeek/weekDates (Sunday-first) rather than
+  // re-deriving them, so the nav's idea of "this week" can never drift from
+  // the week view's.
+  function dayOfWeek(iso) {
+    var parts = iso.split("-").map(Number);
+    return new Date(parts[0], parts[1] - 1, parts[2]).getDay();
+  }
+  function weekStart(iso) { return addDays(iso, -dayOfWeek(iso)); }
 
   // §11.3 — the topbar clock is one more thing the time-format setting
   // governs, through the same helper the grid and its chips use.
@@ -42,6 +64,55 @@
     var parts = iso.split("-").map(Number);
     var d = new Date(parts[0], parts[1] - 1, parts[2]);
     return d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
+  }
+
+  function monthLabel(iso) {
+    var parts = iso.split("-").map(Number);
+    var d = new Date(parts[0], parts[1] - 1, parts[2]);
+    return d.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  }
+
+  // Sunday-through-Saturday span containing `iso`, per the user's ask that
+  // week view name the range rather than repeat the anchor date.
+  function weekRangeLabel(iso) {
+    var start = weekStart(iso);
+    var end = addDays(start, 6);
+    var sParts = start.split("-").map(Number);
+    var eParts = end.split("-").map(Number);
+    var sDate = new Date(sParts[0], sParts[1] - 1, sParts[2]);
+    var eDate = new Date(eParts[0], eParts[1] - 1, eParts[2]);
+    if (sParts[0] !== eParts[0]) {
+      return sDate.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) +
+        " – " + eDate.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    }
+    if (sParts[1] !== eParts[1]) {
+      return sDate.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
+        " – " + eDate.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    }
+    return sDate.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
+      "–" + eDate.getDate();
+  }
+
+  // The header string for the active view: day keeps the single-date label,
+  // week names its Sunday-Saturday span, month names the month — none of
+  // them just repeat "today" once the view has been stepped away from it.
+  function headerLabel(view, iso) {
+    if (view === "week") return weekRangeLabel(iso);
+    if (view === "month") return monthLabel(iso);
+    return dateLabel(iso);
+  }
+
+  // How far one tap of the stepper moves, per view: a day, a Sunday-first
+  // week, or a calendar month.
+  function stepDate(view, iso, dir) {
+    if (view === "week") return addDays(iso, dir * 7);
+    if (view === "month") return addMonths(iso, dir);
+    return addDays(iso, dir);
+  }
+
+  function stepAriaLabel(view, dir) {
+    var unit = view === "week" ? "week" : view === "month" ? "month" : "day";
+    return (dir < 0 ? "Previous " : "Next ") + unit;
   }
 
   // Mirrors ambient-ui.js's own isNight, which this file now supersedes —
@@ -72,7 +143,11 @@
       '<div class="wall-shell">' +
         '<div class="wall-topbar">' +
           '<button class="hamburger-btn icon-btn" aria-label="Menu">&#9776;</button>' +
-          '<div class="wall-topbar-label"></div>' +
+          '<div class="wall-topbar-nav">' +
+            '<button class="topbar-nav-btn icon-btn" id="topbarDatePrev">&#8249;</button>' +
+            '<div class="wall-topbar-label"></div>' +
+            '<button class="topbar-nav-btn icon-btn" id="topbarDateNext">&#8250;</button>' +
+          '</div>' +
           '<div class="sound-indicator" title="Tap anywhere to enable sound">&#128263;</div>' +
           '<div class="wall-clock"></div>' +
           '<button class="refresh-btn icon-btn" aria-label="Refresh now">&#8635;</button>' +
@@ -110,11 +185,20 @@
     var clockEl = shell.querySelector(".wall-clock");
     var dateLabelEl = shell.querySelector("#navDateLabel");
     var viewBtns = shell.querySelectorAll(".sidebar-view-btn");
+    var topbarPrevBtn = shell.querySelector("#topbarDatePrev");
+    var topbarNextBtn = shell.querySelector("#topbarDateNext");
+    var sidebarPrevBtn = shell.querySelector("#navDatePrev");
+    var sidebarNextBtn = shell.querySelector("#navDateNext");
 
     function renderLabel() {
       var viewName = state.view.charAt(0).toUpperCase() + state.view.slice(1);
-      topbarLabel.textContent = viewName + " · " + dateLabel(state.date);
-      dateLabelEl.textContent = dateLabel(state.date);
+      var label = headerLabel(state.view, state.date);
+      topbarLabel.textContent = viewName + " · " + label;
+      dateLabelEl.textContent = label;
+      topbarPrevBtn.setAttribute("aria-label", stepAriaLabel(state.view, -1));
+      topbarNextBtn.setAttribute("aria-label", stepAriaLabel(state.view, 1));
+      sidebarPrevBtn.setAttribute("aria-label", stepAriaLabel(state.view, -1));
+      sidebarNextBtn.setAttribute("aria-label", stepAriaLabel(state.view, 1));
       for (var i = 0; i < viewBtns.length; i++) {
         viewBtns[i].classList.toggle("active", viewBtns[i].dataset.view === state.view);
       }
@@ -182,11 +266,17 @@
       });
     }
 
-    shell.querySelector("#navDatePrev").addEventListener("click", function () {
-      setDate(addDays(state.date, -1));
+    sidebarPrevBtn.addEventListener("click", function () {
+      setDate(stepDate(state.view, state.date, -1));
     });
-    shell.querySelector("#navDateNext").addEventListener("click", function () {
-      setDate(addDays(state.date, 1));
+    sidebarNextBtn.addEventListener("click", function () {
+      setDate(stepDate(state.view, state.date, 1));
+    });
+    topbarPrevBtn.addEventListener("click", function () {
+      setDate(stepDate(state.view, state.date, -1));
+    });
+    topbarNextBtn.addEventListener("click", function () {
+      setDate(stepDate(state.view, state.date, 1));
     });
     shell.querySelector("#navTodayBtn").addEventListener("click", function () {
       setDate(todayLocal());

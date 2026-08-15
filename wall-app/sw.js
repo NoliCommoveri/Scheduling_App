@@ -70,7 +70,13 @@
 // course's activity-type breakdown for the School sheet). app.js wires the
 // "week" nav state to it; wall.css gains the week rows, tokens, and detail
 // sheet styles.
-const CACHE_NAME = "wall-display-shell-v11";
+// v12: nav polish — a prev/next stepper lands directly on the topbar (not
+// only behind the hamburger), and the header names each view on its own
+// terms instead of always showing the anchor date: week shows its
+// Sunday-Saturday span, month shows the month name. Stepping now moves by
+// the active view's own unit (a day, a week, or a calendar month) rather
+// than always by one day. nav-ui.js and wall.css only — no new files.
+const CACHE_NAME = "wall-display-shell-v12";
 
 const APP_SHELL = [
   "./",
