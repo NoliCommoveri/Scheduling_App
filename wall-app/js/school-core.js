@@ -67,10 +67,38 @@
     return Object.keys(seen).sort();
   }
 
+  // §16 Phase 8 (week view) — the School sheet's per-course breakdown.
+  // Distinct from courseRollup (§5.3's checked/resolved rollup): this counts
+  // by `activity_type` label (the same denormalized text packet.js:522
+  // snapshots), not by completion. Order follows first appearance in `rows`
+  // — the week view's own spec says order doesn't matter here.
+  function activityTypeCounts(rows, childId, courseName, date) {
+    var counts = Object.create(null);
+    var order = [];
+    (rows || []).forEach(function (row) {
+      if (row.kind !== "activity" || row.child_id !== childId || row.course_name !== courseName ||
+          row.date !== date || row.rescinded_at != null) return;
+      var type = row.activity_type || "Other";
+      if (!(type in counts)) { counts[type] = 0; order.push(type); }
+      counts[type] += 1;
+    });
+    return order.map(function (type) { return { type: type, count: counts[type] }; });
+  }
+
+  // One entry per course with activities that date, each carrying its type
+  // breakdown — what the School sheet renders once a child is picked.
+  function coursesWithTypeCounts(rows, childId, date) {
+    return coursesWithActivities(rows, childId, date).map(function (courseName) {
+      return { courseName: courseName, typeCounts: activityTypeCounts(rows, childId, courseName, date) };
+    });
+  }
+
   g.SchoolCore = {
     courseRollup: courseRollup,
     memberRollups: memberRollups,
     isCollapsed: isCollapsed,
     coursesWithActivities: coursesWithActivities,
+    activityTypeCounts: activityTypeCounts,
+    coursesWithTypeCounts: coursesWithTypeCounts,
   };
 })(typeof window !== "undefined" ? window : globalThis);

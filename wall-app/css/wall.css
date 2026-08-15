@@ -1484,3 +1484,156 @@ button {
   opacity: 1;
   transform: translate(-50%, 0);
 }
+
+/* ---- week view (§16 Phase 8) — seven day-rows, Sunday-first. Rows rather
+   than the TDS's original columns; .event-row/.event-time/.event-title/
+   .event-span (day-ui.js's events band, above) are reused as-is inside each
+   row's event list rather than duplicated. ---------------------------------- */
+
+.week-view {
+  height: 100%;
+  padding: 0 4vw 2vh;
+}
+
+.week-scroll {
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.week-day-row {
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: 0.75rem 1.25rem;
+  margin-bottom: 0.75rem;
+}
+
+.week-day-row.today {
+  outline: 2px solid var(--accent);
+}
+
+.week-day-header {
+  font-size: 1.2rem;
+  font-weight: 700;
+  margin-bottom: 0.25rem;
+}
+
+.week-day-events {
+  margin-bottom: 0.25rem;
+}
+
+.week-day-tokens {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 0.4rem;
+}
+
+.week-token {
+  min-height: 48px;
+  padding: 0.5rem 1.25rem;
+  font-size: 1rem;
+  font-weight: 600;
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.week-token-chores {
+  background: var(--accent);
+  color: #1a1408;
+}
+
+.week-token-school {
+  background: var(--school-accent);
+  color: #072221;
+}
+
+/* ---- week detail sheet — kid picker, then a read-only list. Reuses
+   .duration-sheet-overlay/.duration-sheet-card verbatim for the modal
+   chrome, the same way the school block sheets do. ------------------------ */
+
+.week-detail-card {
+  width: min(480px, 90vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.week-detail-body {
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.week-kid-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.week-kid-btn {
+  width: 100%;
+}
+
+.week-detail-scroll {
+  text-align: left;
+}
+
+.week-detail-block {
+  margin-bottom: 1rem;
+}
+
+.week-detail-block-header {
+  font-size: 1rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0 0 0.4rem;
+}
+
+.week-detail-chore-list,
+.week-detail-course-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.week-detail-chore-item,
+.week-detail-course-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--panel-2);
+  font-size: 1.05rem;
+}
+
+.week-detail-chore-item:last-child,
+.week-detail-course-item:last-child {
+  border-bottom: none;
+}
+
+.week-detail-stars {
+  color: var(--accent);
+  flex: 0 0 auto;
+  letter-spacing: 0.05em;
+}
+
+.week-detail-course-name {
+  font-weight: 600;
+}
+
+.week-detail-type-counts {
+  color: var(--text-dim);
+  font-size: 0.95rem;
+  text-align: right;
+}
+
+.week-detail-empty {
+  color: var(--text-dim);
+  font-style: italic;
+  padding: 0.5rem 0;
+}

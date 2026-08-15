@@ -593,3 +593,52 @@ test('§14.6a: the membership picker lists exactly that child\'s courses with ac
   ];
   assert.deepEqual(SchoolCore.coursesWithActivities(rows, 'ellie', date), ['Language Arts', 'Math']);
 });
+
+// ==========================================================  week view (§16 Phase 8)
+
+test('difficultyStars: one star per tier number, 0 for no tier or an unparseable one', () => {
+  assert.equal(ChoresCore.difficultyStars({ payload: { difficultyTier: 'D01' } }), 1);
+  assert.equal(ChoresCore.difficultyStars({ payload: { difficultyTier: 'D02' } }), 2);
+  assert.equal(ChoresCore.difficultyStars({ payload: { difficultyTier: 'D12' } }), 12);
+  assert.equal(ChoresCore.difficultyStars({ payload: {} }), 0);
+  assert.equal(ChoresCore.difficultyStars({ payload: { difficultyTier: null } }), 0);
+  assert.equal(ChoresCore.difficultyStars({ payload: { difficultyTier: 'bogus' } }), 0);
+  // payload may arrive as a JSON string, same as every other *-core.js reader
+  assert.equal(ChoresCore.difficultyStars({ payload: '{"difficultyTier":"D03"}' }), 3);
+});
+
+test('activityTypeCounts: counts by activity_type for one child/course/date, first-seen order', () => {
+  const date = '2026-08-15';
+  const rows = [
+    activity('ellie', 'Math', date, 'pending', { activity_type: 'Lesson' }),
+    activity('ellie', 'Math', date, 'complete', { activity_type: 'Lesson' }),
+    activity('ellie', 'Math', date, 'pending', { activity_type: 'Quiz' }),
+    activity('ellie', 'Science', date, 'pending', { activity_type: 'Lesson' }), // different course
+    activity('talia', 'Math', date, 'pending', { activity_type: 'Lesson' }), // different child
+    activity('ellie', 'Math', '2026-08-14', 'pending', { activity_type: 'Lesson' }), // different date
+    activity('ellie', 'Math', date, 'pending', { activity_type: 'Quiz', rescinded_at: 1 }), // rescinded
+  ];
+  assert.deepEqual(
+    SchoolCore.activityTypeCounts(rows, 'ellie', 'Math', date),
+    [{ type: 'Lesson', count: 2 }, { type: 'Quiz', count: 1 }]
+  );
+});
+
+test('activityTypeCounts: a row with no activity_type counts as "Other"', () => {
+  const date = '2026-08-15';
+  const rows = [activity('ellie', 'Math', date, 'pending')];
+  assert.deepEqual(SchoolCore.activityTypeCounts(rows, 'ellie', 'Math', date), [{ type: 'Other', count: 1 }]);
+});
+
+test('coursesWithTypeCounts: one entry per course with activities that date, each carrying its type breakdown', () => {
+  const date = '2026-08-15';
+  const rows = [
+    activity('ellie', 'Math', date, 'pending', { activity_type: 'Lesson' }),
+    activity('ellie', 'Math', date, 'complete', { activity_type: 'Quiz' }),
+    activity('ellie', 'Language Arts', date, 'pending', { activity_type: 'Lesson' }),
+  ];
+  assert.deepEqual(SchoolCore.coursesWithTypeCounts(rows, 'ellie', date), [
+    { courseName: 'Language Arts', typeCounts: [{ type: 'Lesson', count: 1 }] },
+    { courseName: 'Math', typeCounts: [{ type: 'Lesson', count: 1 }, { type: 'Quiz', count: 1 }] },
+  ]);
+});
