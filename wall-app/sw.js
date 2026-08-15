@@ -55,7 +55,12 @@
 // tray header (for "+ School") rather than hiding it when nothing's
 // unplaced; wall.css gains the block chip, the two new sheets, and the
 // always-visible tray's add button.
-const CACHE_NAME = "wall-display-shell-v9";
+// v10: §9 display correction — same-slot chips share the column side by
+// side instead of stacking on top of one another; a third-or-later
+// collapses into a "+N" tile. day-ui.js gains the overlap grouping, the
+// overflow tile and its sheet; wall.css gains the narrowed-chip, overflow
+// tile and overflow-sheet-row styles. No new files.
+const CACHE_NAME = "wall-display-shell-v10";
 
 const APP_SHELL = [
   "./",
