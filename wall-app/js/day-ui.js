@@ -863,6 +863,61 @@
     rerenderNow();
   }
 
+  // ---- overlap overflow sheet (§9 display correction) -----------------------
+  // What the "+N" tile (buildOverflowTile, above) opens: the same-slot
+  // chips beyond the first two, in a plain tappable list. Tapping a row
+  // acts exactly like tapping the chip itself would (`opts.onChipTap`) —
+  // this is a visibility affordance, not a separate interaction surface.
+
+  function showOverflowSheet(items, child, opts) {
+    overflowSheetState = { items: items, child: child, opts: opts };
+    rerenderNow();
+  }
+
+  function closeOverflowSheet() {
+    overflowSheetState = null;
+    rerenderNow();
+  }
+
+  function buildOverflowSheet() {
+    var s = overflowSheetState;
+    var fmt = (g.Store.getSettings().timeFormat) || "24h";
+    var overlay = el(
+      '<div class="duration-sheet-overlay school-picker-overlay">' +
+        '<div class="duration-sheet-card">' +
+          "<h2></h2>" +
+          '<ul class="school-picker-list"></ul>' +
+          '<div class="duration-sheet-actions">' +
+            '<button class="btn" id="overflowDone">Done</button>' +
+          "</div>" +
+        "</div>" +
+      "</div>"
+    );
+    overlay.querySelector("h2").textContent = s.child.name + " — also in this slot";
+    var list = overlay.querySelector(".school-picker-list");
+    s.items.forEach(function (placed) {
+      var row = placed.row;
+      var li = el(
+        '<li class="overflow-sheet-row">' +
+          '<span class="strip-time"></span>' +
+          '<span class="strip-title"></span>' +
+        "</li>"
+      );
+      li.querySelector(".strip-time").textContent = g.TimeCore.formatMinutes(placed.chip.startMin, fmt);
+      li.querySelector(".strip-title").textContent = row.title;
+      li.addEventListener("click", function () {
+        closeOverflowSheet();
+        if (s.opts.onChipTap) s.opts.onChipTap(row, s.child);
+      });
+      list.appendChild(li);
+    });
+    overlay.addEventListener("click", function (ev) {
+      if (ev.target === overlay) closeOverflowSheet();
+    });
+    overlay.querySelector("#overflowDone").addEventListener("click", closeOverflowSheet);
+    currentRoot.appendChild(overlay);
+  }
+
   function toggleMembership(block, courseName, checked) {
     var write = checked
       ? g.WallApi.putSchoolBlockCourse(block.id, courseName)
@@ -1075,24 +1130,107 @@
     return gutter;
   }
 
+  // ---- same-slot overlap (§9 display correction) ---------------------------
+  // findCollisionForDrop/flashCollision above are the WARNING half of §9:
+  // scheduling two private chores onto one slot never gets refused. This is
+  // the display half of the same rule — it must never get HIDDEN either.
+  // Chips that overlap in time share the column side by side instead of
+  // stacking on top of one another; a third (or later) collapses into a
+  // "+N" tile the same footprint as a chip, tapped to see the rest.
+  var MAX_VISIBLE_OVERLAP = 2;
+  var NARROW_CHIP_MIN_H = 60; // px — room for the time on its own line plus a wrapped two-line title
+
+  // Chains overlapping chips the way a calendar packs columns: sorted by
+  // start, a chip joins the running group as long as it starts before the
+  // group's max end so far — so A-B-C where A/B and B/C overlap but A/C
+  // don't still share one slot, since B is genuinely double-booked against
+  // both.
+  function groupOverlappingChips(placed) {
+    var sorted = placed.slice().sort(function (a, b) { return a.topMin - b.topMin; });
+    var groups = [];
+    var group = null, groupEnd = -Infinity;
+    sorted.forEach(function (item) {
+      var end = item.topMin + item.chip.durationMin;
+      if (group && item.topMin < groupEnd) {
+        group.push(item);
+        groupEnd = Math.max(groupEnd, end);
+      } else {
+        group = [item];
+        groups.push(group);
+        groupEnd = end;
+      }
+    });
+    return groups;
+  }
+
+  // Splits a column into `total` equal slots, inset so neighbours keep a
+  // small gap and the outer edges match a lone chip's usual 4px inset.
+  function overlapSlotRect(index, total) {
+    var pct = 100 / total;
+    return {
+      left: "calc(" + (index * pct) + "% + " + (index === 0 ? 4 : 2) + "px)",
+      right: "calc(" + (100 - (index + 1) * pct) + "% + " + (index === total - 1 ? 4 : 2) + "px)",
+    };
+  }
+
+  // The "+N" a cluster's third-and-later chip collapses into. Spans the
+  // group's full time range, since it stands in for all of them, not any
+  // one chip's own start/duration.
+  function buildOverflowTile(group, rangeStart, rh, slots, entry, opts) {
+    var groupTop = Math.min.apply(null, group.map(function (p) { return p.topMin; }));
+    var groupBottom = Math.max.apply(null, group.map(function (p) { return p.topMin + p.chip.durationMin; }));
+    var top = ((groupTop - rangeStart) / ROW_MIN) * rh;
+    var height = Math.max(((groupBottom - groupTop) / ROW_MIN) * rh - 2, NARROW_CHIP_MIN_H);
+    var rest = group.slice(MAX_VISIBLE_OVERLAP);
+    var tile = el(
+      '<div class="day-chip day-chip-overflow">' +
+        '<span class="chip-overflow-count">+' + rest.length + "</span>" +
+      "</div>"
+    );
+    tile.style.top = top + "px";
+    tile.style.height = height + "px";
+    var rect = overlapSlotRect(slots - 1, slots);
+    tile.style.left = rect.left;
+    tile.style.right = rect.right;
+    tile.addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      showOverflowSheet(rest, entry.child, opts);
+    });
+    return tile;
+  }
+
   function buildColumn(entry, rh, rangeStart, opts) {
     var col = el('<div class="day-column"></div>');
-    entry.placed.forEach(function (placed) {
-      var top = ((placed.topMin - rangeStart) / ROW_MIN) * rh;
-      var rows = Math.max(1, Math.ceil(placed.chip.durationMin / ROW_MIN));
-      var chip = el(chipHtml(placed, opts.fmt));
-      chip.style.top = top + "px";
-      chip.style.height = (rows * rh - 2) + "px"; // 2px gap between chips
-      attachGesture(chip, placed.row.title, function () {
-        if (opts.onChipTap) opts.onChipTap(placed.row, entry.child);
-      }, function () {
-        showDurationSheet(placed.row);
-      }, function (startMin) {
-        commitPlacement(placed.row, startMin);
-      }, function () {
-        unplace(placed.row);
+    groupOverlappingChips(entry.placed).forEach(function (group) {
+      var narrow = group.length > 1;
+      var overflowCount = group.length - MAX_VISIBLE_OVERLAP;
+      var slots = overflowCount > 0 ? MAX_VISIBLE_OVERLAP + 1 : group.length;
+      group.slice(0, MAX_VISIBLE_OVERLAP).forEach(function (placed, i) {
+        var top = ((placed.topMin - rangeStart) / ROW_MIN) * rh;
+        var rows = Math.max(1, Math.ceil(placed.chip.durationMin / ROW_MIN));
+        var height = rows * rh - 2; // 2px gap between chips
+        var chip = el(chipHtml(placed, opts.fmt));
+        chip.style.top = top + "px";
+        if (narrow) {
+          chip.classList.add("day-chip-narrow");
+          height = Math.max(height, NARROW_CHIP_MIN_H);
+          var rect = overlapSlotRect(i, slots);
+          chip.style.left = rect.left;
+          chip.style.right = rect.right;
+        }
+        chip.style.height = height + "px";
+        attachGesture(chip, placed.row.title, function () {
+          if (opts.onChipTap) opts.onChipTap(placed.row, entry.child);
+        }, function () {
+          showDurationSheet(placed.row);
+        }, function (startMin) {
+          commitPlacement(placed.row, startMin);
+        }, function () {
+          unplace(placed.row);
+        });
+        col.appendChild(chip);
       });
-      col.appendChild(chip);
+      if (overflowCount > 0) col.appendChild(buildOverflowTile(group, rangeStart, rh, slots, entry, opts));
     });
     (entry.blocks || []).forEach(function (be) {
       var top = ((be.topMin - rangeStart) / ROW_MIN) * rh;
@@ -1358,6 +1496,7 @@
   var sheetState = null; // duration-adjust sheet: {row, value} while open, or null (§16 Phase 5b)
   var blockSheetState = null; // school block span/label sheet: {block, value, label} while open, or null (§16 Phase 7)
   var membershipSheetState = null; // school block membership picker: {block} while open, or null (§16 Phase 7)
+  var overflowSheetState = null; // same-slot overflow list: {items, child, opts} while open, or null (§9 display correction)
 
   function setMode(mode) {
     dayMode = mode;
@@ -1396,6 +1535,7 @@
     if ((isNewDate || isNewMode) && sheetState) sheetState = null;
     if ((isNewDate || isNewMode) && blockSheetState) blockSheetState = null;
     if ((isNewDate || isNewMode) && membershipSheetState) membershipSheetState = null;
+    if ((isNewDate || isNewMode) && overflowSheetState) overflowSheetState = null;
 
     root.innerHTML = "";
 
@@ -1441,6 +1581,7 @@
     if (sheetState) buildDurationSheet();
     if (blockSheetState) buildBlockSheet();
     if (membershipSheetState) buildMembershipSheet();
+    if (overflowSheetState) buildOverflowSheet();
 
     var rh = rowHeightPx();
     if (result.body) {
@@ -1495,6 +1636,7 @@
     sheetState = null;
     blockSheetState = null;
     membershipSheetState = null;
+    overflowSheetState = null;
   }
 
   g.DayUi = { render: render, stop: stop };
