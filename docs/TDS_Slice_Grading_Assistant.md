@@ -2,7 +2,7 @@
 
 ## Scope: Grading Assistant — photo capture, AI-proposed grades, tunable per-course rubrics, and a mechanics-error record for remediation
 
-**Date:** 2026-08-15 · **Status:** authored for build, pending §11 confirmation.
+**Date:** 2026-08-15 · **Status:** §11.1 confirmed 2026-08-15; building Phase 3. §11.2–5 remain open, none blocking.
 
 **Applies to:** Child App (capture), Worker (grading route, rubric resolution, mechanics
 filter), Management App (rubric authoring, review surface, remediation report). Three
@@ -367,11 +367,12 @@ Accepted by implication rather than by explicit statement; §11.1.
 
 ## 11. Open items
 
-1. **Retention and privacy, stated explicitly.** Raised twice in-session; accepted by
-   implication rather than answered. Before phase 3 spends a cent, Ray should say plainly
-   whether he accepts children's handwriting going to the Anthropic API, and whether
-   captured photos should be deleted from R2 after a proposal is accepted (a one-line
-   change now, a migration later).
+1. **Retention and privacy — resolved 2026-08-15, before Phase 3 build began.** Ray
+   confirmed plainly: children's handwriting going to the Anthropic API is accepted.
+   Captured photos are **kept indefinitely in R2 for now** — no deletion-on-accept logic
+   in Phase 3 or Phase 5; revisit as a migration later if retention becomes a concern.
+   This closes the item raised twice in-session that §10 required answered before any
+   spend.
 2. **The 20-page accuracy test is unrun.** No longer a gate, but it is the tuning corpus
    for phase 3's prompt. See `Grading_Assistant_Pre_Build_Test.md`. Running it before
    phase 3 rather than after would save a tuning round.

@@ -162,6 +162,39 @@ need it again in step 6, and on every new device.
 
 ---
 
+## 5. Grading Assistant: R2 bucket and API key
+
+Two dashboard steps, needed only once the Grading Assistant's Phase 3 build lands
+(`docs/TDS_Slice_Grading_Assistant.md`). Skip this section if that feature isn't in use yet —
+`wrangler.toml`'s R2 binding simply resolves once the bucket exists, same as D1 did in step 1.
+
+**5a. Create the R2 bucket.** Dashboard → **R2 Object Storage → Create bucket**, name it exactly
+`grading-media` (matches `wrangler.toml`'s `bucket_name`), default settings otherwise. This is
+where captured worksheet photos and parent-uploaded answer keys live — never in the repo, never
+public (§4 of the TDS).
+
+**5b. Set the model API key.** Under **Settings → Variables and Secrets → Add**, same place as
+`SYNC_TOKEN` above:
+
+| Field | Value |
+|---|---|
+| Type | **Secret** (not Text) |
+| Name | `ANTHROPIC_API_KEY` |
+| Value | an API key from the Anthropic Console |
+
+Same rule as `SYNC_TOKEN`: secrets only take effect on a deploy made *after* they're added, and
+the value isn't viewable again once saved — keep a copy somewhere safe before moving on.
+
+> **This is the one place this project spends money beyond Cloudflare's free tier.** Model
+> inference is metered — estimated ~$7–11/month at ~240 worksheets a month (`CLAUDE.md` §0, a
+> narrowing scoped to this milestone only). Cloudflare Workers, D1, and R2 stay free-tier
+> regardless.
+
+Until both the bucket and the key exist, `/api/grading/*` routes return a 500 naming whichever is
+missing — same fail-closed shape as `SYNC_TOKEN` above, not a broken deploy.
+
+---
+
 ## Part B — deploying
 
 Do this after steps 1–3, then come back and do step 4. The first deploy will
