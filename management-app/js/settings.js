@@ -96,6 +96,81 @@ const Settings = (() => {
     // Placed after the sync panel because it reuses that panel's token.
     root.appendChild(buildSection('Database', Migrations.renderPanel));
     root.appendChild(buildSection('Devices', Devices.render));
+    root.appendChild(buildSection('Grading defaults', renderGradingDefaultsForm));
+  }
+
+  // Grading Assistant §2.1 — the household layer of the three-layer rubric
+  // (§2's householdDefaults → course.gradingRubric → resolved rubric).
+  // Values/labels mirror worker/grading-core.js's RUBRIC_DEFAULTS; duplicated
+  // here (not imported) because worker/ is never served as a public asset,
+  // so this browser app cannot reach it. Keep in sync if §2.1 changes.
+  const GRADING_RUBRIC_DEFAULTS = {
+    spelling: 'listOnly',
+    grammar: 'off',
+    paraphraseTolerance: 'normal',
+    partialCredit: true,
+    houseRules: '',
+  };
+
+  // Unlike a Course's override (courses.js buildGradingRubricFieldset), this
+  // layer has no further fallback to leave a field on, so every field always
+  // resolves to a concrete value and the saved record is never sparse.
+  function renderGradingDefaultsForm(root) {
+    root.innerHTML = `
+      <p>Applies to every Course that does not set its own override
+         (Courses → Edit Course → Grading rubric).</p>
+      <form>
+        <label>Spelling<select name="spelling">
+          <option value="off">Off</option>
+          <option value="listOnly">Common words only</option>
+          <option value="all">All misspellings</option>
+        </select></label>
+        <label>Grammar<select name="grammar">
+          <option value="off">Off</option>
+          <option value="on">On</option>
+        </select></label>
+        <label>Paraphrase tolerance<select name="paraphraseTolerance">
+          <option value="strict">Strict</option>
+          <option value="normal">Normal</option>
+          <option value="generous">Generous</option>
+        </select></label>
+        <label>Partial credit<select name="partialCredit">
+          <option value="true">Yes — partial credit counts as half</option>
+          <option value="false">No — partial credit counts as incorrect</option>
+        </select></label>
+        <label>House rules<textarea name="houseRules" rows="2" placeholder="Appended verbatim to every grading prompt, unless a Course overrides it."></textarea></label>
+        <p class="error" hidden></p>
+        <p class="success" hidden></p>
+        <button type="submit">Save</button>
+      </form>
+    `;
+    const form = root.querySelector('form');
+    const errorEl = form.querySelector('.error');
+    const successEl = form.querySelector('.success');
+
+    Storage.get('meta', 'gradingDefaults').then((stored) => {
+      const r = { ...GRADING_RUBRIC_DEFAULTS, ...(stored || {}) };
+      form.spelling.value = r.spelling;
+      form.grammar.value = r.grammar;
+      form.paraphraseTolerance.value = r.paraphraseTolerance;
+      form.partialCredit.value = String(r.partialCredit);
+      form.houseRules.value = r.houseRules;
+    });
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errorEl.hidden = true;
+      successEl.hidden = true;
+      await Storage.put('meta', {
+        spelling: form.spelling.value,
+        grammar: form.grammar.value,
+        paraphraseTolerance: form.paraphraseTolerance.value,
+        partialCredit: form.partialCredit.value === 'true',
+        houseRules: form.houseRules.value.trim(),
+      }, 'gradingDefaults');
+      successEl.hidden = false;
+      successEl.textContent = 'Saved.';
+    });
   }
 
   // Collapsed-by-default <details> bucket per Settings section — same

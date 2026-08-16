@@ -372,10 +372,12 @@ test('pickCourseSettingsToCopy copies configuration fields but never name, cours
     id: 'COU-1', name: 'Math 5', courseCode: 'MATH5', state: 'template',
     curriculumId: 'CUR-1', subject: 'Math', coreElective: 'core', description: 'desc',
     defaultPacingHint: 'hint', titlePatterns: { video: '{lesson}' },
+    gradingRubric: { spelling: 'all' }, gradingModel: 'claude-opus-5',
   };
   assert.deepEqual(RecipeCore.pickCourseSettingsToCopy(course), {
     curriculumId: 'CUR-1', subject: 'Math', coreElective: 'core', description: 'desc',
     defaultPacingHint: 'hint', titlePatterns: { video: '{lesson}' },
+    gradingRubric: { spelling: 'all' }, gradingModel: 'claude-opus-5',
   });
 });
 
