@@ -667,6 +667,58 @@ day.
 Block ordering in §12.5 stays key-first regardless. It costs nothing, and it is what makes
 the same-day case cacheable at all.
 
+### 12.5.2 The answer key is the cost, and it may not need to be whole
+
+Measured against a real course, `MIAPHYSCI6` (66 lessons, imported from the CSV Ray
+supplied 2026-08-16):
+
+| | |
+|---|---|
+| `pdf` activities — the graded assignments | **158** |
+| `pdf` activities per lesson | 2 (×34), 3 (×11), 4 (×12), 1 (×9); mean 2.4 |
+| Workbook pages per assignment | mean 5.2, range 1–14 |
+| L03 "Matter Transformed" | four assignments — pp. 43–47, 48–51, 52–53, 54–55 |
+| L03's answer key | 23 pages, 2.3 MB, 249 image XObjects, 65 embedded JPEGs |
+
+The key is **image-heavy**, so it bills near the top of the per-PDF-page range, and at ~23
+pages it is roughly **three-quarters of every grading request** — against ~3 photographed
+pages at ~4,784 tokens each. It is then re-sent on each of that lesson's 2–4 assignments,
+uncacheably (§12.5.1).
+
+So the single largest lever in this feature is not the cache, the model, or the effort
+level. It is **how much of the answer key each call carries**.
+
+**The span is already known.** Correcting §12.11's fourth item: `pageRangeStart` /
+`pageRangeEnd` ride the course-import CSV and are persisted on the activity record for any
+Activity Type with `structurePattern: 'page-range'` — which `pdf` activities are. The
+Worker's `resolveGradingContext` already loads that activity. Every grading call therefore
+knows the workbook pages its assignment covers, today, with no schema change.
+
+**What is not known is the mapping.** L03's 23 key pages cover 13 workbook pages
+(43–55), so answer-key page *n* is not workbook page *43 + n − 1*. Determining the
+relationship needs the key's internal structure read page by page, which this session could
+not do — the container has no PDF renderer and `pypdf` would not install. Until someone
+reads one, every option below rests on an unverified assumption.
+
+Three ways forward, none yet chosen:
+
+| Option | Effect | Cost |
+|---|---|---|
+| **A. Answer keys per `pdf` activity** rather than per lesson | Removes the problem outright — no mapping, no slicing, no over-sent pages, and §12.5's "the key covers more than the assignment" bound becomes unnecessary | Ray splits each key PDF by activity: 158 uploads for this course rather than 66. §4.2's matcher already places files by title, and "Day 2" / "Day 3" are in both the CSV and the filenames |
+| **B. Per-lesson key + a stored page offset + Worker-side slicing** | Same token saving, one upload per lesson as today | Needs a PDF library bundled into the Worker, breaking the "no npm runtime dependencies" property `index.js`'s Phase 3 header claims; and needs the mapping to be regular enough for one integer offset to describe |
+| **C. Change nothing** | — | ~$0.15 per assignment, ~$24 per course per child at introductory pricing |
+
+**A is the recommendation**, on grounds beyond cost: it is the only option that also
+deletes the phantom-items risk in §12.5 and the review-surface pollution that follows from
+it, and it needs no new dependency and no heuristic. Its cost is Ray's labour, once per
+course, in whatever tool splits the PDF — which is a real cost and his to weigh.
+
+**Before any of this is chosen, measure rather than estimate.** The per-page PDF token
+figures above are inferred from the file's structure, not observed.
+`POST /v1/messages/count_tokens` against one real answer key returns the exact number, is
+free, and needs no grading call. It should be the first thing done, because every figure in
+§12.8 scales off it.
+
 **What is *not* recoverable.** The key is re-sent, and re-billed, on each of the up-to-four
 assignments per lesson. The Messages API is stateless and the Files API changes only how
 bytes reach the request, not whether their tokens are charged — a `file_id` reference is
@@ -724,34 +776,39 @@ check 4 below.
 worksheets**. That figure assumes one page per worksheet. It does not survive this
 amendment, and the narrowing was authorized against the number.
 
-**The answer key, not the photos, is now the dominant term.** A key covers a whole lesson
-and is re-sent on each of the up-to-four assignments that lesson splits into (§12.5.1),
-uncacheable across days. Per assignment, with a lesson key of ~8 PDF pages and ~3
-photographed pages:
+**The answer key, not the photos, is the dominant term** — see §12.5.2 for the measured
+course data behind this. A key covers a whole lesson and is re-sent on each of that
+lesson's 2–4 assignments (§12.5.1), uncacheably across days. Per assignment, with L03's
+real 23-page image-heavy key and ~3 photographed pages:
 
 | Component | Tokens | Note |
 |---|---|---|
-| Answer key PDF | ~12–24K | Whole lesson. Charged again on each assignment. |
+| Answer key PDF | ~35–70K | 23 pages, image-heavy. Charged again on each assignment of the lesson. |
 | Photographed pages | ~14K | ~4,784 per page at 2576px; read-only pages are never sent. |
 | Rubric, context, instruction | <1K | |
 | Output | ~2K | Bounded by `max_tokens: 8000`. |
 
-≈30–40K input, ~2K output → roughly **$0.08–0.10 per assignment** on Sonnet 5 at
-introductory pricing, and **$0.11–0.14** once that ends on 2026-08-31. A course on the
-`claude-opus-5` override runs roughly 2.5× that.
+≈65K input, ~2K output → roughly **$0.15 per assignment** on Sonnet 5 at introductory
+pricing, **~$0.22** once that ends on 2026-08-31. A course on the `claude-opus-5` override
+runs roughly 2.5× that.
 
-**The monthly total depends on a number this slice does not have.** §0's authorization was
-quoted at "~240 worksheets"; with a lesson splitting into up to four assignments, the
-billable unit is the *assignment*, and nobody has stated how many of those a month is.
-At 240 assignments it is **~$19–24/month** rising to ~$30 after 2026-08-31; at 240
-*lessons* — four assignments each — it is four times that. Ray should supply the figure he
-had in mind before this is authorized, because the two readings differ by 4×.
+**Per course, per child: ~158 assignments → ~$24**, or ~$35 after 2026-08-31. Multiply by
+courses run concurrently and by children. Spread over a nine-month year, one course is
+~18 assignments/month; §0's "~240 worksheets" would be roughly six courses' worth of
+assignments, at **~$16–24/month** — against the $7–11 that figure was quoted with.
 
-Three things move the number, in descending order of leverage: **dropping the 1-hour cache
-TTL** (§12.5.1) takes ~0.75–1× the key's cost off every call and is free; **fewer, larger
-assignments per lesson** cuts key re-sends proportionally and is a pacing decision, not a
-code one; **`effort: 'medium'`** is already the cost-disciplined setting and should not be
-raised without re-running this table.
+**These are estimates, and one measurement replaces them all.** The per-PDF-page token
+figures are inferred from the file's structure, not observed.
+`POST /v1/messages/count_tokens` against one real answer key is free, needs no grading
+call, and pins the largest term in the table. Do it before authorizing anything.
+
+Four things move the number, in descending order of leverage: **sending only the relevant
+answer-key pages** (§12.5.2) cuts ~80% off the dominant term and is worth more than
+everything below combined; **dropping the 1-hour cache TTL** (§12.5.1) removes a 2×
+write premium that never pays out, and is free; **fewer, larger assignments per lesson**
+cuts key re-sends proportionally and is a pacing decision, not a code one; and
+**`effort: 'medium'`** is already the cost-disciplined setting and should not be raised
+without re-running this table.
 
 For contrast, the **shipped** per-page behaviour costs considerably more than this
 amendment does — it re-sends the whole lesson key on *every photographed page* rather than
@@ -831,12 +888,16 @@ single scope per session, in order.
 3. **§11.2's accuracy test is still unrun**, and is now more valuable than when it was
    written: multi-page grading is exactly where item numbering and cross-page
    continuation can go wrong, and none of it is unit-testable.
-4. **Nothing tells the model *which part* of the lesson this assignment is.** The photos
-   are the only signal, and §12.5's bound relies on the model reading them faithfully. If
-   phantom items show up in review despite that bound, the fix is to name the assignment's
-   span in the lesson-context block — which the Management App does not currently record,
-   so it is a schema question, not a prompt tweak. Left open deliberately: the prompt bound
-   is worth trying first, since it costs nothing and the alternative costs a field.
+4. **~~Nothing tells the model which part of the lesson this assignment is.~~ Corrected
+   2026-08-16 — the data exists.** This item originally claimed the assignment's page span
+   was unrecorded and that naming it would be a schema question. It is recorded:
+   `pageRangeStart` / `pageRangeEnd` arrive on the course-import CSV and are persisted on
+   the activity record by `courses.js` `createActivity` and `instances.js`
+   `createInstanceActivity`, for any Activity Type whose `structurePattern` is
+   `page-range` — which is what `pdf` activities are. `resolveGradingContext` already loads
+   that activity. Naming the span in the lesson-context block is therefore a prompt change
+   against data already in hand, and should be done alongside §12.5's bound rather than
+   held back as a fallback. See §12.5.2 for the larger thing this unlocks.
 5. **Do same-day assignments of one lesson occur?** §12.5.1's choice between the 5-minute
    TTL and no caching at all turns on this, and only Ray can answer it. Neither option is
    wrong; the 5-minute default is the safe one under uncertainty.
