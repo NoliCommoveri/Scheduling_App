@@ -6,6 +6,10 @@
 route had shipped in Phase 1 with no screen calling it; answer keys key to the *instance*
 Lesson, decided the same day. The bulk screen (§4.2) followed the same day, over the same
 three routes — a course's Lessons keyed from one page instead of one drill-down each.
+**§12 drafted 2026-08-16 and not built:** the slice assumed one page per assignment and
+real assignments are 2–8, so the shipped build silently replaces page 1's proposal with
+page 2's. §12 amends §1.1, §4, §5 and §6 for multi-page capture and a composite grade, and
+is blocked on the §12.9 `CLAUDE.md` amendment and the §12.8 cost re-authorization.
 
 **Applies to:** Child App (capture), Worker (grading route, rubric resolution, mechanics
 filter), Management App (rubric authoring, review surface, remediation report). Three
@@ -19,6 +23,10 @@ per-Course override pattern, reused verbatim here for rubrics).
 **Repeals nothing.** This slice adds two tables, one field on the Course record, one R2
 bucket, and four routes. It changes no existing column's ownership and no existing
 route's contract.
+
+*(The second sentence held until §12. Column **ownership** is still untouched there — the
+grader writes only its own two tables — but §12 changes `POST /api/grading/page`'s shape
+and `grading_reviews.photo_key`'s meaning. See §12.1.)*
 
 ---
 
@@ -457,3 +465,380 @@ Accepted by implication rather than by explicit statement; §11.1.
    problem and should not be enabled on a course until tested separately.
 5. **Re-grade policy.** §1.1 says a re-grade replaces the row. If you later want grading
    history per assignment, that is a second table, not a change to this one.
+
+---
+
+## 12. Multi-page assignments — amendment, 2026-08-16
+
+**Status:** drafted, not built. Requires the `CLAUDE.md` amendment in §12.9 and the cost
+re-authorization in §12.8 before any code.
+
+### 12.0 What this corrects
+
+The slice was designed around one photograph per assignment. §5 names the route
+`POST /api/grading/page`, §4 keys a single R2 object at `pages/{assignment_id}`, §1.1
+makes `assignment_id` the primary key of `grading_reviews`, and §6's prompt carries
+exactly one image. Every one of those is internally consistent, and all of them assume a
+fact that is not true of this household: **an assignment is 2–8 pages**, most often a
+multi-page PDF activity type.
+
+Two further facts, established the same day and load-bearing for §12.5 and §12.5.1: an
+answer key is scoped to a **lesson**, and a lesson is split into **up to four assignments
+on different days**; and within an assignment, some pages are read-only and are never
+photographed. The photographs are therefore always a subset of what the key answers, and
+the key is re-sent on each of the four assignments.
+
+The shipped build does not fail on the second page. It silently replaces the first:
+`MEDIA.put` writes the same key, and `saveGradingOutcome`'s
+`ON CONFLICT (assignment_id) DO UPDATE` rewrites every column of the row. The parent's
+review queue then shows a `proposed_score` for whichever page was photographed last,
+presented as the assignment's grade. `mechanics_findings` is append-only and *does*
+accumulate across pages, so the remediation report looks correct while the grade beside it
+is not — which is what makes this worth writing down rather than treating as an obvious
+bug.
+
+[DECISION] Ray, in-session 2026-08-16.
+**Decided:** an assignment is captured and graded as a whole. Every page goes up in one
+request and produces one composite proposal.
+**Rationale:** it is the only shape that yields a grade for the thing the parent actually
+accepts. It also grades better — the model sees the full worksheet against the full key,
+so continued items and back-references resolve — and it sends the answer key once per
+assignment instead of once per page, which is the single largest cost lever in the feature
+(§12.8).
+**Locked for:** the Grading Assistant milestone.
+
+### 12.1 What this repeals
+
+The slice's opening claim — *"It changes no existing column's ownership and no existing
+route's contract"* — is no longer true of the second half. Column **ownership** is still
+untouched: the grader still writes only its own two tables, and §0.1 stands unchanged. But
+`POST /api/grading/page` changes shape, `grading_reviews.photo_key` changes meaning, and
+§6's prompt contract gains a page dimension. Recorded here rather than quietly amended in
+place.
+
+Nothing about §0.1 (never writes `assignments.grade`), §0.2 (no new credential class),
+§0.3/§0.4 (mechanics as a separate axis, recorded regardless of counting), §0.5 (word list
+as post-filter), or §0.7 (online-required, nothing queued) changes.
+
+### 12.2 Schema
+
+One migration, `migrations/0014_grading_page_count.sql`, registered in
+`management-app/worker/migrations.js` in the same commit per `CLAUDE.md` §III.D.
+
+```sql
+ALTER TABLE grading_reviews ADD COLUMN page_count INTEGER NOT NULL DEFAULT 1;
+```
+
+`grading_reviews` stays **one row per assignment** — that is what makes the score
+composite, and it is why the table needs a column rather than a child table. `items` is
+already JSON and already holds the whole array; it now spans pages (§12.5).
+
+`photo_key` changes meaning from *an object key* to *a prefix*. Pages are stored at
+`pages/{assignment_id}/{n}`, `n` 1-based in capture order, and `page_count` says how many
+exist. §4's table is amended accordingly.
+
+**Legacy rows.** Any row written before this ships has `page_count = 1` and a flat object
+at `pages/{assignment_id}` with no `/1` suffix. The photo-serving route
+(`GET /api/grading/review/:id/photo`) resolves `pages/{id}/{n}`, then falls back to
+`pages/{id}` when `n = 1` and the prefixed object is absent. This fallback exists only to
+keep already-captured work visible; it can be deleted once Ray confirms no live rows
+predate the change, and the deletion is a code change with no migration.
+
+**No deletion of superseded pages.** A re-grade overwrites `pages/{id}/1..n` and, when the
+new set is shorter, leaves orphans above the new `page_count`. Consistent with §11.1 —
+photos are kept indefinitely for now — and the orphans are unreachable, since every read
+is bounded by `page_count`.
+
+### 12.3 Re-grade is whole-set
+
+[DECISION] Ray, in-session 2026-08-16.
+**Decided:** a re-grade re-shoots every page. There is no single-page re-shoot.
+**Rationale:** §1.1's existing rule — a proposal is a draft with no ledger property to
+protect — extended without modification. Per-page re-shoot would require page-level
+proposal state, which is the second table §11.5 already rules out, to solve a problem the
+parent's override already solves. Ray's stated preference is to teach good captures and
+override the rest.
+**Locked for:** the Grading Assistant milestone.
+
+### 12.4 Routes
+
+| Route | Change |
+|---|---|
+| `POST /api/grading/pages` | **Replaces** `POST /api/grading/page`. Takes `multipart/form-data`, one file part per page, in page order. `?assignmentId=` unchanged. Device token, online-required — §0.2 and §0.7 unchanged. |
+| `GET /api/grading/review/:assignmentId` | Response gains `pageCount`. Existing fields unchanged. |
+| `GET /api/grading/review/:id/photo` | Gains a `?page=n` parameter, defaulting to 1. `SYNC_TOKEN` only, unchanged. |
+
+`multipart/form-data` rather than a JSON array of base64 strings: the upload leg stays raw
+bytes instead of paying a 33% encoding tax twice, `request.formData()` is native to
+Workers, and the Child App needs no build step to produce it (`CLAUDE.md` §0).
+
+The route is renamed rather than extended because the singular name is now actively
+misleading, and both ends of the contract are ours and deploy together. The old path is
+**not** kept as an alias — a device pinned to it would silently keep single-page
+behaviour, which is exactly the failure this amendment exists to remove.
+
+### 12.5 Prompt contract — amends §6
+
+Block ordering, with the cache breakpoint in the same place:
+
+```
+1. Answer key PDF          ← stable per lesson
+2. Resolved rubric text    ← stable per course
+3. Lesson / course context ← stable per lesson
+   ──── cache breakpoint, 1h TTL ────
+4. Page 1 image
+5. Page 2 image
+   … through page N, in capture order
+N+4. Output instruction
+```
+
+The cached prefix is unchanged and is now sent **once per assignment** rather than once
+per page.
+
+`GRADING_OUTPUT_SCHEMA` gains a `page` integer on each item — 1-based, matching the image
+order. Without it a wrong verdict cannot be traced back to the page it came from, which is
+the same diagnostic argument §6 already makes for requiring `transcription`. `items` order
+remains item order across the whole assignment; `page` is attribution, not ordering.
+
+`GRADING_OUTPUT_INSTRUCTION` changes "Grade every item on the page" to name the set: every
+item across all pages of the assignment, in the order given, numbering continuously and
+recording each item's page. Items continued across a page break are one item, graded once.
+
+**The key covers more than the assignment, and the instruction must say so.** Two facts,
+both from Ray in-session 2026-08-16: an answer key is scoped to a whole **lesson** (§4),
+while a lesson is split into **up to four assignments on different days**; and within an
+assignment, some pages are read-only and are never photographed. So the photos are always
+a *subset* of what the key answers — often a small one — and that is the normal case, not
+a degraded one.
+
+The instruction therefore bounds the graded set to what is visible: grade only items the
+child's photographs actually show, transcribing from the photo in every case; do not
+produce an item for anything the key covers but the photos do not; and do not treat a
+key item's absence from the photos as unattempted work.
+
+This matters more than it looks. Without the bound the model emits verdicts for the whole
+lesson's items on every one of the four assignments. `BLANK` is excluded from
+`normalizeScore`'s denominator (§8), so the *number* survives — which is exactly why this
+would not announce itself. What breaks is the review surface: the parent opens one day's
+assignment and finds it listing items from the other three days, and `mechanics_findings`
+accrues rows for work that was never photographed, quietly poisoning the remediation
+report §0.4 exists to feed.
+
+`normalizeScore` (`grading-core.js`) needs **no change** — it already folds an array of
+items against the rubric, and a longer array from more pages is the composite score by
+construction. Stated explicitly so nobody adds per-page averaging, which would weight a
+2-item page equally with a 20-item one.
+
+### 12.5.1 The 1-hour cache no longer pays — and currently costs
+
+§6 set `cache_control` with a 1-hour TTL on the third block, reasoning that "a household
+grading three children's copies of one lesson in a sitting pays full price once and
+roughly a tenth of it twice more." Three facts established 2026-08-16 each independently
+remove that sitting:
+
+1. **Siblings do not overlap.** The second child reaches a lesson roughly a year later
+   (which is also why §12's grade-level text in block 2 is safe to leave alone — by then
+   the label matches).
+2. **A lesson splits across days.** Up to four assignments, on different days. No TTL the
+   API offers spans a day, let alone four.
+3. **Batching removes the within-assignment repeat.** §12's whole point is that an
+   assignment is now one call, not one per page — which is the last case that was landing
+   inside the hour.
+
+So the cached prefix is written and, in ordinary use, never read. That is not neutral:
+a 1-hour cache write bills at **2×** normal input rate, against **1.25×** for the
+5-minute tier and **1×** for not caching at all. On the largest input in the request —
+a whole lesson's answer key — the shipped setting is paying double for insurance that
+cannot pay out.
+
+[DECISION] Pending Ray.
+**Proposed:** drop to the **5-minute default** (`cache_control: { type: 'ephemeral' }`,
+no `ttl`) rather than removing `cache_control` entirely.
+**Rationale:** 5-minute is cheaper than 1-hour at every call count, and unlike removal it
+still pays out in the one case that survives — two assignments of the same lesson landing
+on the same day and graded back to back, which the "up to four" split does not forbid. The
+premium if that never happens is 0.25× on the key; the saving when it does is 0.9×. Buying
+the option is worth more than the premium.
+**Alternative, if same-day pairs never occur in practice:** remove `cache_control`
+altogether for a flat 1× on every call. This is the strictly cheapest option under Ray's
+stated pattern and should be taken if he confirms assignments of one lesson never share a
+day.
+
+Block ordering in §12.5 stays key-first regardless. It costs nothing, and it is what makes
+the same-day case cacheable at all.
+
+**What is *not* recoverable.** The key is re-sent, and re-billed, on each of the up-to-four
+assignments per lesson. The Messages API is stateless and the Files API changes only how
+bytes reach the request, not whether their tokens are charged — a `file_id` reference is
+billed as input on every call exactly as inlined base64 is. Prompt caching is the only
+mechanism that would avoid it, and no available TTL reaches across days. Recorded so no
+future session re-derives this and reaches for the Files API expecting a saving.
+
+### 12.6 Capture, sizing, and the guards
+
+The Child App resizes each page to **2576px on the long edge** before upload, JPEG quality
+0.8, via canvas. This is not a quality measure — it is the resolution Claude downscales to
+on arrival regardless, so anything larger is upload time and request budget spent on
+pixels the model never sees. A page lands at roughly 400–800 KB.
+
+Per Ray, in-session 2026-08-16: **no capture-quality assistance beyond the resize** — no
+blur detection, no framing guides, no re-shoot prompting. Children are taught to take good
+photos; the parent overrides what comes out wrong. Do not add it later without asking.
+
+The size guards are corrected in the same change, because the shipped ones count the wrong
+thing. `MAX_GRADING_PHOTO_BYTES` (15 MB) and `MAX_ANSWER_KEY_BYTES` (20 MB) are each
+enforced alone, but the Anthropic request carries **both, base64-encoded**: 35 MB of file
+becomes ~47 MB on the wire, against a 32 MB request cap. Today's limits therefore already
+permit a single-page request the API rejects — it has not bitten only because real phone
+photos and answer-key PDFs are far smaller. Replacing them:
+
+| Guard | Value | Why |
+|---|---|---|
+| `MAX_GRADING_PAGES` | 12 | Above the 8-page worst case with headroom; bounds the request before any byte is read. |
+| `MAX_GRADING_PHOTO_BYTES` | 4 MB | Per page, post-resize. A resized page is well under; this catches a client that skipped the resize. |
+| `MAX_ANSWER_KEY_BYTES` | 12 MB | Lowered from 20 MB so a maximal key can never alone exhaust the budget. |
+| `MAX_GRADING_REQUEST_BYTES` | 20 MB | **New, and the one that matters**: answer-key bytes + summed page bytes, checked at grading time once the key is fetched. 20 MB raw is ~27 MB encoded, leaving margin under 32 MB for prompt text and JSON overhead. |
+
+The combined check returns 413 naming which side is over, so "shrink the answer key PDF"
+and "fewer pages" are distinguishable to the parent. The Child App's existing 413 copy
+(`child-app/js/grading-core.js:81`, "That photo is too big") is per-photo and needs a
+second message for the combined case.
+
+### 12.7 Tests
+
+`tests/` covers pure layers only (`CLAUDE.md` §I.B), so the batched call itself stays
+covered by acceptance checks. Added to the existing grading suites:
+
+1. **Score normalization across pages** — items drawn from several pages fold to one
+   score; `BLANK`/`UNSURE` still leave the denominator; a page contributing no items does
+   not change the result.
+2. **Page attribution** — items carry the page they came from, and the count of distinct
+   pages never exceeds `page_count`.
+
+The resize is DOM-bound (canvas) and is not unit-testable under this rule; it is acceptance
+check 4 below.
+
+### 12.8 Cost — re-authorization required
+
+`CLAUDE.md` §0 narrows "free tier only" for this milestone at **~$7–11/month at ~240
+worksheets**. That figure assumes one page per worksheet. It does not survive this
+amendment, and the narrowing was authorized against the number.
+
+**The answer key, not the photos, is now the dominant term.** A key covers a whole lesson
+and is re-sent on each of the up-to-four assignments that lesson splits into (§12.5.1),
+uncacheable across days. Per assignment, with a lesson key of ~8 PDF pages and ~3
+photographed pages:
+
+| Component | Tokens | Note |
+|---|---|---|
+| Answer key PDF | ~12–24K | Whole lesson. Charged again on each assignment. |
+| Photographed pages | ~14K | ~4,784 per page at 2576px; read-only pages are never sent. |
+| Rubric, context, instruction | <1K | |
+| Output | ~2K | Bounded by `max_tokens: 8000`. |
+
+≈30–40K input, ~2K output → roughly **$0.08–0.10 per assignment** on Sonnet 5 at
+introductory pricing, and **$0.11–0.14** once that ends on 2026-08-31. A course on the
+`claude-opus-5` override runs roughly 2.5× that.
+
+**The monthly total depends on a number this slice does not have.** §0's authorization was
+quoted at "~240 worksheets"; with a lesson splitting into up to four assignments, the
+billable unit is the *assignment*, and nobody has stated how many of those a month is.
+At 240 assignments it is **~$19–24/month** rising to ~$30 after 2026-08-31; at 240
+*lessons* — four assignments each — it is four times that. Ray should supply the figure he
+had in mind before this is authorized, because the two readings differ by 4×.
+
+Three things move the number, in descending order of leverage: **dropping the 1-hour cache
+TTL** (§12.5.1) takes ~0.75–1× the key's cost off every call and is free; **fewer, larger
+assignments per lesson** cuts key re-sends proportionally and is a pacing decision, not a
+code one; **`effort: 'medium'`** is already the cost-disciplined setting and should not be
+raised without re-running this table.
+
+For contrast, the **shipped** per-page behaviour costs considerably more than this
+amendment does — it re-sends the whole lesson key on *every photographed page* rather than
+once per assignment, so a 3-page assignment pays for the key three times while still
+producing a wrong grade. This change reduces spend against what is deployed today; it
+increases it against the figure Ray was quoted. Both statements need to be in front of him.
+
+**This is a §V.A halt.** Not because the money is large, but because §0's narrowing names
+a figure and this triples it.
+
+### 12.9 `CLAUDE.md` amendment required — v2.8
+
+Smaller than v2.5's, and of a kind already established rather than a new departure:
+
+- **§0's "Free tier only" row** — the `~$7–11/month` estimate is restated for multi-page
+  assignments, per §12.8. The narrowing itself is unchanged and still milestone-scoped.
+- **§I.A's Data Flow cell** — `POST /api/grading/page` becomes `POST /api/grading/pages`,
+  and `GET /api/grading/review/:id/photo` gains its `?page=` parameter. Restated in the
+  same breath that this widens nothing on `assignments`: the grading call still touches no
+  `assignments` column, and the §I.A exception for the parent's accept/override is
+  unchanged in scope.
+- **§VII's Grading Assistant row** — a pointer to this section.
+
+No new narrowing of §III.A, §III.E, or the column-ownership rule is sought or implied.
+
+### 12.10 Phasing
+
+| Phase | Scope | Contents | Est. |
+|---|---|---|---|
+| **A** | Worker | Migration 0014 + registry; `photo_key` as prefix; `POST /api/grading/pages` (multipart, N images, batched call); output schema gains `page`; corrected size guards | ~2.5h |
+| **B** | Worker + Management App | `?page=` on the photo route; review surface renders all pages of a proposal | ~1.5h |
+| **C** | Child App | Multi-select capture, canvas resize to 2576px, one submit for the set | ~2h |
+| **D** | — | Acceptance checks below, on a real 5+ page assignment | ~1h |
+
+~7 hours. Each phase leaves the system working; A alone fixes the wrong grade, and C is
+what makes the capture usable. Per `CLAUDE.md` §V.A this exceeds one session — declare a
+single scope per session, in order.
+
+### Acceptance checks
+
+1. A 5-page assignment produces **one** `grading_reviews` row with `page_count = 5`, and
+   `proposed_score` reflects items from every page. Verified by direct read.
+2. Five R2 objects exist at `pages/{id}/1` … `/5`; none at the flat `pages/{id}`.
+3. `assignments.grade` is unchanged by `POST /api/grading/pages`. Direct read — §9's
+   check 3, re-run against the new route.
+4. Every uploaded page is ≤ 2576px on its long edge, taken from a phone camera that shot
+   larger.
+5. A 13-page submit is rejected 413 before any model call is made — no spend.
+6. An answer key plus pages summing over `MAX_GRADING_REQUEST_BYTES` is rejected 413
+   naming which side is over, before any model call.
+7. A re-grade of a 5-page assignment with 3 pages leaves `page_count = 3`, and the review
+   surface shows 3 pages.
+8. A legacy single-page row written before this change still renders its photo.
+9. An assignment covering part of a lesson produces **no items for the pages it did not
+   photograph** — not `BLANK` ones, not any. Verified on a lesson whose key answers
+   markedly more than the assignment's photos show, by reading `items` directly.
+10. The same assignment writes no `mechanics_findings` rows attributable to unphotographed
+    work — the count matches what appears in the transcriptions.
+11. **Replaces §9's check 6, which no longer describes reachable behaviour.** With the
+    5-minute TTL of §12.5.1: two assignments of one lesson graded back to back on the same
+    day show `usage.cache_read_input_tokens > 0` on the second. Two graded on *different*
+    days show a cache write and no read — expected, and the reason the 1-hour tier was
+    dropped. If §12.5.1's alternative is taken and `cache_control` is removed, this check
+    becomes "neither call reports cache activity" instead.
+12. A device token is still 401 on the parent routes and a `SYNC_TOKEN` still 401 on
+    `POST /api/grading/pages`.
+
+### 12.11 Open items
+
+1. **Page order is capture order, and nothing verifies it.** If a child photographs page 3
+   before page 2, items are attributed to the wrong pages and any answer-key alignment
+   that depends on order degrades. Deliberately unhandled per §12.6 — flagged so the
+   symptom is recognisable if it shows up in review.
+2. **The 32 MB cap is inferred, not measured.** `MAX_GRADING_REQUEST_BYTES` is set with
+   margin rather than tuned. If a 12-page assignment with a large key ever 413s in normal
+   use, raise the cap before lowering the page limit.
+3. **§11.2's accuracy test is still unrun**, and is now more valuable than when it was
+   written: multi-page grading is exactly where item numbering and cross-page
+   continuation can go wrong, and none of it is unit-testable.
+4. **Nothing tells the model *which part* of the lesson this assignment is.** The photos
+   are the only signal, and §12.5's bound relies on the model reading them faithfully. If
+   phantom items show up in review despite that bound, the fix is to name the assignment's
+   span in the lesson-context block — which the Management App does not currently record,
+   so it is a schema question, not a prompt tweak. Left open deliberately: the prompt bound
+   is worth trying first, since it costs nothing and the alternative costs a field.
+5. **Do same-day assignments of one lesson occur?** §12.5.1's choice between the 5-minute
+   TTL and no caching at all turns on this, and only Ray can answer it. Neither option is
+   wrong; the 5-minute default is the safe one under uncertainty.
+6. **The billable-unit ambiguity in §12.8** — 240 worksheets, or 240 assignments? — must be
+   resolved before the cost is re-authorized. It is a 4× spread.
