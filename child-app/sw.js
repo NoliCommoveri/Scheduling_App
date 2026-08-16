@@ -105,7 +105,12 @@
 // the device.
 // v17: Grading Assistant Phase 6 adds the capture UI (grading-core.js,
 // grading.js) to the shell.
-const CACHE_NAME = "daily-plan-shell-v17";
+// v18: Grading Assistant §12 Phase C — multi-page capture. No file added or
+// removed; grading-core.js, grading.js and planner-ui.js changed contents.
+// A device left on v17 would keep POSTing to /api/grading/page, the route
+// §12 Phase A renamed without an alias — every capture attempt would 404
+// with no working fallback, not merely miss the new pages-list UI.
+const CACHE_NAME = "daily-plan-shell-v18";
 
 const APP_SHELL = [
   "./",
