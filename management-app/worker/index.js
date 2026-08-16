@@ -254,6 +254,17 @@ async function routeApi(request, env, ctx, url) {
   if (pathname === '/api/grading/keys' && method === 'POST') {
     return withParent(request, env, () => handleGradingKeyUpload(request, env, url));
   }
+  // The two routes the upload had no browser path without. §4's table said
+  // answer keys are "written by: Management App upload" from the start, but no
+  // phase built the screen, so POST above was reachable only with curl — which
+  // §0's no-CLI rule does not allow. A screen needs to say whether a key is
+  // already there and be able to take one away again; these answer that.
+  if (pathname === '/api/grading/keys' && method === 'GET') {
+    return withParent(request, env, () => handleGradingKeyList(env, url));
+  }
+  if (pathname === '/api/grading/keys' && method === 'DELETE') {
+    return withParent(request, env, () => handleGradingKeyDelete(env, url));
+  }
 
   // ---- Grading Assistant (Grading_Assistant §9, Phase 5) — parent only ----
   //
@@ -2453,6 +2464,16 @@ async function handleMessagesRead(request, env) {
 // — never in the tree, never public (§4). Not multipart: the whole request
 // body is the file, `lessonId` rides the query string the way a placement's
 // `childId` rides it on the wall's DELETE routes elsewhere in this file.
+//
+// `lessonId` is the *instance* lesson's id — the one `stampCourse` mints per
+// instance (instances.js:107), which is also what resolveGradingContext reads
+// off the activity when it fetches the key. Do not "fix" this to the template
+// lesson id to save an upload: a key belongs to the year it was taught in, and
+// curriculum editions change between years, so one template-wide key would
+// quietly serve last year's answers to this year's child. Ray's call,
+// in-session 2026-08-16. The cost is real and accepted: two children on the
+// same course in the same year need the same PDF uploaded twice, and each gets
+// its own §6 cache prefix rather than sharing one.
 async function handleGradingKeyUpload(request, env, url) {
   if (!env.MEDIA) {
     return json({ error: 'R2 binding "MEDIA" is not configured on this Worker.' }, 500);
@@ -2477,6 +2498,85 @@ async function handleGradingKeyUpload(request, env, url) {
   const key = `keys/${lessonId}`;
   await env.MEDIA.put(key, bytes, { httpMetadata: { contentType: 'application/pdf' } });
   return json({ ok: true, key });
+}
+
+// Which lessons already have an answer key. One request per screen, not one
+// per lesson: the caller is a lesson list, and a course of thirty lessons
+// would otherwise be thirty round trips to render one page of badges.
+//
+// Two shapes, because the honest answer differs. Given `lessonId` parameters
+// this heads each one — exact, whatever the bucket holds, which a prefix
+// listing cannot promise once a household owns more keys than one list page
+// returns. Given none it falls back to listing the prefix and says so with
+// `truncated`, since there is nothing to be exact against.
+//
+// The PDFs themselves are never returned here — only that a key exists, how
+// big it is, and when it landed. Nothing on the parent's screen needs to read
+// an answer key back, and not serving one keeps this route uninteresting if
+// the `SYNC_TOKEN` ever leaks.
+const MAX_ANSWER_KEY_LIST = 1000;
+const MAX_ANSWER_KEY_PROBE = 200; // one course's lessons, with room to spare
+
+async function handleGradingKeyList(env, url) {
+  if (!env.MEDIA) {
+    return json({ error: 'R2 binding "MEDIA" is not configured on this Worker.' }, 500);
+  }
+
+  // Asked-about vs. askable: a caller that named lessons gets the exact-probe
+  // branch even if every name it sent was malformed. Falling through to the
+  // listing branch there would answer a narrow question with the whole bucket,
+  // and the caller would read keys it never asked about as its own.
+  const named = url.searchParams.getAll('lessonId');
+  const wanted = named.filter(isValidLessonId);
+  if (named.length > MAX_ANSWER_KEY_PROBE) {
+    return json({ error: `At most ${MAX_ANSWER_KEY_PROBE} lessonId parameters per request.` }, 413);
+  }
+
+  if (named.length > 0) {
+    const found = await Promise.all(wanted.map(async (lessonId) => {
+      const head = await env.MEDIA.head(`keys/${lessonId}`);
+      if (!head) return null;
+      return { lessonId, size: head.size, uploadedAt: head.uploaded ? new Date(head.uploaded).getTime() : null };
+    }));
+    return json({ keys: found.filter(Boolean), truncated: false });
+  }
+
+  const listing = await env.MEDIA.list({ prefix: 'keys/', limit: MAX_ANSWER_KEY_LIST });
+  const keys = [];
+  for (const object of listing.objects) {
+    const lessonId = object.key.slice('keys/'.length);
+    if (!lessonId) continue;
+    keys.push({
+      lessonId,
+      size: object.size,
+      uploadedAt: object.uploaded ? new Date(object.uploaded).getTime() : null,
+    });
+  }
+
+  // The same admission the reviews and remediation routes already make: the
+  // caller is told the list is short rather than being left to read a missing
+  // badge as "no key uploaded".
+  return json({ keys, truncated: Boolean(listing.truncated) });
+}
+
+// Removing a key is a real need rather than a symmetry: an answer key uploaded
+// against the wrong lesson is otherwise permanent, and re-uploading the right
+// PDF fixes the right lesson while leaving the wrong one still armed. Deleting
+// one never touches a `grading_reviews` row — a proposal already made keeps its
+// score, items and transcriptions (§1.1); only future gradings of this lesson
+// are affected, which is what a parent removing a key is asking for.
+async function handleGradingKeyDelete(env, url) {
+  if (!env.MEDIA) {
+    return json({ error: 'R2 binding "MEDIA" is not configured on this Worker.' }, 500);
+  }
+
+  const lessonId = url.searchParams.get('lessonId');
+  if (!isValidLessonId(lessonId)) {
+    return json({ error: 'A lessonId query parameter is required.' }, 400);
+  }
+
+  await env.MEDIA.delete(`keys/${lessonId}`);
+  return json({ ok: true });
 }
 
 // ============================================================================

@@ -2,7 +2,9 @@
 
 ## Scope: Grading Assistant — photo capture, AI-proposed grades, tunable per-course rubrics, and a mechanics-error record for remediation
 
-**Date:** 2026-08-15 · **Status:** §11.1 confirmed 2026-08-15; Phases 1–7 shipped. §0.7 corrected 2026-08-16 (no offline photo queue — see `CLAUDE.md` v2.6). Phase 7 also built the §5 `GET /api/grading/remediation` route, which Phase 3 had not — see §9's note. §11.2–5 remain open, none blocking.
+**Date:** 2026-08-15 · **Status:** §11.1 confirmed 2026-08-15; Phases 1–7 shipped. §0.7 corrected 2026-08-16 (no offline photo queue — see `CLAUDE.md` v2.6). Phase 7 also built the §5 `GET /api/grading/remediation` route, which Phase 3 had not — see §9's note. §11.2–5 remain open, none blocking. Answer key upload built 2026-08-16 (§4, §5) — the
+route had shipped in Phase 1 with no screen calling it; answer keys key to the *instance*
+Lesson, decided the same day.
 
 **Applies to:** Child App (capture), Worker (grading route, rubric resolution, mechanics
 filter), Management App (rubric authoring, review surface, remediation report). Three
@@ -206,7 +208,17 @@ R2 bucket `grading-media`, bound in `wrangler.toml` as `MEDIA`. Free tier: 10 GB
 | Prefix | Contents | Written by |
 |---|---|---|
 | `pages/{assignment_id}` | Captured worksheet photo | Child device, via the Worker |
-| `keys/{lesson_id}` | Answer key PDF | Management App upload |
+| `keys/{lesson_id}` | Answer key PDF | Management App upload — Assigned Courses → the Course → the Lesson |
+
+**`lesson_id` here is the *instance* Lesson's id, not the template's.** [DECISION] Ray,
+in-session 2026-08-16. `stampCourse` mints fresh lesson ids per instance
+(`instances.js:107`), and `resolveGradingContext` reads the key off the activity's own
+lesson, so a key uploaded here belongs to one child's run of one course. That is the
+intent, not an oversight: curriculum editions change between years, and a template-wide
+key would quietly serve last year's answers to this year's child. The cost is accepted —
+two children on the same course in the same year need the same PDF uploaded twice, and
+each gets its own §6 cache prefix rather than sharing one. Do not "fix" this to
+`sourceTemplateId`'s lesson to recover the shared prefix.
 
 **Neither prefix is ever public.** `wrangler.toml` sets `[assets] directory = "./"`, so
 anything in the repo is world-downloadable — which is why answer keys must live in R2 and
@@ -221,15 +233,30 @@ from GitHub. No CLI step, per §0.
 
 ## 5. Worker routes
 
-All four take a device token and derive `child_id` from it (§0.2). No route accepts a
-`childId` in the body.
+Two credential groups. **The child's tablet uses the first two; the parent uses the rest**,
+and the Worker rejects the wrong credential on each. On the device routes the Worker
+derives `child_id` from the token (§0.2) and **no route accepts a `childId` in the body**.
+On the parent routes the lesson or assignment is named in the path or query as it is on
+every other `SYNC_TOKEN` route, that token being full-scope by definition.
+
+*(This paragraph opened "All four take a device token" until 2026-08-16, while the table
+under it already listed two as `SYNC_TOKEN` — a contradiction the shipped Worker never
+had. The review surface's three routes in §9 were always parent-authenticated too.)*
 
 | Route | Purpose |
 |---|---|
 | `POST /api/grading/page` | Upload a photo, create the `grading_reviews` row, run the grading call, return the proposal. Online-required. |
 | `GET /api/grading/review/:assignmentId` | Read back a proposal. |
 | `POST /api/grading/keys` | Parent uploads an answer key PDF for a lesson. `SYNC_TOKEN` only. |
+| `GET /api/grading/keys` | Which lessons have a key — id, size, upload time. Never the PDF itself. `SYNC_TOKEN` only. |
+| `DELETE /api/grading/keys` | Parent removes a lesson's key. `SYNC_TOKEN` only. |
 | `GET /api/grading/remediation` | Aggregated `mechanics_findings` for a child. `SYNC_TOKEN` only. |
+
+The two key-management routes were added 2026-08-16, alongside the screen that calls them.
+`POST` had shipped in Phase 1 with nothing in any app calling it, which left the "written
+by: Management App upload" in §4's table true only of curl — the one thing `CLAUDE.md` §0
+says is never acceptable. A screen has to say whether a key is already there and be able
+to take a wrong one away again; these answer that, and neither returns a stored PDF.
 
 A `SYNC_TOKEN` on a device route and a device token on a parent route are both 401, the
 same cross-credential property §III.E requires of the wall routes.
