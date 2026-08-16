@@ -8,8 +8,9 @@ Lesson, decided the same day. The bulk screen (§4.2) followed the same day, ove
 three routes — a course's Lessons keyed from one page instead of one drill-down each.
 **§12 drafted 2026-08-16 and not built:** the slice assumed one page per assignment and
 real assignments are 2–8, so the shipped build silently replaces page 1's proposal with
-page 2's. §12 amends §1.1, §4, §5 and §6 for multi-page capture and a composite grade, and
-is blocked on the §12.9 `CLAUDE.md` amendment and the §12.8 cost re-authorization.
+page 2's. §12 amends §1.1, §4, §5 and §6 for multi-page capture and a composite grade.
+**Both gates it was blocked on have cleared** — Ray re-authorized the §12.8 cost and the
+§12.9 `CLAUDE.md` amendment landed as v2.8, same day. §12 is cleared to build.
 §12.5.3 additionally moves answer keys from PDF documents to text on the activity record
 where the answers are text — a ~10× cut on what turns out to be three quarters of every
 request. Transcription is done by Ray in a Claude Project on his own subscription, not by
@@ -476,8 +477,16 @@ Accepted by implication rather than by explicit statement; §11.1.
 
 ## 12. Multi-page assignments — amendment, 2026-08-16
 
-**Status:** drafted, not built. Requires the `CLAUDE.md` amendment in §12.9 and the cost
-re-authorization in §12.8 before any code.
+**Status:** drafted, not built, **cleared to build**. The two gates this section originally
+named — the §12.9 `CLAUDE.md` amendment and the §12.8 cost re-authorization — both cleared
+2026-08-16: Ray authorized ~$17/month against the measured volume, and the amendment shipped
+as `CLAUDE.md` v2.8. A session reaching this line should not halt for either.
+
+**Nothing built from this slice reaches real use until every phase in §12.10 is complete**
+(Ray, in-session 2026-08-16). Two things follow, and both are already reflected below: no
+intermediate phase can produce a wrong grade a parent acts on, and no intermediate phase
+bills at the PDF-key rate §12.8 prices at ~$46/month — the cost that matters is the
+end-state one, after phase E lands text keys.
 
 ### 12.0 What this corrects
 
@@ -543,12 +552,18 @@ already JSON and already holds the whole array; it now spans pages (§12.5).
 `pages/{assignment_id}/{n}`, `n` 1-based in capture order, and `page_count` says how many
 exist. §4's table is amended accordingly.
 
-**Legacy rows.** Any row written before this ships has `page_count = 1` and a flat object
-at `pages/{assignment_id}` with no `/1` suffix. The photo-serving route
-(`GET /api/grading/review/:id/photo`) resolves `pages/{id}/{n}`, then falls back to
-`pages/{id}` when `n = 1` and the prefixed object is absent. This fallback exists only to
-keep already-captured work visible; it can be deleted once Ray confirms no live rows
-predate the change, and the deletion is a code change with no migration.
+**Legacy rows — do not build the fallback.** An earlier draft of this section specified a
+compatibility path: rows written before this ships have `page_count = 1` and a flat object
+at `pages/{assignment_id}` with no `/1` suffix, so `GET /api/grading/review/:id/photo`
+would resolve `pages/{id}/{n}` and fall back to `pages/{id}` when `n = 1`. **That fallback
+is cancelled.** It existed only to keep already-captured work visible, and Ray confirmed
+in-session 2026-08-16 that nothing from this slice reaches real use until every §12.10
+phase is complete — so there will be no captured work predating the change, and no row to
+keep visible. The photo route resolves `pages/{id}/{n}` only. Acceptance check 8 is struck
+for the same reason.
+
+Any row that somehow does predate it is a development artifact: re-shoot the assignment
+(§12.3 makes a re-grade whole-set anyway) rather than reviving the fallback.
 
 **No deletion of superseded pages.** A re-grade overwrites `pages/{id}/1..n` and, when the
 new set is shorter, leaves orphans above the new `page_count`. Consistent with §11.1 —
@@ -787,6 +802,11 @@ nothing else.
 it puts the person who owns the curriculum in the loop by construction rather than by a
 review screen built to force it.
 **Locked for:** the Grading Assistant milestone.
+
+**The procedure itself is `Answer_Key_Transcription_Guide.md`** — the Project's custom
+instructions, the per-lesson message, the output format, what to do with each kind of flag it
+returns, and the §11.2 test run. It is a document rather than a section here because it is
+operated rather than implemented; nothing in the build reads it.
 
 An earlier draft of this section specified `POST /api/grading/keys/transcribe` — a
 `SYNC_TOKEN` route that would read the PDF from R2, call the model, and return text
@@ -1054,7 +1074,9 @@ rather than this section's reasoning.
    naming which side is over, before any model call.
 7. A re-grade of a 5-page assignment with 3 pages leaves `page_count = 3`, and the review
    surface shows 3 pages.
-8. A legacy single-page row written before this change still renders its photo.
+8. ~~A legacy single-page row written before this change still renders its photo.~~
+   **Struck 2026-08-16** — nothing from this slice is in real use before §12.10 completes,
+   so no legacy row exists to render and §12.2's fallback is cancelled rather than tested.
 9. An assignment covering part of a lesson produces **no items for the pages it did not
    photograph** — not `BLANK` ones, not any. Verified on a lesson whose key answers
    markedly more than the assignment's photos show, by reading `items` directly.
