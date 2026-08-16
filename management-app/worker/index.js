@@ -2730,10 +2730,14 @@ function bufferToBase64(buffer) {
 }
 
 // §2/§3 — walks assignment → activity → lesson → course to resolve the
-// rubric and lesson context a grading call needs. Returns either
-// `{ error: Response }` for the caller to return as-is, or the resolved
-// context — kept as one function because every step depends on the last and
-// none of it is useful half-resolved.
+// rubric and lesson context a grading call needs. §12.5.3 — also resolves
+// the answer key's text layer here, since `activity` and `lesson` are
+// already loaded: `answerKeyText` wins at the activity layer, falls to the
+// lesson layer, and null means "no text resolved — the caller falls through
+// to the PDF at `keys/{lessonId}`." Returns either `{ error: Response }` for
+// the caller to return as-is, or the resolved context — kept as one function
+// because every step depends on the last and none of it is useful
+// half-resolved.
 async function resolveGradingContext(env, assignment) {
   if (assignment.kind !== 'activity' || !assignment.source_id) {
     return { error: json({ error: 'Grading is only available for lesson activities.' }, 400) };
@@ -2767,16 +2771,25 @@ async function resolveGradingContext(env, assignment) {
 
   const model = course.gradingModel === GRADING_MODEL_OVERRIDE ? GRADING_MODEL_OVERRIDE : GRADING_MODEL_DEFAULT;
 
-  return { lessonId: activity.lessonId, course, rubric, gradeLabel, model };
+  // §12.5.3 — three-layer resolution, PDF at the bottom. A blank string is
+  // treated as absent so an emptied textarea falls through rather than
+  // sending nothing to the model.
+  const activityKeyText = typeof activity.answerKeyText === 'string' ? activity.answerKeyText.trim() : '';
+  const lessonKeyText = typeof lesson.answerKeyText === 'string' ? lesson.answerKeyText.trim() : '';
+  const answerKeyText = activityKeyText || lessonKeyText || null;
+
+  return { lessonId: activity.lessonId, course, rubric, gradeLabel, model, answerKeyText };
 }
 
-// The Anthropic call. §6/§12.5's block ordering is load-bearing for the
-// cache: the answer key, the resolved rubric, and the lesson context are
-// byte-identical for every child doing this lesson, so the breakpoint sits
-// after the third block — a household grading three children's copies of one
-// lesson in a sitting pays full price once and roughly a tenth of it twice
-// more. §12.5.1 leaves the 1h TTL exactly as it is (Phase E removes it); not
-// touched here.
+// The Anthropic call. §12.5.3 (Phase E) — block 1 is `text` when
+// `answerKeyText` resolved at the activity or lesson layer, and `document`
+// (the original PDF) only when neither did; nothing else in §6/§12.5's block
+// ordering changes. `cache_control` is removed entirely, also per §12.5.3:
+// with a text key the cached prefix falls to ~1-2K tokens, where the write
+// premium outweighs a read that mostly never lands anyway (§12.5.1 — a
+// lesson splits across up to four assignments on different days, no TTL the
+// API offers spans that), and a PDF-key fallback assignment is rare enough
+// not to reintroduce the cache for.
 //
 // §12.0/§12.5 — one call per assignment, not one per page: every photographed
 // page is appended as its own image block, in capture order, after the
@@ -2790,7 +2803,10 @@ async function resolveGradingContext(env, assignment) {
 // parse simply fails) rather than corrupting a grade. Effort `medium` is the
 // other half of the same cost discipline this feature exists under (§0's
 // narrowed free-tier row, CLAUDE.md §0).
-async function callGradingModel(env, { model, answerKeyBase64, rubricPromptText, lessonContextText, pages }) {
+async function callGradingModel(env, { model, answerKeyText, answerKeyBase64, rubricPromptText, lessonContextText, pages }) {
+  const answerKeyBlock = answerKeyText
+    ? { type: 'text', text: answerKeyText }
+    : { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: answerKeyBase64 } };
   const body = {
     model,
     max_tokens: 8000,
@@ -2799,9 +2815,9 @@ async function callGradingModel(env, { model, answerKeyBase64, rubricPromptText,
       {
         role: 'user',
         content: [
-          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: answerKeyBase64 } },
+          answerKeyBlock,
           { type: 'text', text: rubricPromptText },
-          { type: 'text', text: lessonContextText, cache_control: { type: 'ephemeral', ttl: '1h' } },
+          { type: 'text', text: lessonContextText },
           ...pages.map((page) => ({
             type: 'image',
             source: { type: 'base64', media_type: page.contentType, data: page.base64 },
@@ -2940,24 +2956,35 @@ async function handleGradingPagesCapture(request, env, actor, url) {
 
   const context = await resolveGradingContext(env, assignment);
   if (context.error) return context.error;
-  const { lessonId, course, rubric, gradeLabel, model } = context;
+  const { lessonId, course, rubric, gradeLabel, model, answerKeyText } = context;
 
-  // §12.6's combined guard needs the key's size before deciding whether to
-  // proceed at all; `.head()` gets that without downloading the PDF body for
-  // a request that is about to be rejected anyway.
-  const keyHead = await env.MEDIA.head(`keys/${lessonId}`);
-  if (!keyHead) {
-    return json({ error: 'No answer key has been uploaded for this lesson yet. Ask a parent to add one.' }, 422);
+  // §12.5.3 — text resolved (activity or lesson layer) skips R2 entirely: no
+  // `.head()`, no `.get()`, no PDF ever enters the request. Only when
+  // neither layer has text does this fall through to the original PDF path
+  // below, unchanged.
+  let answerKeyBase64 = null;
+  let answerKeySize;
+  if (answerKeyText) {
+    answerKeySize = new TextEncoder().encode(answerKeyText).length;
+  } else {
+    // §12.6's combined guard needs the key's size before deciding whether to
+    // proceed at all; `.head()` gets that without downloading the PDF body
+    // for a request that is about to be rejected anyway.
+    const keyHead = await env.MEDIA.head(`keys/${lessonId}`);
+    if (!keyHead) {
+      return json({ error: 'No answer key has been uploaded for this lesson yet. Ask a parent to add one.' }, 422);
+    }
+    answerKeySize = keyHead.size;
   }
 
   const totalPageBytes = pageFiles.reduce((sum, file) => sum + file.size, 0);
-  const totalRequestBytes = keyHead.size + totalPageBytes;
+  const totalRequestBytes = answerKeySize + totalPageBytes;
   if (totalRequestBytes > MAX_GRADING_REQUEST_BYTES) {
     // §12.6 — name whichever side is the larger contributor, so "shrink the
     // answer key PDF" and "fewer pages" are distinguishable to the parent.
-    const keyIsLarger = keyHead.size >= totalPageBytes;
+    const keyIsLarger = answerKeySize >= totalPageBytes;
     return json({
-      error: `Grading request too large: answer key is ${keyHead.size} bytes, photographed pages total ` +
+      error: `Grading request too large: answer key is ${answerKeySize} bytes, photographed pages total ` +
         `${totalPageBytes} bytes, combined limit is ${MAX_GRADING_REQUEST_BYTES} bytes. ` +
         (keyIsLarger
           ? 'The answer key is the larger contributor — ask a parent to shrink the answer key PDF.'
@@ -2965,11 +2992,13 @@ async function handleGradingPagesCapture(request, env, actor, url) {
     }, 413);
   }
 
-  const keyObject = await env.MEDIA.get(`keys/${lessonId}`);
-  if (!keyObject) {
-    return json({ error: 'No answer key has been uploaded for this lesson yet. Ask a parent to add one.' }, 422);
+  if (!answerKeyText) {
+    const keyObject = await env.MEDIA.get(`keys/${lessonId}`);
+    if (!keyObject) {
+      return json({ error: 'No answer key has been uploaded for this lesson yet. Ask a parent to add one.' }, 422);
+    }
+    answerKeyBase64 = bufferToBase64(await keyObject.arrayBuffer());
   }
-  const answerKeyBase64 = bufferToBase64(await keyObject.arrayBuffer());
 
   const pageBytesList = await Promise.all(pageFiles.map((file) => file.arrayBuffer()));
   const photoKeyPrefix = `pages/${assignmentId}`;
@@ -2993,7 +3022,7 @@ async function handleGradingPagesCapture(request, env, actor, url) {
 
   let apiResponse;
   try {
-    apiResponse = await callGradingModel(env, { model, answerKeyBase64, rubricPromptText, lessonContextText, pages });
+    apiResponse = await callGradingModel(env, { model, answerKeyText, answerKeyBase64, rubricPromptText, lessonContextText, pages });
   } catch (err) {
     await failOutcome();
     return json({ error: `Could not reach the grading service: ${String((err && err.message) || err)}` }, 502);
