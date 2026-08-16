@@ -1,6 +1,6 @@
 # CLAUDE.md – Build Session Guardrails
 
-**Version:** 2.6  
+**Version:** 2.7  
 **Project:** Homeschool Curriculum & Chore Scheduling System  
 **Last Updated:** 2026-08-16  
 
@@ -23,7 +23,7 @@ This document defines hard constraints, verification rituals, and decision gates
 | **Ray has no CLI.** | No step — deploy, schema, backup, recovery — may require a terminal. Anything that would be a `wrangler` command must be a button in a browser. See TDS_Online_Revamp §3.7. |
 | **D1 is the system of record.** | IndexedDB on both devices is a cache plus an outbox. Never the truth. |
 | **The parent token never goes on a child device.** | It grants a whole-database snapshot. Child devices use scoped, revocable device tokens; the wall tablet uses a household-scoped **wall token** restricted to `/api/wall/*`. A tablet on the kitchen wall is a child device for this purpose. |
-| **Column-level ownership is enforced server-side.** | Parent-owned and child-owned columns are disjoint. This is what makes the design conflict-free. Never let a client decide what it may write. **No credential class widens this** — the wall token names *which child* it acts for, never *what may be written*. The case that tested it and held: the Wall App adjusts how long a thing takes by writing an override in a table it owns, **never** by writing the parent-owned `expected_duration_min` (`TDS_Slice_Wall_Calendar_Redesign.md` §3.5.1). When a requirement seems to need a client writing someone else's column, build it beside the rule, not through it. |
+| **Column-level ownership is enforced server-side.** | Parent-owned and child-owned columns are disjoint. This is what makes the design conflict-free. Never let a client decide what it may write. **No credential class widens this** — the wall token names *which child* it acts for, never *what may be written*. The case that tested it and held: the Wall App adjusts how long a thing takes by writing an override in a table it owns, **never** by writing the parent-owned `expected_duration_min` (`TDS_Slice_Wall_Calendar_Redesign.md` §3.5.1). When a requirement seems to need a client writing someone else's column, build it beside the rule, not through it. **One shipped exception, recorded rather than authorized:** the Grading Assistant's parent accept/override reaches the child-owned `grade`. It is bounded to that one column and that one route — read §I.A before treating it as precedent for anything. |
 | **Vanilla JS, no build step — in the two browser apps.** | The Worker is bundled by Wrangler and always has been. That is not a violation. |
 | **Free tier only.** | Cloudflare Workers + D1 free tier. No paid services, no billing surprises. **Narrowed for the Grading Assistant milestone only** — model inference is metered, estimated ~$7–11/month at ~240 worksheets. Cloudflare infrastructure (Workers, D1, R2) stays free-tier. Authorized by Ray in-session, 2026-08-15. This narrowing does not generalise to other services — see §VII. |
 
@@ -40,7 +40,7 @@ Three applications, one shared database, no shared runtime code:
 | **Folder** | `child-app/` | `management-app/` | `wall-app/` |
 | **Scope** | Child UI: plan, complete, rewards, streak | Parent/admin UI: curriculum, pacing, assignment, reporting | Shared family calendar: day/week/month views, chores placed on a 15-minute grid, school blocks, completion |
 | **Runtime Code Sharing** | **FORBIDDEN** | **FORBIDDEN** | **FORBIDDEN** |
-| **Data Flow** | ← `GET /api/plan` · `POST /api/completions` · `POST /api/grading/page` · `GET /api/grading/review/:assignmentId` → | → `POST /api/assignments` · `GET /api/assignments` · `POST /api/grading/keys` · `GET /api/grading/remediation` ← | ← `GET /api/wall/children` · `GET /api/wall/plan` · `GET /api/wall/events` · `GET/PUT/DELETE /api/wall/slots` · `PUT/DELETE /api/wall/slots/day` · `GET/POST /api/wall/school-blocks` · `PUT/DELETE /api/wall/school-blocks/:id` · `PUT/DELETE /api/wall/school-blocks/:id/courses` · `POST /api/wall/completions` → |
+| **Data Flow** | ← `GET /api/plan` · `POST /api/completions` · `POST /api/grading/page` · `GET /api/grading/review/:assignmentId` → | → `POST /api/assignments` · `GET /api/assignments` · `POST/GET/DELETE /api/grading/keys` · `GET /api/grading/reviews` · `GET /api/grading/review/:id/photo` · `POST /api/grading/review/:id/decision` · `GET /api/grading/remediation` ← | ← `GET /api/wall/children` · `GET /api/wall/plan` · `GET /api/wall/events` · `GET/PUT/DELETE /api/wall/slots` · `PUT/DELETE /api/wall/slots/day` · `GET/POST /api/wall/school-blocks` · `PUT/DELETE /api/wall/school-blocks/:id` · `PUT/DELETE /api/wall/school-blocks/:id/courses` · `POST /api/wall/completions` → |
 | **Credential** | Scoped device token (per child) | `SYNC_TOKEN` (parent) | Household-scoped **wall token** (`devices.scope = 'wall'`) |
 
 The Wall App **reads** the active-child roster, chores, events, and — read-only, for school blocks —
@@ -60,15 +60,30 @@ It mirrors several rules from the Child App's pure layer (day membership, the ev
 plannability rule); mirroring is **not** sharing, and each mirrored file must name what it mirrors
 in a comment.
 
-**The Grading Assistant follows the same own-your-own-tables pattern.** The grader **reads** an
-assignment's answer key (parent-uploaded, R2) and its own resolved rubric (a sparse field on the
-Course record); it **writes** only its own two tables — `grading_reviews` (one live proposal per
-assignment) and `mechanics_findings` (append-only spelling/grammar records). **It never writes
-`assignments.grade` directly.** A proposal's score reaches `grade` only through the existing
-completion path, using exactly `ASSIGNMENT_COMPLETION_FIELDS` — the same discipline the row above
-already states for the wall. No new credential class and no new §III.E exception: the child's own
-device token names its own child, same as every other device route (`TDS_Slice_Grading_Assistant.md`
-§0.1–§0.2).
+**The Grading Assistant follows the same own-your-own-tables pattern — with one exception at the
+review step, recorded below.** The grader **reads** an assignment's answer key (parent-uploaded,
+R2) and its own resolved rubric (a sparse field on the Course record); it **writes** only its own
+two tables — `grading_reviews` (one live proposal per assignment) and `mechanics_findings`
+(append-only spelling/grammar records). **The grading call itself touches no `assignments` column
+at all.** No new credential class and no new §III.E exception: the child's own device token names
+its own child, same as every other device route (`TDS_Slice_Grading_Assistant.md` §0.1–§0.2).
+
+**The exception is the parent's accept/override** — `POST /api/grading/review/:id/decision`, built
+in Phase 5. The score reaches `grade` through the existing completion path using exactly
+`ASSIGNMENT_COMPLETION_FIELDS`, but called in-process with a parent-tagged actor rather than over
+`/api/completions`, which takes a device token only. Stated plainly, because the column-ownership
+row in §0 and the disjoint-halves property in §III.B both read as forbidding it: **a `SYNC_TOKEN`
+can write the child-owned `grade`, and accepting a proposal overwrites what the child
+self-reported.** Nothing else widens — no other column changes hands, and no device or wall
+credential gains anything. Two things follow, and a future session should treat both as binding:
+
+1. **This is recorded as shipped, not authorized as a pattern.** It was built without being put to
+   Ray as a departure. Do not reach for the same technique — calling a device-credentialed handler
+   in-process to bypass its credential check — on any other route.
+2. **The alternative remains open.** The slice review proposed a parent-owned `verified_grade`
+   column beside the child-owned `grade`, which keeps the halves disjoint and preserves what the
+   child reported as a separate fact. Ray has accepted losing the child's number for now
+   (in-session, 2026-08-16); that acceptance is about *this* column, not about the rule.
 
 **Enforcement:**
 - A session **must declare which app it is building** at the start. Worker changes are their own scope.
@@ -314,7 +329,7 @@ Ask explicitly, list the candidate readings, state which you are proceeding with
 | Wall calendar redesign | **LOCKED** | The wall becomes a shared family calendar: day/week/month, one column per active child, chores placed on a 15-minute grid, school blocks, completion that asks *when*. Placements live in wall-owned tables and carry forward to future days. See `TDS_Slice_Wall_Calendar_Redesign.md`. |
 | Per-child PIN gating on the wall | **REPEALED** | Was wall slice §0.3/§0.4/§4, never built. One shared board; the column a tap lands in names the child. The admin PIN on Settings survives. Redesign slice §2.3 states the consequence plainly: any child can tick any child's chore. |
 | Chore duration authored in the Management App | **LOCKED** | Module 06 gains `expectedDurationMin`, filling a column that already exists (`migrations/0001:46`). The wall may override it in its own tables; it may never write it. Redesign slice §3.5/§3.5.1. |
-| Grading Assistant | **LOCKED** | Fourth departure from a locked decision, all narrow and scoped: photo capture, AI-proposed grades, tunable per-course rubrics, a mechanics-error record for remediation. The grader owns two tables of its own (`grading_reviews`, `mechanics_findings`) and never writes `assignments.grade` directly — the score reaches `grade` only through the existing completion path. No new credential class; `child_id` still derives from the device token. The paid-API narrowing (§0) is scoped to this milestone only and does not generalise to other services. See `TDS_Slice_Grading_Assistant.md`. |
+| Grading Assistant | **LOCKED** | Fourth departure from a locked decision, all narrow and scoped: photo capture, AI-proposed grades, tunable per-course rubrics, a mechanics-error record for remediation. The grader owns two tables of its own (`grading_reviews`, `mechanics_findings`) and the grading call touches no `assignments` column at all. No new credential class; `child_id` still derives from the device token. **One exception, recorded as shipped rather than authorized as a pattern:** the parent's accept/override reaches the child-owned `grade` through the completion path called in-process with a parent actor, overwriting the child's self-report — see §I.A. The paid-API narrowing (§0) is scoped to this milestone only and does not generalise to other services. See `TDS_Slice_Grading_Assistant.md`. |
 
 ---
 
@@ -337,7 +352,7 @@ Ask explicitly, list the candidate readings, state which you are proceeding with
 
 ## IX. Version & Amendments
 
-**Current Version:** 2.6  
+**Current Version:** 2.7  
 **Date:** 2026-08-16
 
 | Version | Date | Change |
@@ -352,6 +367,7 @@ Ask explicitly, list the candidate readings, state which you are proceeding with
 | 2.4 | 2026-08-15 | **School blocks widen the wall's write scope a second time.** §I.A's Data Flow cell gains the five `/api/wall/school-blocks*` routes and its write list gains **two more wall-owned tables** (`wall_school_blocks`, `wall_school_block_courses`), alongside `wall_slots`/`wall_slot_days` — restated in the same breath that this widens nothing on `assignments`, whose writes there stay exactly `ASSIGNMENT_COMPLETION_FIELDS`. §III.E's "the wall's own tables" bullet gains the two new tables and a note that a school block's `childId` takes no sentinel (unlike a `claim` chore's placement, §3.1.2) without that being a fifth bound. This is the amendment `TDS_Slice_Wall_Calendar_Redesign.md` §18.1a flagged as required before Phase 7 shipped and not yet put to Ray individually — it is a direct extension of §2.3's already-approved narrowing (the wall may own tables of its own, outside the child-scoping scheme, so long as it widens no `assignments` column) rather than a new kind of departure, so it is recorded here rather than re-litigated as a fourth narrowing. See `docs/TDS_Slice_Wall_Calendar_Redesign.md` §5.5, §18.1a. |
 | 2.5 | 2026-08-15 | **A new departure, not an extension: paid inference and a third app-scope narrowing.** Required by `TDS_Slice_Grading_Assistant.md` §10 before Phase 3 could spend anything. §0's "Free tier only" row is narrowed for this milestone only — model inference is metered, ~$7–11/month at ~240 worksheets; Cloudflare infrastructure stays free-tier. §I.A's Data Flow cell gains the four `/api/grading/*` routes, restated in the same breath that this widens nothing on `assignments` — the grader owns `grading_reviews` and `mechanics_findings` and reaches `grade` only through the existing completion path. §III.A gains a third narrowing, of the existing `claim_group`/wall class: the grading call itself is online-required; the Child App's local-first completion path is untouched. §VII gains a "Grading Assistant" locked-decision row noting the paid-API narrowing does not generalise to other services. Authorized by Ray in-session, 2026-08-15, after two rounds of the cost being put to him explicitly; the companion privacy question (children's photos reaching a third-party API) was confirmed the same session — see `docs/TDS_Slice_Grading_Assistant.md` §11.1. See `docs/TDS_Slice_Grading_Assistant.md` §0, §10. |
 | 2.6 | 2026-08-16 | **Correction, not a new narrowing: v2.5's §III.A entry described a build that was never authorized.** Before Phase 6 (Child App capture UI) started, Ray corrected the record: there is no outbox queue for a graded photo. §III.A's "Narrowed exception 3" is rewritten — capture-and-submit is online-required end to end, with nothing about a grading attempt ever queued in IndexedDB; offline, the capture UI simply says so. The boundary the v2.5 text was reaching for is preserved exactly: capture-and-grade stays a separate action from marking an assignment done, and does not touch the Child App's local-first completion path. `TDS_Slice_Grading_Assistant.md` §0.7 and the `handleGradingPageCapture` comment in `management-app/worker/index.js` (Phase 3) both carried the same superseded claim and are corrected in the same commit. Authorized by Ray in-session, 2026-08-16. See `docs/TDS_Slice_Grading_Assistant.md` §0.7. |
+| 2.7 | 2026-08-16 | **Factual sync: this file described four grading routes where nine shipped, and described a column-ownership property the Phase 5 build had already broken.** No narrowing is authorized here and nothing changes in the code — the entry brings the guardrails level with `main`. §I.A's Data Flow cell gains the Management App's five missing grading routes (`GET`/`DELETE /api/grading/keys`, the reviews queue, the photo route, the decision route); the two key-management routes are new today, built with the answer key upload screen that §4 of the slice had always assumed and no phase had ever produced — until now the only way to attach an answer key was curl, which §0's no-CLI rule does not allow. §I.A's Grading Assistant paragraph is rewritten around the fact that the **grading call** touches no `assignments` column while the **parent's accept/override** does: `POST /api/grading/review/:id/decision` calls the completion handler in-process with a parent actor, so a `SYNC_TOKEN` can write the child-owned `grade` and accepting a proposal overwrites the child's self-report. §0's column-ownership row and §VII's Grading Assistant row gain pointers to it. Recorded as shipped, **not** authorized as a pattern: it was built in Phase 5 without being put to Ray, the in-process-call technique must not spread to another route, and the `verified_grade` alternative that would restore disjointness stays open. Ray accepted losing the child's reported number in-session, 2026-08-16, and asked for these doc updates in the same session. |
 
 ---
 
