@@ -281,6 +281,17 @@ async function routeApi(request, env, ctx, url) {
       handleGradingReviewDecision(request, env, gradingDecisionMatch[1], body)));
   }
 
+  // ---- Grading Assistant (Grading_Assistant §5, §9 Phase 7) — parent only ----
+  //
+  // §5's fourth route, not built alongside the other three in Phase 3: the
+  // remediation report over mechanics_findings. Reads only — no assignments
+  // column touched, same as every other route in this family (§0.1). The
+  // (child_id, intended) index migration 0013 adds exists for exactly this
+  // query (§1.2's own note).
+  if (pathname === '/api/grading/remediation' && method === 'GET') {
+    return withParent(request, env, () => handleGradingRemediation(url, env));
+  }
+
   // ---- Child — unauthenticated (§5.4) ----
   if (pathname === '/api/pair' && method === 'POST') {
     return await handlePair(request, env);
@@ -2877,6 +2888,43 @@ async function handleGradingReviewsQuery(url, env) {
     reviewedAt: row.reviewed_at,
   }));
   return json(capRows(rows, 'reviews'));
+}
+
+// GET /api/grading/remediation — §5, §9 Phase 7. Aggregates mechanics_findings
+// by (intended, kind) so a parent sees which words a child keeps getting
+// wrong, not a flat log of every finding. `counted_occurrences` is reported
+// alongside the raw `occurrences` because §0.4 records a finding regardless of
+// whether the household's rubric penalised it — a course running
+// `spelling: 'off'` still has data here, on purpose.
+async function handleGradingRemediation(url, env) {
+  const childId = url.searchParams.get('childId');
+  if (!childId) return json({ error: 'childId is required.' }, 400);
+  const kind = url.searchParams.get('kind');
+  if (kind && kind !== 'spelling' && kind !== 'grammar') {
+    return json({ error: "kind must be 'spelling' or 'grammar'." }, 400);
+  }
+
+  let sql = `SELECT intended, kind,
+                    COUNT(*) AS occurrences,
+                    SUM(counted) AS counted_occurrences,
+                    MAX(found_at) AS last_found_at,
+                    GROUP_CONCAT(DISTINCT as_written) AS as_written_variants
+             FROM mechanics_findings
+             WHERE child_id = ?1`;
+  const params = [childId];
+  if (kind) { sql += ` AND kind = ?2`; params.push(kind); }
+  sql += ` GROUP BY intended, kind ORDER BY occurrences DESC, intended ASC LIMIT ${MAX_QUERY_ROWS + 1}`;
+
+  const { results } = await env.DB.prepare(sql).bind(...params).all();
+  const rows = (results || []).map((row) => ({
+    intended: row.intended,
+    kind: row.kind,
+    occurrences: row.occurrences,
+    countedOccurrences: row.counted_occurrences,
+    lastFoundAt: row.last_found_at,
+    asWritten: row.as_written_variants ? row.as_written_variants.split(',') : [],
+  }));
+  return json(capRows(rows, 'words'));
 }
 
 // GET /api/grading/review/:assignmentId/photo — streams the captured
