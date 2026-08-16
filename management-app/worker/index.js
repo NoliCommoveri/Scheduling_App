@@ -2688,6 +2688,10 @@ const GRADING_OUTPUT_INSTRUCTION =
   'what the photographs actually show. Do not produce an item for anything the answer key covers ' +
   'but the photographs do not; a key item with no corresponding photographed work is simply outside ' +
   'this assignment, not BLANK and not unattempted. ' +
+  'The mismatch also runs the other way: the photographs may show an item the answer key does not ' +
+  'answer. Return UNSURE for such an item, and say in the reason that the key does not cover it. ' +
+  'Never grade an item from your own knowledge of the subject when the key is silent on it, even ' +
+  'when you are confident of the answer. ' +
   'For each item, transcribe exactly what the child wrote, give a verdict (CORRECT, PARTIAL, ' +
   'INCORRECT, BLANK, or UNSURE), and a short reason. Separately, list every suspected spelling or ' +
   'grammar issue you notice — report all of them, pre-filtering none. Finish with one short ' +
