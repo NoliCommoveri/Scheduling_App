@@ -876,6 +876,16 @@
       var undoBtn = node("button", "btn ghost small", "Undo");
       undoBtn.onclick = function () { handleUndo(item); };
       footer.appendChild(undoBtn);
+
+      // Grading Assistant §9 Phase 6 — still available once the item is
+      // complete: capture-and-grade is independent of "Mark done" (§0.7),
+      // and this is also where a child comes back to check a proposal.
+      if (g.GradingCore.isGradableActivity(item)) {
+        var gradeBtn = node("button", "btn ghost small", "Photo grade");
+        gradeBtn.onclick = function () { openGradingDialog(item); };
+        footer.appendChild(gradeBtn);
+      }
+
       card.appendChild(footer);
       return card;
     }
@@ -1081,6 +1091,16 @@
         doneBtn.onclick = function () { handleComplete(item); };
       }
       footer.appendChild(doneBtn);
+
+      // Grading Assistant §9 Phase 6 — a separate action from "Mark done"
+      // (§0.7), so it's offered whether or not this item is complete yet.
+      // Gradable per the Worker's own gate: a lesson activity, nothing else.
+      if (g.GradingCore.isGradableActivity(item)) {
+        var gradeBtn = node("button", "btn ghost small", "Photo grade");
+        gradeBtn.onclick = function () { openGradingDialog(item); };
+        footer.appendChild(gradeBtn);
+      }
+
       if (item.required) {
         var rescheduleBtn = node("button", "btn ghost small", "Reschedule");
         rescheduleBtn.onclick = function () { openRescheduleDialog(item); };
@@ -1201,6 +1221,104 @@
       overlay.appendChild(card);
       document.body.appendChild(overlay);
       (gradeInput || noteInput).focus();
+    }
+
+    // ---------- grading capture (Grading Assistant §9 Phase 6) ----------
+    // §0.7 / CLAUDE.md §III.A v2.6: capture-and-submit is a separate action
+    // from "Mark done" — it never gates, and is never gated by, completion —
+    // and it is fully online-required, with no local queue for the photo.
+    // Opening this checks for a standing proposal first (GET
+    // /api/grading/review/:id), so re-opening after a submit shows the
+    // result instead of the camera again; "Retake" goes back to capture,
+    // which re-grades and replaces the row (§1.1 — not append-only).
+    function openGradingDialog(item) {
+      var overlay = node("div", "modal-overlay");
+      var card = node("div", "modal-card");
+      card.appendChild(node("h2", "modal-title", "Photo grade"));
+      var body = node("div");
+      card.appendChild(body);
+      var actions = node("div", "modal-actions");
+      var close = node("button", "btn ghost", "Close");
+      close.onclick = function () { overlay.remove(); };
+      actions.appendChild(close);
+      card.appendChild(actions);
+      overlay.appendChild(card);
+      document.body.appendChild(overlay);
+
+      function showProposal(formatted) {
+        body.innerHTML = "";
+        body.appendChild(node("p", "modal-help", formatted.label));
+        if (formatted.scoreText) body.appendChild(node("p", null, formatted.scoreText));
+        if (formatted.feedback) body.appendChild(node("p", null, formatted.feedback));
+        var retake = node("button", "btn ghost small", "Retake photo");
+        retake.style.marginTop = "10px";
+        retake.onclick = function () { showCapture(); };
+        body.appendChild(retake);
+      }
+
+      function showCapture() {
+        body.innerHTML = "";
+        if (isOffline()) {
+          body.appendChild(node("p", "modal-help", "This needs the internet. Try again once you're back online."));
+          return;
+        }
+        body.appendChild(node("p", "modal-help", "Take a photo of the completed page."));
+
+        var fileInput = node("input");
+        fileInput.type = "file";
+        fileInput.accept = "image/*";
+        // Attribute, not the IDL property — some WebViews on budget Android
+        // reflect `capture` from the markup but not from a JS assignment.
+        fileInput.setAttribute("capture", "environment");
+        body.appendChild(fileInput);
+
+        var preview = node("img");
+        preview.style.maxWidth = "100%";
+        preview.style.marginTop = "10px";
+        preview.style.display = "none";
+        body.appendChild(preview);
+
+        var err = node("div", "err-text");
+        body.appendChild(err);
+
+        var submitBtn = node("button", "btn", "Submit for grading");
+        submitBtn.style.marginTop = "10px";
+        submitBtn.disabled = true;
+        body.appendChild(submitBtn);
+
+        var selected = null;
+        fileInput.onchange = function () {
+          var f = fileInput.files && fileInput.files[0];
+          err.textContent = "";
+          selected = f || null;
+          if (!selected) { preview.style.display = "none"; submitBtn.disabled = true; return; }
+          preview.src = URL.createObjectURL(selected);
+          preview.style.display = "block";
+          submitBtn.disabled = false;
+        };
+
+        submitBtn.onclick = function () {
+          if (!selected) return;
+          if (isOffline()) { err.textContent = "Lost the connection — try again once you're back online."; return; }
+          submitBtn.disabled = true;
+          submitBtn.textContent = "Grading…";
+          g.Grading.submitPhoto(item.id, selected, selected.type || "image/jpeg").then(function (res) {
+            if (!res.ok) {
+              err.textContent = res.message || "Couldn't grade that right now.";
+              submitBtn.disabled = false;
+              submitBtn.textContent = "Submit for grading";
+              return;
+            }
+            showProposal(g.GradingCore.formatProposal(res.review));
+          });
+        };
+      }
+
+      body.appendChild(node("p", "modal-help", "Checking…"));
+      g.Grading.fetchReview(item.id).then(function (res) {
+        if (res.ok && res.review) { showProposal(g.GradingCore.formatProposal(res.review)); return; }
+        showCapture();
+      });
     }
 
     // ---------- deferment / waive (Module 5) ----------

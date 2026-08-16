@@ -2,7 +2,7 @@
 
 ## Scope: Grading Assistant — photo capture, AI-proposed grades, tunable per-course rubrics, and a mechanics-error record for remediation
 
-**Date:** 2026-08-15 · **Status:** §11.1 confirmed 2026-08-15; Phases 1–5 shipped, building Phase 6. §0.7 corrected 2026-08-16 (no offline photo queue — see `CLAUDE.md` v2.6). §11.2–5 remain open, none blocking.
+**Date:** 2026-08-15 · **Status:** §11.1 confirmed 2026-08-15; Phases 1–6 shipped. §0.7 corrected 2026-08-16 (no offline photo queue — see `CLAUDE.md` v2.6). §11.2–5 remain open, none blocking.
 
 **Applies to:** Child App (capture), Worker (grading route, rubric resolution, mechanics
 filter), Management App (rubric authoring, review surface, remediation report). Three

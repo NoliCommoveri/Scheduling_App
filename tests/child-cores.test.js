@@ -18,13 +18,13 @@ import vm from 'node:vm';
 const repo = new URL('../', import.meta.url);
 for (const file of [
   'outbox-core.js', 'planner-core.js', 'assignment-core.js', 'streak-core.js',
-  'completion-core.js', 'reward-core.js', 'settings-core.js',
+  'completion-core.js', 'reward-core.js', 'settings-core.js', 'grading-core.js',
 ]) {
   vm.runInThisContext(readFileSync(new URL(`child-app/js/${file}`, repo), 'utf8'), { filename: file });
 }
 const {
   OutboxCore, PlannerCore, AssignmentCore, StreakCore,
-  CompletionCore, RewardCore, SettingsCore,
+  CompletionCore, RewardCore, SettingsCore, GradingCore,
 } = globalThis;
 
 // A row as /api/plan returns it (§3.3, snake_case).
@@ -990,4 +990,75 @@ test('WipeCore.isClearable: exported records only', () => {
   assert.equal(WipeCore.isClearable({ exported: true }), true);
   assert.equal(WipeCore.isClearable({ exported: false }), false);
   assert.equal(WipeCore.isClearable({}), false);
+});
+
+// ===========================================================  grading-core
+
+test('isGradableActivity: only a lesson activity, mirroring the Worker\'s own gate', () => {
+  // resolveGradingContext 400s on anything but kind === 'activity' — the
+  // button must agree, or a tap would always round-trip to an error.
+  assert.equal(GradingCore.isGradableActivity({ kind: 'activity' }), true);
+  assert.equal(GradingCore.isGradableActivity({ kind: 'chore' }), false);
+  assert.equal(GradingCore.isGradableActivity(null), false);
+});
+
+test('outOfFromItems counts only CORRECT/PARTIAL/INCORRECT, mirroring normalizeScore', () => {
+  const items = [
+    { verdict: 'CORRECT' }, { verdict: 'PARTIAL' }, { verdict: 'INCORRECT' },
+    { verdict: 'BLANK' }, { verdict: 'UNSURE' },
+  ];
+  assert.equal(GradingCore.outOfFromItems(items), 3);
+  assert.equal(GradingCore.outOfFromItems([]), 0);
+  assert.equal(GradingCore.outOfFromItems(null), 0);
+});
+
+test('percentOf: null on an empty denominator, rounded otherwise', () => {
+  assert.equal(GradingCore.percentOf(7, 10), 70);
+  assert.equal(GradingCore.percentOf(1, 3), 33);
+  assert.equal(GradingCore.percentOf(0, 0), null);
+  assert.equal(GradingCore.percentOf(null, 10), null);
+});
+
+test('formatProposal reads the POST /api/grading/page shape (score/outOf given directly)', () => {
+  const out = GradingCore.formatProposal({
+    state: 'proposed', score: 8, outOf: 10, feedback: 'Nice work on the fractions!',
+  });
+  assert.equal(out.state, 'proposed');
+  assert.equal(out.label, 'Submitted — waiting for a parent to check it.');
+  assert.equal(out.scoreText, '8 out of 10 (80%)');
+  assert.equal(out.feedback, 'Nice work on the fractions!');
+});
+
+test('formatProposal reads the GET /api/grading/review shape, recomputing outOf from items', () => {
+  // §1.1: the stored row has no `outOf` column — only `items`, from which
+  // the denominator has to be rebuilt the same way the Worker built it once.
+  const out = GradingCore.formatProposal({
+    state: 'accepted', proposedScore: 2,
+    items: [{ verdict: 'CORRECT' }, { verdict: 'INCORRECT' }, { verdict: 'UNSURE' }],
+  });
+  assert.equal(out.label, 'Your parent confirmed this grade.');
+  assert.equal(out.scoreText, '2 out of 2 (100%)');
+});
+
+test('formatProposal: null in, null out — no proposal to show', () => {
+  assert.equal(GradingCore.formatProposal(null), null);
+});
+
+test('formatProposal: an unrecognised state still gets a label rather than showing nothing', () => {
+  const out = GradingCore.formatProposal({ state: 'overridden', score: 5, outOf: 10 });
+  assert.equal(out.label, 'Your parent looked at this and changed the grade.');
+});
+
+test('errorMessage: a 422 passes the server\'s own wording through (already worded for a parent)', () => {
+  assert.equal(
+    GradingCore.errorMessage(422, 'No answer key has been uploaded for this lesson yet. Ask a parent to add one.'),
+    'No answer key has been uploaded for this lesson yet. Ask a parent to add one.'
+  );
+});
+
+test('errorMessage: everything else gets kid-facing copy, not a raw status code', () => {
+  assert.equal(GradingCore.errorMessage(413), "That photo is too big. Try again with a smaller picture.");
+  assert.equal(GradingCore.errorMessage(404), "Couldn't find that assignment to grade.");
+  assert.equal(GradingCore.errorMessage(401), "This device needs to be paired again — ask a parent.");
+  assert.equal(GradingCore.errorMessage(502), "Couldn't grade that right now. Try again in a bit.");
 });
