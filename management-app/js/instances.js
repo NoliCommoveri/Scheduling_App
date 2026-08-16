@@ -31,6 +31,7 @@ const Instances = (() => {
   // action triggers.
   let viewInstanceId = null;
   let viewLessonId = null;
+  let viewKeysInstanceId = null; // when set, the Course's bulk answer-key page
   let editActivityId = null; // when set, the Lesson detail shows the Activity edit form
   let filterChildId = ''; // '' = every child
 
@@ -106,12 +107,30 @@ const Instances = (() => {
   // must not be, or an offline parent is told every lesson is missing a key
   // that is sitting in R2. `error` carries why, so the panel can say "set the
   // sync token" instead of blaming the network for a local misconfiguration.
+  // Chunked because the route caps a probe at MAX_ANSWER_KEY_PROBE (200)
+  // lessonIds and answers 413 above it (worker/index.js). One long course is
+  // nowhere near that, but the bulk screen below asks about every Lesson of a
+  // course at once, which is exactly where a 413 would first appear.
+  const ANSWER_KEY_PROBE_CHUNK = 100;
+
   async function listAnswerKeys(lessonIds) {
     if (lessonIds.length === 0) return { keys: new Map(), error: null };
-    const query = lessonIds.map((id) => `lessonId=${encodeURIComponent(id)}`).join('&');
+    const chunks = [];
+    for (let i = 0; i < lessonIds.length; i += ANSWER_KEY_PROBE_CHUNK) {
+      chunks.push(lessonIds.slice(i, i + ANSWER_KEY_PROBE_CHUNK));
+    }
     try {
-      const { keys } = await answerKeyRequest(`/api/grading/keys?${query}`);
-      return { keys: new Map(keys.map((k) => [k.lessonId, k])), error: null };
+      const responses = await Promise.all(
+        chunks.map((chunk) => {
+          const query = chunk.map((id) => `lessonId=${encodeURIComponent(id)}`).join('&');
+          return answerKeyRequest(`/api/grading/keys?${query}`);
+        })
+      );
+      const keys = new Map();
+      for (const response of responses) {
+        for (const key of response.keys) keys.set(key.lessonId, key);
+      }
+      return { keys, error: null };
     } catch (err) {
       return { keys: null, error: err.message };
     }
@@ -131,11 +150,20 @@ const Instances = (() => {
     });
   }
 
-  function formatBytes(n) {
-    if (typeof n !== 'number') return '';
-    if (n < 1024) return `${n} B`;
-    if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
-    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  const formatBytes = AnswerKeysCore.formatBytes;
+
+  // The one place a chosen file is judged before it goes up the wire, shared by
+  // the per-Lesson panel and the bulk screen so a 30MB scan is refused with the
+  // same words in both. The Worker checks all of this again (§5) — this exists
+  // so the parent hears about it now rather than after the upload.
+  function answerKeyFileProblem(file) {
+    const looksPdf = file.type === 'application/pdf' || (!file.type && /\.pdf$/i.test(file.name));
+    if (!looksPdf) return 'The answer key must be a PDF.';
+    if (file.size === 0) return 'That file is empty.';
+    if (file.size > ANSWER_KEY_MAX_BYTES) {
+      return `That PDF is ${formatBytes(file.size)}; the limit is ${formatBytes(ANSWER_KEY_MAX_BYTES)}.`;
+    }
+    return null;
   }
 
   // ---- Instance reads ----
@@ -520,6 +548,7 @@ const Instances = (() => {
   // ---- Rendering ----
 
   async function render(root) {
+    if (viewKeysInstanceId) return renderAnswerKeysPage(root);
     if (viewLessonId) return renderLessonDetail(root);
     if (viewInstanceId) return renderInstanceDetail(root);
     return renderList(root);
@@ -808,6 +837,23 @@ const Instances = (() => {
     lessonHeading.textContent = 'Lessons';
     root.appendChild(lessonHeading);
 
+    // The way in to the bulk answer-key screen. It sits above the Lessons list
+    // rather than inside it because it is about all of them at once: a parent
+    // starting a term has a folder of PDFs and one course to put them on, and
+    // the per-Lesson panel three clicks away made that thirty round trips
+    // through this page.
+    const keysBar = document.createElement('p');
+    keysBar.className = 'course-keys-link';
+    const keysBtn = document.createElement('button');
+    keysBtn.type = 'button';
+    keysBtn.textContent = 'Answer keys for all lessons →';
+    keysBtn.addEventListener('click', () => {
+      viewKeysInstanceId = instance.id;
+      render(root);
+    });
+    keysBar.appendChild(keysBtn);
+    root.appendChild(keysBar);
+
     const list = document.createElement('ul');
     list.className = 'lesson-list';
     lessons.forEach((l) => {
@@ -877,6 +923,487 @@ const Instances = (() => {
       render(root);
     });
     root.appendChild(form);
+  }
+
+  // ---- The bulk answer-key page (Grading_Assistant §4) ----
+  //
+  // One page per Course Instance, listing every Lesson with a slot for its
+  // answer key. The per-Lesson panel further down still exists and still works;
+  // this is the same three routes driven from one screen, because the unit of
+  // work is a term's worth of PDFs, not one lesson's.
+  //
+  // Two ways to fill the slots, both landing in the same place:
+  //   1. the file box on a Lesson's own row — for the one key you came to fix;
+  //   2. the multi-file picker at the top — pick the whole folder, and
+  //      `AnswerKeysCore.matchFiles` places the ones whose filenames are
+  //      unambiguous. Whatever it will not guess at waits in the tray with a
+  //      dropdown, so an unmatched file is a visible task rather than a
+  //      silently mis-filed key (see that module's header for why it refuses
+  //      more than it accepts).
+  //
+  // Nothing uploads until "Upload all" — staging is entirely local, and the
+  // parent sees every placement before a byte moves.
+  //
+  // All of this state lives outside the DOM because every action re-renders
+  // the page, the same convention as the drill-down state at the top of this
+  // file. `keysPageInstanceId` is what ties the caches to a Course: opening a
+  // different one clears them rather than showing another course's pending
+  // files.
+
+  let keysPageInstanceId = null;
+  const keysPending = new Map(); // lessonId -> File, chosen but not yet uploaded
+  let keysStaged = []; // [{ id, file, reason }] — picked, not yet placed on a Lesson
+  let keysStatus = null; // { keys: Map|null, error } — null means "not asked yet"
+  const keysResults = new Map(); // lessonId -> { ok, message } from the last upload run
+  let keysStageErrors = []; // files the picker refused outright (not a PDF, too big, empty)
+  let keysSummary = null; // { ok, text } — the last run's one-line verdict
+  let keysBusy = false;
+  let keysNextStageId = 1;
+
+  function resetKeysPage(instanceId) {
+    keysPageInstanceId = instanceId;
+    keysPending.clear();
+    keysResults.clear();
+    keysStaged = [];
+    keysStageErrors = [];
+    keysStatus = null;
+    keysSummary = null;
+    keysBusy = false;
+  }
+
+  // Accepts what the file picker handed over: PDFs join the tray, anything else
+  // is named and refused here rather than failing one at a time mid-upload.
+  function stageFiles(fileList, lessons) {
+    const rejected = [];
+    for (const file of Array.from(fileList)) {
+      const problem = answerKeyFileProblem(file);
+      if (problem) rejected.push(`${file.name} — ${problem}`);
+      else keysStaged.push({ id: `stage-${keysNextStageId++}`, file, reason: '' });
+    }
+    keysStageErrors = rejected;
+    autoPlaceStaged(lessons);
+  }
+
+  function autoPlaceStaged(lessons) {
+    const { matches, unmatched } = AnswerKeysCore.matchFiles(
+      keysStaged.map((s) => ({ id: s.id, name: s.file.name })),
+      lessons,
+      Array.from(keysPending.keys())
+    );
+    const byId = new Map(keysStaged.map((s) => [s.id, s]));
+    for (const match of matches) {
+      const staged = byId.get(match.fileId);
+      if (staged) keysPending.set(match.lessonId, staged.file);
+    }
+    const placed = new Set(matches.map((m) => m.fileId));
+    const reasons = new Map(unmatched.map((u) => [u.fileId, u.reason]));
+    keysStaged = keysStaged
+      .filter((s) => !placed.has(s.id))
+      .map((s) => ({ ...s, reason: reasons.get(s.id) || s.reason }));
+  }
+
+  function pendingCount() {
+    return keysPending.size;
+  }
+
+  async function renderAnswerKeysPage(root) {
+    const instance = await Storage.get('courses', viewKeysInstanceId);
+    if (!instance) {
+      viewKeysInstanceId = null;
+      return render(root);
+    }
+    if (keysPageInstanceId !== instance.id) resetKeysPage(instance.id);
+
+    const [child, lessons] = await Promise.all([
+      Storage.get('children', instance.childId),
+      Storage.getAllByIndex('lessons', 'by_courseId', instance.id),
+    ]);
+    lessons.sort((a, b) => a.order - b.order);
+
+    root.innerHTML = '';
+
+    const backBtn = document.createElement('button');
+    backBtn.textContent = '← Back to Course';
+    backBtn.disabled = keysBusy;
+    backBtn.addEventListener('click', () => {
+      viewKeysInstanceId = null;
+      resetKeysPage(null);
+      render(root);
+    });
+    root.appendChild(backBtn);
+
+    const heading = document.createElement('h1');
+    heading.textContent = 'Answer keys';
+    root.appendChild(heading);
+
+    const whose = document.createElement('p');
+    whose.className = 'instance-child';
+    whose.textContent = child ? `${instance.name} · ${child.name}` : instance.name;
+    root.appendChild(whose);
+
+    const intro = document.createElement('p');
+    intro.textContent =
+      "One PDF per Lesson, read by the Grading Assistant before it grades a photo of the child's " +
+      'page. A Lesson with no key cannot be graded. Keys belong to this assigned Course, not to ' +
+      'the Course Template it came from, so a second child studying the same book needs its own ' +
+      'copies. Stored outside the app and never sent to a child’s device.';
+    root.appendChild(intro);
+
+    if (lessons.length === 0) {
+      const empty = document.createElement('p');
+      empty.textContent = 'This Course has no Lessons yet, so there is nothing to key.';
+      root.appendChild(empty);
+      return;
+    }
+
+    root.appendChild(buildStageSection(root, lessons));
+    const { list, rowStates } = buildKeyLessonList(root, lessons);
+    root.appendChild(list);
+    root.appendChild(buildBulkActions(root, lessons, rowStates));
+
+    // One probe for the whole course, and only when the cache is empty — an
+    // upload or a removal clears it, so the statuses below are never a stale
+    // picture of what is in the bucket.
+    if (!keysStatus) {
+      listAnswerKeys(lessons.map((l) => l.id)).then((result) => {
+        keysStatus = result;
+        if (viewKeysInstanceId === instance.id && !keysBusy) render(root);
+      });
+    }
+  }
+
+  function buildStageSection(root, lessons) {
+    const section = document.createElement('section');
+    section.className = 'key-stage';
+    section.innerHTML = `
+      <h2>Stage files</h2>
+      <p class="row-meta">
+        Pick several PDFs at once. Any whose filename clearly names a Lesson — by its code, its
+        title, or its number — lands on that Lesson below. The rest wait here for you to place
+        them by hand; nothing is guessed at when two Lessons or two files could be meant.
+      </p>
+      <label>PDFs<input type="file" name="files" accept="application/pdf,.pdf" multiple></label>
+      <div class="key-stage-rejects"></div>
+      <div class="key-staged"></div>
+    `;
+
+    const picker = section.querySelector('[name="files"]');
+    picker.disabled = keysBusy;
+    picker.addEventListener('change', () => {
+      if (!picker.files || picker.files.length === 0) return;
+      stageFiles(picker.files, lessons);
+      render(root);
+    });
+
+    if (keysStageErrors.length) {
+      const rejects = section.querySelector('.key-stage-rejects');
+      const heading = document.createElement('p');
+      heading.className = 'error';
+      heading.textContent = `${keysStageErrors.length} file(s) not accepted:`;
+      rejects.appendChild(heading);
+      const ul = document.createElement('ul');
+      ul.className = 'key-reject-list';
+      for (const message of keysStageErrors) {
+        const li = document.createElement('li');
+        li.className = 'row-meta';
+        li.textContent = message;
+        ul.appendChild(li);
+      }
+      rejects.appendChild(ul);
+    }
+
+    const stagedEl = section.querySelector('.key-staged');
+    if (keysStaged.length === 0) {
+      if (keysStageErrors.length === 0) {
+        const none = document.createElement('p');
+        none.className = 'row-meta';
+        none.textContent = 'Nothing waiting to be placed.';
+        stagedEl.appendChild(none);
+      }
+      return section;
+    }
+
+    const waiting = document.createElement('h3');
+    waiting.textContent = `Waiting to be placed (${keysStaged.length})`;
+    stagedEl.appendChild(waiting);
+
+    const list = document.createElement('ul');
+    list.className = 'key-staged-list';
+    for (const staged of keysStaged) {
+      // Occupied Lessons stay selectable — assigning to one is a replacement,
+      // and the option says whose file it would replace so the choice is made
+      // knowing that, rather than discovering it afterwards.
+      const options = lessons
+        .map((l) => {
+          const held = keysPending.get(l.id);
+          const suffix = held ? ` — replaces ${held.name}` : '';
+          return `<option value="${escapeHtml(l.id)}">${escapeHtml(l.lessonCode)} · ${escapeHtml(l.title)}${escapeHtml(suffix)}</option>`;
+        })
+        .join('');
+      const item = document.createElement('li');
+      item.className = 'list-row';
+      item.innerHTML = `
+        <div class="row-text">
+          <span class="row-title">${escapeHtml(staged.file.name)}</span>
+          <span class="row-meta">${escapeHtml(formatBytes(staged.file.size))}${staged.reason ? ` · ${escapeHtml(staged.reason)}` : ''}</span>
+        </div>
+        <div class="row-actions">
+          <select aria-label="Lesson for ${escapeHtml(staged.file.name)}"><option value="">(choose a Lesson)</option>${options}</select>
+          <button type="button" data-action="assign">Assign</button>
+          <button type="button" data-action="discard">Discard</button>
+        </div>
+      `;
+      const select = item.querySelector('select');
+      const assignBtn = item.querySelector('[data-action="assign"]');
+      const discardBtn = item.querySelector('[data-action="discard"]');
+      select.disabled = keysBusy;
+      assignBtn.disabled = keysBusy;
+      discardBtn.disabled = keysBusy;
+      assignBtn.addEventListener('click', () => {
+        if (!select.value) return;
+        keysPending.set(select.value, staged.file);
+        keysStaged = keysStaged.filter((s) => s.id !== staged.id);
+        keysResults.delete(select.value);
+        render(root);
+      });
+      discardBtn.addEventListener('click', () => {
+        keysStaged = keysStaged.filter((s) => s.id !== staged.id);
+        render(root);
+      });
+      list.appendChild(item);
+    }
+    stagedEl.appendChild(list);
+
+    const discardAll = document.createElement('button');
+    discardAll.type = 'button';
+    discardAll.textContent = `Discard all ${keysStaged.length} staged file(s)`;
+    discardAll.disabled = keysBusy;
+    discardAll.addEventListener('click', () => {
+      keysStaged = [];
+      keysStageErrors = [];
+      render(root);
+    });
+    stagedEl.appendChild(discardAll);
+
+    return section;
+  }
+
+  // What a Lesson's row says about its key, in the order the parent cares
+  // about: what just happened to it, then what is about to, then what is
+  // already in the bucket.
+  function describeKeyRow(lesson) {
+    const result = keysResults.get(lesson.id);
+    const pending = keysPending.get(lesson.id);
+    if (result) {
+      // A failure leaves the file pending, so the row says which one it still
+      // holds — otherwise the only thing on screen is why the last try failed,
+      // and "Upload all (1)" below gives no clue what the 1 is.
+      const stillHolding = !result.ok && pending ? ` ${pending.name} is still ready to try again.` : '';
+      return { text: `${result.message}${stillHolding}`, className: result.ok ? 'success' : 'error' };
+    }
+
+    const existing = keysStatus && keysStatus.keys ? keysStatus.keys.get(lesson.id) : null;
+    if (pending) {
+      const replaces = existing ? ' · replaces the key already uploaded' : '';
+      return {
+        text: `Ready to upload: ${pending.name} (${formatBytes(pending.size)})${replaces}`,
+        className: 'key-row-pending',
+      };
+    }
+    if (!keysStatus) return { text: 'Checking…', className: 'row-meta' };
+    if (!keysStatus.keys) {
+      return { text: `Could not check for a key — ${keysStatus.error}`, className: 'error' };
+    }
+    if (existing) {
+      const when = existing.uploadedAt ? new Date(existing.uploadedAt).toLocaleString() : 'unknown date';
+      return { text: `Answer key uploaded ${when} · ${formatBytes(existing.size)}`, className: 'row-meta' };
+    }
+    return { text: 'No answer key yet.', className: 'key-row-missing' };
+  }
+
+  function buildKeyLessonList(root, lessons) {
+    const list = document.createElement('ul');
+    list.className = 'key-lesson-list';
+    const rowStates = new Map(); // lessonId -> the <span> the upload run writes progress into
+
+    for (const lesson of lessons) {
+      const state = describeKeyRow(lesson);
+      const hasKey = Boolean(keysStatus && keysStatus.keys && keysStatus.keys.get(lesson.id));
+      const item = document.createElement('li');
+      item.className = 'list-row key-lesson-row';
+      item.dataset.lessonId = lesson.id;
+      item.innerHTML = `
+        <div class="row-text">
+          <span class="row-title">${escapeHtml(lesson.title)}</span>
+          <span class="row-meta lesson-code">${escapeHtml(lesson.lessonCode)}</span>
+          <span class="key-row-state ${state.className}">${escapeHtml(state.text)}</span>
+        </div>
+        <div class="row-actions">
+          <input type="file" accept="application/pdf,.pdf" aria-label="Answer key for ${escapeHtml(lesson.title)}">
+          <button type="button" data-action="clear" hidden>Clear</button>
+          <button type="button" data-action="remove" hidden>Remove key</button>
+        </div>
+      `;
+
+      const fileInput = item.querySelector('input[type="file"]');
+      const clearBtn = item.querySelector('[data-action="clear"]');
+      const removeBtn = item.querySelector('[data-action="remove"]');
+      rowStates.set(lesson.id, item.querySelector('.key-row-state'));
+
+      fileInput.disabled = keysBusy;
+      fileInput.addEventListener('change', () => {
+        const file = fileInput.files && fileInput.files[0];
+        if (!file) return;
+        const problem = answerKeyFileProblem(file);
+        if (problem) {
+          keysResults.set(lesson.id, { ok: false, message: `${file.name} — ${problem}` });
+          keysPending.delete(lesson.id);
+        } else {
+          keysResults.delete(lesson.id);
+          keysPending.set(lesson.id, file);
+        }
+        render(root);
+      });
+
+      if (keysPending.has(lesson.id)) {
+        clearBtn.hidden = false;
+        clearBtn.disabled = keysBusy;
+        clearBtn.addEventListener('click', () => {
+          keysPending.delete(lesson.id);
+          keysResults.delete(lesson.id);
+          render(root);
+        });
+      }
+
+      if (hasKey) {
+        removeBtn.hidden = false;
+        removeBtn.disabled = keysBusy;
+        removeBtn.addEventListener('click', async () => {
+          const warned = window.confirm(
+            `Remove the answer key for "${lesson.title}"? Grades already proposed keep their ` +
+            'scores and transcriptions — but this lesson cannot be graded again until a key is uploaded.'
+          );
+          if (!warned) return;
+          removeBtn.disabled = true;
+          try {
+            await deleteAnswerKey(lesson.id);
+            keysResults.set(lesson.id, { ok: true, message: 'Answer key removed.' });
+          } catch (err) {
+            keysResults.set(lesson.id, { ok: false, message: `Not removed — ${err.message}` });
+          }
+          keysStatus = null;
+          render(root);
+        });
+      }
+
+      list.appendChild(item);
+    }
+
+    return { list, rowStates };
+  }
+
+  function buildBulkActions(root, lessons, rowStates) {
+    const bar = document.createElement('div');
+    bar.className = 'key-bulk-actions';
+    const count = pendingCount();
+    bar.innerHTML = `
+      <button type="button" data-action="upload-all">Upload all (${count})</button>
+      <button type="button" data-action="clear-all">Clear all pending</button>
+      <p class="key-bulk-summary" hidden></p>
+    `;
+
+    const uploadBtn = bar.querySelector('[data-action="upload-all"]');
+    const clearBtn = bar.querySelector('[data-action="clear-all"]');
+    const summaryEl = bar.querySelector('.key-bulk-summary');
+
+    if (keysSummary) {
+      summaryEl.hidden = false;
+      summaryEl.className = `key-bulk-summary ${keysSummary.ok ? 'success' : 'error'}`;
+      summaryEl.textContent = keysSummary.text;
+    }
+
+    uploadBtn.disabled = keysBusy || count === 0;
+    clearBtn.disabled = keysBusy || count === 0;
+
+    clearBtn.addEventListener('click', () => {
+      keysPending.clear();
+      keysResults.clear();
+      keysSummary = null;
+      render(root);
+    });
+
+    uploadBtn.addEventListener('click', () => uploadAllPending(root, lessons, rowStates, uploadBtn));
+
+    return bar;
+  }
+
+  // The run. Sequential on purpose: these are multi-megabyte PDFs on a home
+  // connection, and twenty parallel PUTs would stall each other and make the
+  // per-row progress meaningless. Each Lesson's outcome is written to its own
+  // row as it happens, so a failure at file 12 of 20 names the file rather than
+  // failing the batch.
+  //
+  // A failure leaves that Lesson's file pending — the batch is not a
+  // transaction and nothing here pretends it is; "Upload all" again retries
+  // exactly what did not land.
+  async function uploadAllPending(root, lessons, rowStates, uploadBtn) {
+    const queue = lessons.filter((l) => keysPending.has(l.id));
+    if (queue.length === 0) return;
+
+    const replacing = queue.filter((l) => keysStatus && keysStatus.keys && keysStatus.keys.has(l.id));
+    if (replacing.length) {
+      const which = replacing.map((l) => l.lessonCode).join(', ');
+      const warned = window.confirm(
+        `${replacing.length} of these Lessons already have an answer key (${which}). ` +
+        'Uploading replaces them. Continue?'
+      );
+      if (!warned) return;
+    }
+
+    keysBusy = true;
+    keysSummary = null;
+    keysResults.clear();
+    keysStageErrors = []; // the picker's complaints belong to the pick, not to this run
+    uploadBtn.disabled = true;
+
+    let done = 0;
+    let failed = 0;
+    for (const lesson of queue) {
+      const stateEl = rowStates.get(lesson.id);
+      const file = keysPending.get(lesson.id);
+      if (stateEl) {
+        stateEl.className = 'key-row-state row-meta';
+        stateEl.textContent = `Uploading ${file.name}…`;
+      }
+      uploadBtn.textContent = `Uploading ${done + failed + 1} of ${queue.length}…`;
+      try {
+        await uploadAnswerKey(lesson.id, file);
+        keysPending.delete(lesson.id);
+        keysResults.set(lesson.id, { ok: true, message: `Uploaded ${file.name}.` });
+        done += 1;
+        if (stateEl) {
+          stateEl.className = 'key-row-state success';
+          stateEl.textContent = `Uploaded ${file.name}.`;
+        }
+      } catch (err) {
+        keysResults.set(lesson.id, { ok: false, message: `Not uploaded — ${err.message}` });
+        failed += 1;
+        if (stateEl) {
+          stateEl.className = 'key-row-state error';
+          stateEl.textContent = `Not uploaded — ${err.message}`;
+        }
+      }
+    }
+
+    keysSummary = {
+      ok: failed === 0,
+      text: failed === 0
+        ? `${done} answer key(s) uploaded.`
+        : `${done} uploaded, ${failed} failed — the failed files are still listed below, ready to try again.`,
+    };
+    keysBusy = false;
+    keysStatus = null; // re-probe: the bucket has changed
+    render(root);
   }
 
   async function renderLessonDetail(root) {
@@ -1041,14 +1568,8 @@ const Instances = (() => {
       const file = fileInput.files && fileInput.files[0];
       if (!file) return say(errorEl, 'Choose a PDF first.');
 
-      // Checked here as well as in the Worker so the parent hears about a
-      // 30MB scan before it goes up the wire rather than after.
-      const looksPdf = file.type === 'application/pdf' || (!file.type && /\.pdf$/i.test(file.name));
-      if (!looksPdf) return say(errorEl, 'The answer key must be a PDF.');
-      if (file.size === 0) return say(errorEl, 'That file is empty.');
-      if (file.size > ANSWER_KEY_MAX_BYTES) {
-        return say(errorEl, `That PDF is ${formatBytes(file.size)}; the limit is ${formatBytes(ANSWER_KEY_MAX_BYTES)}.`);
-      }
+      const problem = answerKeyFileProblem(file);
+      if (problem) return say(errorEl, problem);
 
       say(null);
       uploadBtn.disabled = true;
