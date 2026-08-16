@@ -650,6 +650,35 @@ items against the rubric, and a longer array from more pages is the composite sc
 construction. Stated explicitly so nobody adds per-page averaging, which would weight a
 2-item page equally with a 20-item one.
 
+#### 12.5.0a The mismatch runs both ways
+
+The bound above is one-directional: it says what to do when the **key covers more than the
+photos**. The reverse — the **photos show an item the key does not answer** — was not
+addressed, and §12.5.3 makes it routine rather than rare. Transcription is exactly where
+coverage gets lost: deliberately, where an item's answer is a diagram that does not survive
+as prose (§12.5.3's escape hatch), and accidentally, where a page is missed.
+
+Left unsaid, the model grades those items **from its own knowledge**. On middle-school
+science it will often be right, which is the dangerous version rather than the harmless one:
+a silently under-transcribed key then produces plausible grades indefinitely, and nothing on
+the review surface distinguishes an item graded against the key from one graded against the
+model's memory of the subject.
+
+`GRADING_OUTPUT_INSTRUCTION` therefore names both directions. For an item the photographs
+show and the key does not answer: return `UNSURE`, say in the reason that the key does not
+cover it, and never grade it from subject knowledge even when confident.
+
+This costs nothing and needs no schema change. `UNSURE` is already a first-class verdict
+(§6), already excluded from `normalizeScore`'s denominator (§8), and already routes the item
+to the parent — so an untranscribable diagram neither drags the child's number down nor
+inflates it, and the parent supplies the verdict on override. It is also what makes
+§12.5.3's per-item escape hatch work at item granularity rather than forcing the whole
+assignment back to the PDF for one figure: transcribe the prose items, mark the diagram as
+having no text answer, and the other items still grade at a tenth of the cost.
+
+**This is the general rule; do not implement it as a per-item flag or a marker the
+transcription must use.** The key text is prose, and the instruction reads it as prose.
+
 ### 12.5.1 The 1-hour cache no longer pays — and currently costs
 
 §6 set `cache_control` with a 1-hour TTL on the third block, reasoning that "a household

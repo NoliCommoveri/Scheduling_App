@@ -73,10 +73,14 @@ RULES
 
 4. A labelled diagram becomes prose. If the key answers an item with a fully
    labelled figure, write what the labels say as a sentence — "the change from
-   liquid to gas is evaporation; gas to liquid is condensation". If the item
-   requires the child to DRAW or LABEL something and the answer only makes
-   sense as a picture, do not attempt prose: write
-   FIGURE-ONLY and a one-line description of what is required.
+   liquid to gas is evaporation; gas to liquid is condensation".
+
+   If an item genuinely cannot become text — the child must DRAW or LABEL
+   something and the answer only makes sense as a picture — still give it a
+   numbered line, and write NO TEXT ANSWER followed by what the item requires.
+   Do not silently omit it. The numbers have to line up with the child's page,
+   and a missing number is worse than a marked one. Repeat it in the notes
+   block as well.
 
 5. Keep the item numbering the workbook uses. The grading model matches your
    items against numbers printed on the child's page. If the key renumbers or
@@ -101,13 +105,15 @@ page range requested, output exactly:
 
 === Workbook pages A-B ===
 1. <short question stem> — <the answer as printed>
-2. <short question stem> — <the answer as printed>
+2. <short question stem> — NO TEXT ANSWER: <what the item requires>
+3. <short question stem> — <the answer as printed>
 ...
 
 Then, if anything needs flagging, a final block:
 
 === Notes ===
-- <item number>: <what was unclear, or FIGURE-ONLY, or a numbering discrepancy>
+- <item number>: <what was unclear, or NO TEXT ANSWER, or a numbering
+  discrepancy>
 
 Nothing else. No preamble, no summary, no offer to continue.
 ```
@@ -154,13 +160,15 @@ Expected shape:
 1. Three states of matter — solid, liquid, gas
 2. Particle spacing in a solid — tightly packed in a fixed arrangement
 3. What melting is — a solid changing to a liquid as it gains heat
+4. Label the particle diagram — NO TEXT ANSWER: child labels solid/liquid/gas panels
+5. Why ice floats — water expands as it freezes, so ice is less dense
 ...
 
 === Workbook pages 48-51 ===
 1. ...
 
 === Notes ===
-- p.46 item 7: FIGURE-ONLY — child must label a particle diagram
+- p.46 item 4: NO TEXT ANSWER — child must label a particle diagram
 ```
 
 **Read the notes block first.** Then:
@@ -169,8 +177,14 @@ Expected shape:
 |---|---|
 | Nothing | Paste each block into its assignment's `answerKeyText` box. |
 | `UNCLEAR` on an item | Open the PDF to that page and fix the line by hand. Do not paste an UNCLEAR line. |
-| `FIGURE-ONLY` on a few items | Paste the block anyway; those items will grade poorly and you override them. |
-| `FIGURE-ONLY` on most of an assignment | **Leave that assignment's box empty.** It falls through to the PDF automatically (§12.5.3's resolution order) — that is the escape hatch, and it needs no flag set. |
+| `NO TEXT ANSWER` on a few items | Paste the block as it is. Those items come back `UNSURE` and you grade them by eye; every other item on the page still grades against text. |
+| `NO TEXT ANSWER` on most of an assignment | **Leave that assignment's box empty.** It falls through to the PDF automatically (§12.5.3's resolution order) — that is the escape hatch, and it needs no flag set. |
+
+`NO TEXT ANSWER` is prose, not a keyword — nothing parses it. It works because
+`GRADING_OUTPUT_INSTRUCTION` tells the model to return `UNSURE` for any item the
+photographs show and the key does not answer, rather than grading it from its own knowledge
+(§12.5.0a). `UNSURE` is excluded from the score denominator, so a diagram item neither
+lowers the child's number nor pads it.
 
 **Spot-check before pasting.** Pick three items at random per assignment, look them up in the
 PDF, and confirm the text matches. Three per assignment is enough to catch a systematic
