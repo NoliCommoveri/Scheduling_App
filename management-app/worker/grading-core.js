@@ -218,3 +218,21 @@ export function normalizeScore(items, rubric) {
 
   return { score: outOf === 0 ? null : earned, outOf, excluded };
 }
+
+// ---- page attribution (§12.5) ----
+
+// The count of distinct pages a graded item set references. `page` is
+// attribution only — per §12.5 it never reorders `items`, and normalizeScore
+// above needs no change to fold a multi-page item set into one score. This
+// exists for the route's own sanity check on the way back from the model: a
+// well-formed response never references a page beyond how many were actually
+// sent, and a distinct count over that number means the model attributed an
+// item to a page that does not exist, which the route treats the same as any
+// other unusable response. Backs §12.7's "page attribution" test suite.
+export function distinctPageCount(items) {
+  const pages = new Set();
+  for (const item of Array.isArray(items) ? items : []) {
+    if (item && Number.isInteger(item.page)) pages.add(item.page);
+  }
+  return pages.size;
+}
