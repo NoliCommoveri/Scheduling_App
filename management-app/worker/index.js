@@ -33,11 +33,25 @@ import {
   MAX_COURSE_NAME_LEN,
   isValidLessonId,
 } from './validation.js';
+// Grading Assistant §2.2/§3.2/§8.3 — the pure layer, Phase 2. rubric
+// resolution, the mechanics filter, and score normalization all live here so
+// they stay directly testable (tests/worker-grading-core.test.js), with no
+// D1 and no network call.
+import {
+  resolveRubric,
+  rubricToPrompt,
+  resolveMechanicsFinding,
+  normalizeScore,
+} from './grading-core.js';
 
 const MAX_BATCH = 500;
 // Grading Assistant §4 — generous headroom under R2's free-tier 10 GB; a
 // scanned answer key runs a few hundred KB to a few MB.
 const MAX_ANSWER_KEY_BYTES = 20 * 1024 * 1024;
+// A phone photo of a worksheet page. Generous headroom over a typical
+// few-MB capture; large enough that a legitimate photo is never the reason
+// this rejects, small enough to bound a malicious upload.
+const MAX_GRADING_PHOTO_BYTES = 15 * 1024 * 1024;
 const DEFAULT_SNAPSHOT_LIMIT = 2000;
 const MAX_SNAPSHOT_LIMIT = 5000;
 const PAIR_CODE_TTL_MS = 15 * 60 * 1000;
@@ -278,6 +292,18 @@ async function routeApi(request, env, ctx, url) {
   }
   if (pathname === '/api/messages' && method === 'POST') {
     return withDevice(request, env, ctx, (device) => handleMessages(request, env, device));
+  }
+
+  // ---- Grading Assistant (Grading_Assistant §5, Phase 3) — child device
+  // credential. §0.2: the child's own device requests grading for its own
+  // assignment; child_id derives from the token exactly as every other
+  // route in this section does. No new §III.E exception.
+  if (pathname === '/api/grading/page' && method === 'POST') {
+    return withDevice(request, env, ctx, (device) => handleGradingPageCapture(request, env, deviceActor(device), url));
+  }
+  const gradingReviewMatch = /^\/api\/grading\/review\/([^/]+)$/.exec(pathname);
+  if (gradingReviewMatch && method === 'GET') {
+    return withDevice(request, env, ctx, (device) => handleGradingReviewRead(env, deviceActor(device), gradingReviewMatch[1]));
   }
 
   // ---- Wall Display App (Wall §8.3) — wall credential ----
@@ -2385,7 +2411,7 @@ async function handleMessagesRead(request, env) {
 
 // ============================================================================
 // Grading Assistant (Grading_Assistant §4, §5, Phase 1) — media only.
-// The grading call itself, and the tables its proposals land in, are Phase 3.
+// The grading call itself, and the tables its proposals land in, are below.
 // ============================================================================
 
 // A parent uploads an answer key PDF for a lesson, stored at keys/{lessonId}
@@ -2416,6 +2442,365 @@ async function handleGradingKeyUpload(request, env, url) {
   const key = `keys/${lessonId}`;
   await env.MEDIA.put(key, bytes, { httpMetadata: { contentType: 'application/pdf' } });
   return json({ ok: true, key });
+}
+
+// ============================================================================
+// Grading Assistant (Grading_Assistant §5, §6, Phase 3) — the grading call.
+//
+// Reads the answer key and rubric context Phases 1/2 already made possible to
+// store, calls the Anthropic Messages API directly over fetch (this Worker
+// carries no npm runtime dependencies — package.json:5 — so raw HTTP is the
+// fit, not the SDK), and writes the result to grading_reviews and
+// mechanics_findings, its own two tables. It never touches assignments.grade
+// — a proposal reaches `grade` only through the existing completion path,
+// using exactly ASSIGNMENT_COMPLETION_FIELDS, same as any other completion
+// (§0.1, CLAUDE.md §0's column-ownership row).
+// ============================================================================
+
+const GRADING_MODEL_DEFAULT = 'claude-sonnet-5';
+const GRADING_MODEL_OVERRIDE = 'claude-opus-5'; // §6 — the only per-course override this route recognizes
+const ANTHROPIC_MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
+const ANTHROPIC_API_VERSION = '2023-06-01';
+
+// §6's response shape, pinned with structured outputs rather than parsed
+// from prose. `items` order is item order — no separate index field, so a
+// reordered response can't silently mislabel an item. `mechanics` mirrors
+// §3.2's model-reported shape exactly: the model reports, resolveMechanicsFinding
+// (grading-core.js) decides what counts — never this schema.
+const GRADING_OUTPUT_SCHEMA = {
+  type: 'object',
+  properties: {
+    items: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          transcription: { type: 'string' },
+          verdict: { type: 'string', enum: ['CORRECT', 'PARTIAL', 'INCORRECT', 'BLANK', 'UNSURE'] },
+          reason: { type: 'string' },
+        },
+        required: ['transcription', 'verdict', 'reason'],
+        additionalProperties: false,
+      },
+    },
+    mechanics: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          kind: { type: 'string', enum: ['spelling', 'grammar'] },
+          asWritten: { type: 'string' },
+          intended: { type: 'string' },
+          ageJudgment: { type: 'string', enum: ['expected', 'advanced'] },
+        },
+        required: ['kind', 'asWritten', 'intended', 'ageJudgment'],
+        additionalProperties: false,
+      },
+    },
+    feedback: { type: 'string' },
+  },
+  required: ['items', 'mechanics', 'feedback'],
+  additionalProperties: false,
+};
+
+const GRADING_OUTPUT_INSTRUCTION =
+  'Grade every item on the page against the answer key. For each item, transcribe exactly ' +
+  'what the child wrote, give a verdict (CORRECT, PARTIAL, INCORRECT, BLANK, or UNSURE), and a ' +
+  'short reason. Separately, list every suspected spelling or grammar issue you notice — report ' +
+  'all of them, pre-filtering none. Finish with one short paragraph of feedback addressed ' +
+  'directly to the child, in an encouraging tone appropriate to their grade level.';
+
+// The `records` mirror keys every row on JSON.stringify(key) (online-revamp
+// §3.1 — the same convention handlePair's fallback lookup already uses
+// against the `children` store, above). Returns the parsed value, or null
+// when the row is absent, deleted, or unparseable — every caller below
+// treats null as "resolve nothing further," never as an error to throw.
+async function readRecordValue(env, store, key) {
+  const row = await env.DB.prepare(
+    `SELECT value FROM records WHERE store = ?1 AND key = ?2 AND deleted = 0`
+  ).bind(store, JSON.stringify(key)).first();
+  if (!row || !row.value) return null;
+  try {
+    return JSON.parse(row.value);
+  } catch {
+    return null;
+  }
+}
+
+// Workers' `btoa` takes a binary string, and `String.fromCharCode(...bytes)`
+// blows the call-stack argument limit past a few tens of KB — a scanned PDF
+// or a phone photo both routinely exceed that. Chunking keeps every call
+// inside the limit regardless of file size.
+function bufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+// §2/§3 — walks assignment → activity → lesson → course to resolve the
+// rubric and lesson context a grading call needs. Returns either
+// `{ error: Response }` for the caller to return as-is, or the resolved
+// context — kept as one function because every step depends on the last and
+// none of it is useful half-resolved.
+async function resolveGradingContext(env, assignment) {
+  if (assignment.kind !== 'activity' || !assignment.source_id) {
+    return { error: json({ error: 'Grading is only available for lesson activities.' }, 400) };
+  }
+
+  const activity = await readRecordValue(env, 'activities', assignment.source_id);
+  if (!activity || !activity.lessonId) {
+    return { error: json({ error: 'No activity record found for this assignment; its lesson cannot be resolved.' }, 422) };
+  }
+
+  const lesson = await readRecordValue(env, 'lessons', activity.lessonId);
+  if (!lesson || !lesson.courseId) {
+    return { error: json({ error: 'No lesson record found for this activity; its course cannot be resolved.' }, 422) };
+  }
+
+  const course = await readRecordValue(env, 'courses', lesson.courseId);
+  if (!course) {
+    return { error: json({ error: 'No course record found for this lesson.' }, 422) };
+  }
+
+  // §2's settings record — sparse, one per install, authored in a later
+  // phase (§9 Phase 4). Absent today on every household; resolveRubric
+  // treats a missing layer exactly like an empty one and falls through to
+  // RUBRIC_DEFAULTS, so grading works before Phase 4 ships and picks up
+  // authored defaults the moment it does, with no change to this route.
+  const householdDefaults = await readRecordValue(env, 'meta', 'gradingDefaults');
+  const rubric = resolveRubric(course.gradingRubric, householdDefaults);
+
+  const child = await readRecordValue(env, 'children', assignment.child_id);
+  const gradeLabel = (child && child.gradeLabel) || null;
+
+  const model = course.gradingModel === GRADING_MODEL_OVERRIDE ? GRADING_MODEL_OVERRIDE : GRADING_MODEL_DEFAULT;
+
+  return { lessonId: activity.lessonId, course, rubric, gradeLabel, model };
+}
+
+// The Anthropic call. §6's block ordering is load-bearing for the cache: the
+// answer key, the resolved rubric, and the lesson context are byte-identical
+// for every child doing this lesson, so the breakpoint sits after the third
+// block — a household grading three children's copies of one lesson in a
+// sitting pays full price once and roughly a tenth of it twice more.
+//
+// Thinking is explicitly disabled rather than left to run adaptive by
+// default: this call carries no tools, so the "tool call written as plain
+// text" failure mode disabled thinking can cause doesn't apply here, and a
+// malformed response degrades cleanly to a `failed` row (the caller's JSON
+// parse simply fails) rather than corrupting a grade. Effort `medium` is the
+// other half of the same cost discipline this feature exists under (§0's
+// narrowed free-tier row, CLAUDE.md §0): ~$7-11/month at ~240 worksheets
+// assumes a mid-effort call, not `xhigh`.
+async function callGradingModel(env, { model, answerKeyBase64, rubricPromptText, lessonContextText, photoBase64, photoContentType }) {
+  const body = {
+    model,
+    max_tokens: 8000,
+    thinking: { type: 'disabled' },
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: answerKeyBase64 } },
+          { type: 'text', text: rubricPromptText },
+          { type: 'text', text: lessonContextText, cache_control: { type: 'ephemeral', ttl: '1h' } },
+          { type: 'image', source: { type: 'base64', media_type: photoContentType, data: photoBase64 } },
+          { type: 'text', text: GRADING_OUTPUT_INSTRUCTION },
+        ],
+      },
+    ],
+    output_config: { effort: 'medium', format: { type: 'json_schema', schema: GRADING_OUTPUT_SCHEMA } },
+  };
+
+  return fetch(ANTHROPIC_MESSAGES_URL, {
+    method: 'POST',
+    headers: {
+      'x-api-key': env.ANTHROPIC_API_KEY,
+      'anthropic-version': ANTHROPIC_API_VERSION,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+// Writes (or replaces — §1.1: a re-grade is a draft with no ledger property
+// to protect) the grading_reviews row, and appends every mechanics_findings
+// row regardless of whether the household's rubric counts it (§0.4 —
+// recording is decoupled from counting). `state` is 'proposed' on success,
+// 'failed' on any grading-call fault; a failed row still records the attempt
+// (model, rubric_digest, photo_key) so a parent or a later session can see
+// an attempt happened and why it produced nothing, rather than guessing from
+// an absent row.
+async function saveGradingOutcome(env, { assignmentId, childId, photoKey, model, rubricDigest, state, proposedScore, verdictItems, mechanicsFindings, feedback, gradeLabel, rubric }) {
+  const now = Date.now();
+  await env.DB.prepare(
+    `INSERT INTO grading_reviews (assignment_id, child_id, photo_key, proposed_score, items, feedback, rubric_digest, model, state, created_at, reviewed_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL)
+     ON CONFLICT (assignment_id) DO UPDATE SET
+       child_id = excluded.child_id, photo_key = excluded.photo_key, proposed_score = excluded.proposed_score,
+       items = excluded.items, feedback = excluded.feedback, rubric_digest = excluded.rubric_digest,
+       model = excluded.model, state = excluded.state, created_at = excluded.created_at, reviewed_at = NULL`
+  ).bind(
+    assignmentId, childId, photoKey, proposedScore,
+    verdictItems ? JSON.stringify(verdictItems) : null, feedback || null,
+    rubricDigest, model, state, now
+  ).run();
+
+  if (!mechanicsFindings || mechanicsFindings.length === 0) return;
+
+  const findingRows = mechanicsFindings.map((finding) => {
+    const { counted, source } = resolveMechanicsFinding(finding, rubric, gradeLabel);
+    return env.DB.prepare(
+      `INSERT INTO mechanics_findings (id, child_id, assignment_id, kind, as_written, intended, counted, source, found_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`
+    ).bind(crypto.randomUUID(), childId, assignmentId, finding.kind, finding.asWritten, finding.intended, counted, source, now);
+  });
+  await env.DB.batch(findingRows);
+}
+
+// POST /api/grading/page — §5, §6. Upload a captured worksheet photo,
+// resolve the rubric and answer key, run the grading call, and return the
+// proposal. Online-required (§0.7; CLAUDE.md §III.A's third narrowing) — a
+// capture made offline never reaches this handler at all; the Child App
+// queues the photo in its ordinary outbox and grades on drain.
+async function handleGradingPageCapture(request, env, actor, url) {
+  if (!env.MEDIA) {
+    return json({ error: 'R2 binding "MEDIA" is not configured on this Worker.' }, 500);
+  }
+  if (!env.ANTHROPIC_API_KEY) {
+    return json({ error: 'ANTHROPIC_API_KEY secret is not configured on this Worker.' }, 500);
+  }
+
+  const assignmentId = url.searchParams.get('assignmentId');
+  if (typeof assignmentId !== 'string' || !assignmentId) {
+    return json({ error: 'An assignmentId query parameter is required.' }, 400);
+  }
+
+  // child_id is part of the WHERE, never trusted from the body (§4.2 of the
+  // revamp slice — same discipline as handleCompletions above): a photo can
+  // only be graded against the calling device's own assignment.
+  const assignment = await env.DB.prepare(
+    `SELECT id, child_id, kind, source_id, title, course_name FROM assignments
+     WHERE id = ?1 AND child_id = ?2 AND rescinded_at IS NULL`
+  ).bind(assignmentId, actor.childId).first();
+  if (!assignment) return json({ error: 'Assignment not found for this child.' }, 404);
+
+  const contentType = (request.headers.get('Content-Type') || '').toLowerCase();
+  if (!contentType.startsWith('image/')) {
+    return json({ error: 'Content-Type must be an image/* type.' }, 400);
+  }
+
+  const photoBytes = await request.arrayBuffer();
+  if (photoBytes.byteLength === 0) return json({ error: 'Request body must not be empty.' }, 400);
+  if (photoBytes.byteLength > MAX_GRADING_PHOTO_BYTES) {
+    return json({ error: `Photo must be at most ${MAX_GRADING_PHOTO_BYTES} bytes.` }, 413);
+  }
+
+  const context = await resolveGradingContext(env, assignment);
+  if (context.error) return context.error;
+  const { lessonId, course, rubric, gradeLabel, model } = context;
+
+  const keyObject = await env.MEDIA.get(`keys/${lessonId}`);
+  if (!keyObject) {
+    return json({ error: 'No answer key has been uploaded for this lesson yet. Ask a parent to add one.' }, 422);
+  }
+  const answerKeyBase64 = bufferToBase64(await keyObject.arrayBuffer());
+
+  const photoKey = `pages/${assignmentId}`;
+  await env.MEDIA.put(photoKey, photoBytes, { httpMetadata: { contentType } });
+  const photoBase64 = bufferToBase64(photoBytes);
+
+  const rubricPromptText = rubricToPrompt(rubric, gradeLabel || 'not specified');
+  const rubricDigest = await sha256Hex(rubricPromptText);
+  const lessonContextText = `Lesson: ${assignment.title}\nCourse: ${course.name || assignment.course_name || 'unknown'}`;
+
+  const failOutcome = (extra) => saveGradingOutcome(env, {
+    assignmentId, childId: actor.childId, photoKey, model, rubricDigest, state: 'failed',
+    proposedScore: null, verdictItems: null, mechanicsFindings: [], feedback: null, gradeLabel, rubric, ...extra,
+  });
+
+  let apiResponse;
+  try {
+    apiResponse = await callGradingModel(env, { model, answerKeyBase64, rubricPromptText, lessonContextText, photoBase64, photoContentType: contentType });
+  } catch (err) {
+    await failOutcome();
+    return json({ error: `Could not reach the grading service: ${String((err && err.message) || err)}` }, 502);
+  }
+
+  if (!apiResponse.ok) {
+    const detail = await apiResponse.text();
+    await failOutcome();
+    return json({ error: `Grading service error (${apiResponse.status}): ${detail.slice(0, 300)}` }, 502);
+  }
+
+  const payload = await apiResponse.json();
+
+  if (payload.stop_reason === 'refusal') {
+    await failOutcome();
+    return json({ error: 'Grading was declined for this content. Try a different photo, or ask a parent to grade it directly.' }, 422);
+  }
+
+  const textBlock = (payload.content || []).find((b) => b.type === 'text');
+  let parsed = null;
+  try {
+    parsed = textBlock ? JSON.parse(textBlock.text) : null;
+  } catch {
+    parsed = null;
+  }
+  if (!parsed || !Array.isArray(parsed.items) || !Array.isArray(parsed.mechanics)) {
+    await failOutcome();
+    return json({ error: 'The grading service returned an unusable response.' }, 502);
+  }
+
+  const score = normalizeScore(parsed.items, rubric);
+
+  await saveGradingOutcome(env, {
+    assignmentId, childId: actor.childId, photoKey, model, rubricDigest, state: 'proposed',
+    proposedScore: score.score, verdictItems: parsed.items, mechanicsFindings: parsed.mechanics,
+    feedback: parsed.feedback, gradeLabel, rubric,
+  });
+
+  return json({
+    assignmentId,
+    state: 'proposed',
+    score: score.score,
+    outOf: score.outOf,
+    items: parsed.items,
+    feedback: parsed.feedback,
+  });
+}
+
+// GET /api/grading/review/:assignmentId — §5. Read back a standing proposal
+// for the calling device's own child.
+async function handleGradingReviewRead(env, actor, assignmentId) {
+  const owned = await env.DB.prepare(
+    `SELECT id FROM assignments WHERE id = ?1 AND child_id = ?2`
+  ).bind(assignmentId, actor.childId).first();
+  if (!owned) return json({ error: 'Assignment not found for this child.' }, 404);
+
+  const row = await env.DB.prepare(
+    `SELECT assignment_id, child_id, photo_key, proposed_score, items, feedback, rubric_digest, model, state, created_at, reviewed_at
+     FROM grading_reviews WHERE assignment_id = ?1`
+  ).bind(assignmentId).first();
+  if (!row) return json({ error: 'No grading proposal for this assignment.' }, 404);
+
+  return json({
+    review: {
+      assignmentId: row.assignment_id,
+      childId: row.child_id,
+      proposedScore: row.proposed_score,
+      items: row.items ? JSON.parse(row.items) : null,
+      feedback: row.feedback,
+      model: row.model,
+      state: row.state,
+      createdAt: row.created_at,
+      reviewedAt: row.reviewed_at,
+    },
+  });
 }
 
 // ============================================================================
