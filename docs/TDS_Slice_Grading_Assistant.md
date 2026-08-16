@@ -803,6 +803,11 @@ it puts the person who owns the curriculum in the loop by construction rather th
 review screen built to force it.
 **Locked for:** the Grading Assistant milestone.
 
+**The procedure itself is `Answer_Key_Transcription_Guide.md`** — the Project's custom
+instructions, the per-lesson message, the output format, what to do with each kind of flag it
+returns, and the §11.2 test run. It is a document rather than a section here because it is
+operated rather than implemented; nothing in the build reads it.
+
 An earlier draft of this section specified `POST /api/grading/keys/transcribe` — a
 `SYNC_TOKEN` route that would read the PDF from R2, call the model, and return text
 segmented per activity for review on the §4.2 bulk screen. **That route is cancelled and
