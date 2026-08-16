@@ -14,6 +14,11 @@
   // would show a score with no "out of" beside it.
   var COUNTED_VERDICTS = { CORRECT: true, PARTIAL: true, INCORRECT: true };
 
+  // Mirrors management-app/worker/index.js's MAX_GRADING_PAGES (§12.6). The
+  // Worker enforces this once it reads the multipart body; this copy lets the
+  // capture UI refuse a 13th page before any upload starts (§12.10 check 5).
+  var MAX_GRADING_PAGES = 12;
+
   function outOfFromItems(items) {
     var rows = Array.isArray(items) ? items : [];
     var count = 0;
@@ -52,7 +57,7 @@
   }
 
   // Shapes both server responses this UI reads into one display model:
-  // the direct POST /api/grading/page reply (`score`/`outOf`) and the GET
+  // the direct POST /api/grading/pages reply (`score`/`outOf`) and the GET
   // /api/grading/review/:id reply (`proposedScore`/`items`, no `outOf`).
   function formatProposal(review) {
     if (!review) return null;
@@ -76,8 +81,15 @@
   // shapes actually reachable from this route: 400/404/422/502/413/500).
   // Anything not named here — an unrecognised status — falls through to the
   // generic message rather than surfacing a raw HTTP code to a kid.
+  //
+  // §12.6: a 413 is no longer one flat cause. `pageFiles.length >
+  // MAX_GRADING_PAGES` and the combined key-plus-pages guard both answer 413,
+  // and the combined one already names which side is over in `error` — so a
+  // 413 with a server message is passed through verbatim, same as 422, and
+  // only a 413 with no message (or a stray legacy call) falls back to the
+  // flat per-photo copy.
   function errorMessage(status, serverMessage) {
-    if (status === 422 && serverMessage) return serverMessage; // "no answer key yet" / declined — worded for a parent already
+    if ((status === 422 || status === 413) && serverMessage) return serverMessage; // worded for a parent already
     if (status === 413) return "That photo is too big. Try again with a smaller picture.";
     if (status === 404) return "Couldn't find that assignment to grade.";
     if (status === 401) return "This device needs to be paired again — ask a parent.";
@@ -85,6 +97,7 @@
   }
 
   g.GradingCore = {
+    MAX_GRADING_PAGES: MAX_GRADING_PAGES,
     isGradableActivity: isGradableActivity,
     outOfFromItems: outOfFromItems,
     percentOf: percentOf,

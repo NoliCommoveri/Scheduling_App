@@ -1062,3 +1062,16 @@ test('errorMessage: everything else gets kid-facing copy, not a raw status code'
   assert.equal(GradingCore.errorMessage(401), "This device needs to be paired again — ask a parent.");
   assert.equal(GradingCore.errorMessage(502), "Couldn't grade that right now. Try again in a bit.");
 });
+
+test('errorMessage: §12.6\'s combined-request 413 passes the server\'s "which side is over" wording through, same as 422', () => {
+  assert.equal(
+    GradingCore.errorMessage(413, 'Grading request too large: answer key is 9000000 bytes, photographed pages total ' +
+      '15000000 bytes, combined limit is 20000000 bytes. The photographed pages are the larger contributor — retake with fewer or smaller pages.'),
+    'Grading request too large: answer key is 9000000 bytes, photographed pages total ' +
+      '15000000 bytes, combined limit is 20000000 bytes. The photographed pages are the larger contributor — retake with fewer or smaller pages.'
+  );
+});
+
+test('MAX_GRADING_PAGES mirrors the Worker\'s per-assignment page cap (§12.6)', () => {
+  assert.equal(GradingCore.MAX_GRADING_PAGES, 12);
+});

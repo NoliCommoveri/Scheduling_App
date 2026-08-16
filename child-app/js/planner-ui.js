@@ -1256,13 +1256,30 @@
         body.appendChild(retake);
       }
 
+      // §12 Phase C — the whole assignment is captured as a set of pages
+      // before one submit (§12.10). The child repeats "Add a photo" for each
+      // page; nothing here reorders `pages`, since insertion order is the
+      // only record of page order all the way to the Worker's
+      // `formData.getAll('page')` (grading.js's submitPages).
       function showCapture() {
         body.innerHTML = "";
         if (isOffline()) {
           body.appendChild(node("p", "modal-help", "This needs the internet. Try again once you're back online."));
           return;
         }
-        body.appendChild(node("p", "modal-help", "Take a photo of the completed page."));
+        body.appendChild(node("p", "modal-help", "Take a photo of each completed page, in order."));
+
+        var pages = []; // { blob, url }, in capture order
+
+        var list = node("div");
+        list.style.marginTop = "10px";
+        body.appendChild(list);
+
+        var countLabel = node("p", "modal-help");
+        body.appendChild(countLabel);
+
+        var err = node("div", "err-text");
+        body.appendChild(err);
 
         var fileInput = node("input");
         fileInput.type = "file";
@@ -1270,45 +1287,90 @@
         // Attribute, not the IDL property — some WebViews on budget Android
         // reflect `capture` from the markup but not from a JS assignment.
         fileInput.setAttribute("capture", "environment");
+        fileInput.style.display = "none";
         body.appendChild(fileInput);
 
-        var preview = node("img");
-        preview.style.maxWidth = "100%";
-        preview.style.marginTop = "10px";
-        preview.style.display = "none";
-        body.appendChild(preview);
-
-        var err = node("div", "err-text");
-        body.appendChild(err);
+        var addBtn = node("button", "btn ghost small", "Add a photo");
+        addBtn.style.marginTop = "10px";
+        addBtn.onclick = function () { fileInput.click(); };
+        body.appendChild(addBtn);
 
         var submitBtn = node("button", "btn", "Submit for grading");
         submitBtn.style.marginTop = "10px";
+        submitBtn.style.marginLeft = "8px";
         submitBtn.disabled = true;
         body.appendChild(submitBtn);
 
-        var selected = null;
+        function renderList() {
+          list.innerHTML = "";
+          pages.forEach(function (page, i) {
+            var row = node("div");
+            row.style.display = "flex";
+            row.style.alignItems = "center";
+            row.style.gap = "8px";
+            row.style.marginBottom = "6px";
+            var thumb = node("img");
+            thumb.src = page.url;
+            thumb.style.width = "56px";
+            thumb.style.height = "56px";
+            thumb.style.objectFit = "cover";
+            row.appendChild(thumb);
+            row.appendChild(node("span", null, "Page " + (i + 1)));
+            var removeBtn = node("button", "btn ghost small", "Remove");
+            removeBtn.onclick = function () {
+              URL.revokeObjectURL(page.url);
+              pages.splice(i, 1);
+              renderList();
+            };
+            row.appendChild(removeBtn);
+            list.appendChild(row);
+          });
+          countLabel.textContent = pages.length + " of " + g.GradingCore.MAX_GRADING_PAGES + " pages added.";
+          submitBtn.disabled = pages.length === 0;
+          addBtn.disabled = pages.length >= g.GradingCore.MAX_GRADING_PAGES;
+        }
+        renderList();
+
         fileInput.onchange = function () {
           var f = fileInput.files && fileInput.files[0];
+          fileInput.value = ""; // lets the same photo be picked again if needed
+          if (!f) return;
+          // Refused client-side before any upload starts (§12.10 check 5) —
+          // the Worker's own MAX_GRADING_PAGES guard is the backstop, not the
+          // first line.
+          if (pages.length >= g.GradingCore.MAX_GRADING_PAGES) {
+            err.textContent = "You can add at most " + g.GradingCore.MAX_GRADING_PAGES + " pages.";
+            return;
+          }
           err.textContent = "";
-          selected = f || null;
-          if (!selected) { preview.style.display = "none"; submitBtn.disabled = true; return; }
-          preview.src = URL.createObjectURL(selected);
-          preview.style.display = "block";
-          submitBtn.disabled = false;
+          addBtn.disabled = true;
+          addBtn.textContent = "Processing…";
+          g.Grading.resizePage(f).then(function (blob) {
+            pages.push({ blob: blob, url: URL.createObjectURL(blob) });
+          }).catch(function () {
+            err.textContent = "Couldn't use that photo. Try again.";
+          }).then(function () {
+            addBtn.textContent = "Add a photo";
+            renderList();
+          });
         };
 
         submitBtn.onclick = function () {
-          if (!selected) return;
+          if (pages.length === 0) return;
           if (isOffline()) { err.textContent = "Lost the connection — try again once you're back online."; return; }
           submitBtn.disabled = true;
+          addBtn.disabled = true;
           submitBtn.textContent = "Grading…";
-          g.Grading.submitPhoto(item.id, selected, selected.type || "image/jpeg").then(function (res) {
+          var blobs = pages.map(function (p) { return p.blob; });
+          g.Grading.submitPages(item.id, blobs).then(function (res) {
             if (!res.ok) {
               err.textContent = res.message || "Couldn't grade that right now.";
               submitBtn.disabled = false;
+              addBtn.disabled = pages.length >= g.GradingCore.MAX_GRADING_PAGES;
               submitBtn.textContent = "Submit for grading";
               return;
             }
+            pages.forEach(function (p) { URL.revokeObjectURL(p.url); });
             showProposal(g.GradingCore.formatProposal(res.review));
           });
         };
