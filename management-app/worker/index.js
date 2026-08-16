@@ -248,13 +248,37 @@ async function routeApi(request, env, ctx, url) {
 
   // ---- Grading Assistant (Grading_Assistant §5, Phase 1) — parent only ----
   //
-  // The other three §5 routes (page capture, review read-back, remediation
-  // report) are Phase 3/7 — the grading call itself and the tables it reads
-  // don't exist yet. This is the media half only: an answer key never enters
-  // the tree (it would be world-downloadable under [assets]) and is never
-  // public — Worker-mediated, token-gated, same as a photo will be.
+  // An answer key never enters the tree (it would be world-downloadable
+  // under [assets]) and is never public — Worker-mediated, token-gated, same
+  // as a photo is below.
   if (pathname === '/api/grading/keys' && method === 'POST') {
     return withParent(request, env, () => handleGradingKeyUpload(request, env, url));
+  }
+
+  // ---- Grading Assistant (Grading_Assistant §9, Phase 5) — parent only ----
+  //
+  // The review surface's three routes. None of them are in §5's original
+  // four-route table — that table covers the child's capture/read-back path
+  // and the parent's key upload; a parent reviewing proposals needs its own
+  // way to list them, see the photo, and record a decision. All three reuse
+  // existing machinery rather than inventing new column ownership: the queue
+  // is a read of grading_reviews joined to assignments/children, the photo
+  // route streams the same R2 object the device wrote in Phase 3, and the
+  // decision route below (§0.1) writes `grade` through handleCompletions —
+  // literally the same function and the same ASSIGNMENT_COMPLETION_FIELDS
+  // allowlist a device's own completion uses, just called with a
+  // parent-tagged actor instead of a device-tagged one.
+  if (pathname === '/api/grading/reviews' && method === 'GET') {
+    return withParent(request, env, () => handleGradingReviewsQuery(url, env));
+  }
+  const gradingPhotoMatch = /^\/api\/grading\/review\/([^/]+)\/photo$/.exec(pathname);
+  if (gradingPhotoMatch && method === 'GET') {
+    return withParent(request, env, () => handleGradingPhotoServe(env, gradingPhotoMatch[1]));
+  }
+  const gradingDecisionMatch = /^\/api\/grading\/review\/([^/]+)\/decision$/.exec(pathname);
+  if (gradingDecisionMatch && method === 'POST') {
+    return withParent(request, env, () => withJsonBody(request, (body) =>
+      handleGradingReviewDecision(request, env, gradingDecisionMatch[1], body)));
   }
 
   // ---- Child — unauthenticated (§5.4) ----
@@ -2801,6 +2825,144 @@ async function handleGradingReviewRead(env, actor, assignmentId) {
       reviewedAt: row.reviewed_at,
     },
   });
+}
+
+// ============================================================================
+// Grading Assistant (Grading_Assistant §9, Phase 5) — the parent's review
+// surface: the queue, the photo, and the decision that turns a proposal into
+// a grade.
+// ============================================================================
+
+// GET /api/grading/reviews — the review queue. Joined to assignments (for
+// title/date/course — a bare assignment_id is not reviewable at a glance,
+// same reasoning as handleMessagesQuery's join) and to children (for a
+// name instead of a raw id). LEFT on both: a rescinded assignment or an
+// archived child must not make an existing proposal disappear from the
+// queue, only explain itself once it's there.
+async function handleGradingReviewsQuery(url, env) {
+  const childId = url.searchParams.get('childId');
+  const state = url.searchParams.get('state');
+
+  let sql = `SELECT r.*, a.title AS assignment_title, a.date AS assignment_date,
+                    a.course_name AS assignment_course, a.rescinded_at AS assignment_rescinded_at,
+                    c.name AS child_name
+             FROM grading_reviews r
+             LEFT JOIN assignments a ON a.id = r.assignment_id
+             LEFT JOIN children c ON c.id = r.child_id
+             WHERE 1=1`;
+  const params = [];
+  let i = 1;
+  if (childId) { sql += ` AND r.child_id = ?${i}`; params.push(childId); i++; }
+  if (state) { sql += ` AND r.state = ?${i}`; params.push(state); i++; }
+  sql += ` ORDER BY r.created_at DESC LIMIT ${MAX_QUERY_ROWS + 1}`;
+
+  const { results } = await env.DB.prepare(sql).bind(...params).all();
+  const rows = (results || []).map((row) => ({
+    assignmentId: row.assignment_id,
+    childId: row.child_id,
+    childName: row.child_name,
+    assignmentTitle: row.assignment_title,
+    assignmentDate: row.assignment_date,
+    assignmentCourse: row.assignment_course,
+    assignmentRescindedAt: row.assignment_rescinded_at,
+    photoKey: row.photo_key,
+    proposedScore: row.proposed_score,
+    items: row.items ? JSON.parse(row.items) : null,
+    feedback: row.feedback,
+    model: row.model,
+    state: row.state,
+    createdAt: row.created_at,
+    reviewedAt: row.reviewed_at,
+  }));
+  return json(capRows(rows, 'reviews'));
+}
+
+// GET /api/grading/review/:assignmentId/photo — streams the captured
+// worksheet back out of R2 (§4) so the review UI can show it beside the
+// proposal. SYNC_TOKEN has full scope (CLAUDE.md §III.E), so unlike the
+// device read-back this needs no ownership check beyond the token itself.
+async function handleGradingPhotoServe(env, assignmentId) {
+  if (!env.MEDIA) return json({ error: 'R2 binding "MEDIA" is not configured on this Worker.' }, 500);
+  const review = await env.DB.prepare(
+    `SELECT photo_key FROM grading_reviews WHERE assignment_id = ?1`
+  ).bind(assignmentId).first();
+  if (!review) return json({ error: 'No grading proposal for this assignment.' }, 404);
+
+  const object = await env.MEDIA.get(review.photo_key);
+  if (!object) return json({ error: 'Photo not found in storage.' }, 404);
+  return new Response(object.body, {
+    headers: {
+      'Content-Type': (object.httpMetadata && object.httpMetadata.contentType) || 'application/octet-stream',
+      'Cache-Control': 'private, max-age=3600',
+    },
+  });
+}
+
+// POST /api/grading/review/:assignmentId/decision — §0.1, §9 acceptance
+// check 4. `action: 'accept'` takes the model's proposed_score verbatim;
+// `action: 'override'` takes a parent-supplied score (and, optionally,
+// rewritten feedback — the text the child will see, which is not an
+// assignments column and so is never part of the completion write below).
+//
+// The write to `assignments.grade` goes through handleCompletions itself —
+// not a re-implementation of it — with a parent-tagged actor in place of a
+// device-tagged one. That is what keeps this route inside §0.1's promise:
+// "the score reaches grade only through the existing completion path, using
+// exactly ASSIGNMENT_COMPLETION_FIELDS, unchanged." `updated_by` lands as
+// `'parent'`, the same literal the PATCH and rescind routes already use for
+// every other SYNC_TOKEN-driven write in this file.
+async function handleGradingReviewDecision(request, env, assignmentId, body) {
+  const action = body && body.action;
+  if (action !== 'accept' && action !== 'override') {
+    return json({ error: 'action must be "accept" or "override".' }, 400);
+  }
+
+  const review = await env.DB.prepare(
+    `SELECT assignment_id, child_id, proposed_score, feedback, state FROM grading_reviews WHERE assignment_id = ?1`
+  ).bind(assignmentId).first();
+  if (!review) return json({ error: 'No grading proposal for this assignment.' }, 404);
+  if (review.state === 'failed') {
+    return json({ error: 'This grading attempt failed and has no proposal to accept or override.' }, 409);
+  }
+
+  let score;
+  let feedback = review.feedback;
+  let newState;
+  if (action === 'accept') {
+    if (review.proposed_score == null) return json({ error: 'This proposal has no score to accept.' }, 409);
+    score = review.proposed_score;
+    newState = 'accepted';
+  } else {
+    score = body.score;
+    if (typeof score !== 'number' || !Number.isFinite(score)) {
+      return json({ error: 'override requires a numeric "score".' }, 400);
+    }
+    if (typeof body.feedback === 'string') feedback = body.feedback;
+    newState = 'overridden';
+  }
+
+  const now = Date.now();
+  const completionFields = { status: 'complete', completedAt: now, grade: score };
+  if (typeof body.completionNote === 'string') completionFields.completionNote = body.completionNote;
+
+  const parentActor = { childId: review.child_id, actorTag: 'parent' };
+  const completionResult = await handleCompletions(
+    request, env, parentActor, { completions: [{ id: assignmentId, ...completionFields }] }
+  );
+  if (!completionResult.ok) return completionResult;
+  const completionBody = await completionResult.json();
+  if (completionBody.rejected && completionBody.rejected.length > 0) {
+    return json({ error: completionBody.rejected[0].error }, 409);
+  }
+  if (completionBody.deferred && completionBody.deferred.length > 0) {
+    return json({ error: completionBody.deferred[0].error }, 503);
+  }
+
+  await env.DB.prepare(
+    `UPDATE grading_reviews SET state = ?1, feedback = ?2, reviewed_at = ?3 WHERE assignment_id = ?4`
+  ).bind(newState, feedback, now, assignmentId).run();
+
+  return json({ ok: true, state: newState, grade: score });
 }
 
 // ============================================================================

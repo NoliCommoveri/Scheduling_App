@@ -22,6 +22,7 @@ const App = (() => {
     '#/events': () => Events.render(root),
     '#/packet': () => Packet.render(root),
     '#/assignments': () => Assignments.render(root),
+    '#/grading': () => GradingReview.render(root),
     '#/reporting': () => Reporting.render(root),
     '#/settings': () => Settings.renderSettingsPage(root),
   };
@@ -69,6 +70,7 @@ const App = (() => {
       links: [
         ['#/packet', 'Generate'],
         ['#/assignments', 'Assignments'],
+        ['#/grading', 'Grading'],
         ['#/reporting', 'Reporting'],
       ],
     },
