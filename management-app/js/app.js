@@ -24,6 +24,7 @@ const App = (() => {
     '#/assignments': () => Assignments.render(root),
     '#/grading': () => GradingReview.render(root),
     '#/reporting': () => Reporting.render(root),
+    '#/remediation': () => Remediation.render(root),
     '#/settings': () => Settings.renderSettingsPage(root),
   };
 
@@ -72,6 +73,7 @@ const App = (() => {
         ['#/assignments', 'Assignments'],
         ['#/grading', 'Grading'],
         ['#/reporting', 'Reporting'],
+        ['#/remediation', 'Remediation'],
       ],
     },
     {

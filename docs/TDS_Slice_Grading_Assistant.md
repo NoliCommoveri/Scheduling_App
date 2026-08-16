@@ -2,7 +2,7 @@
 
 ## Scope: Grading Assistant — photo capture, AI-proposed grades, tunable per-course rubrics, and a mechanics-error record for remediation
 
-**Date:** 2026-08-15 · **Status:** §11.1 confirmed 2026-08-15; Phases 1–6 shipped. §0.7 corrected 2026-08-16 (no offline photo queue — see `CLAUDE.md` v2.6). §11.2–5 remain open, none blocking.
+**Date:** 2026-08-15 · **Status:** §11.1 confirmed 2026-08-15; Phases 1–7 shipped. §0.7 corrected 2026-08-16 (no offline photo queue — see `CLAUDE.md` v2.6). Phase 7 also built the §5 `GET /api/grading/remediation` route, which Phase 3 had not — see §9's note. §11.2–5 remain open, none blocking.
 
 **Applies to:** Child App (capture), Worker (grading route, rubric resolution, mechanics
 filter), Management App (rubric authoring, review surface, remediation report). Three
@@ -320,14 +320,17 @@ the §9 acceptance checks against a real database.
 | **4** | Management App | Rubric authoring — household defaults + per-course sparse override | ~2h |
 | **5** | Management App | Review surface: proposal, accept/override, score lands via completion path | ~2.5h |
 | **6** | Child App | Capture UI: camera input, online-required submit, proposal display | ~2.5h |
-| **7** | Management App | Remediation report over `mechanics_findings` | ~1.5h |
+| **7** | Worker + Management App | Remediation report over `mechanics_findings`, including the §5 `GET /api/grading/remediation` route Phase 3 didn't build | ~1.5h |
 | **8** | — | §9 acceptance checks against a real database, budget-device smoke test | ~1.5h |
 
 **~17 hours across eight sessions.** Up from the ~12h first estimate: the tunable rubric
 adds phase 4, the list-plus-model mechanics arm adds to phase 2, and the remediation
 record adds phase 7. Each phase leaves the system working.
 
-Phases 1–3 are Worker scope, 4/5/7 Management App, 6 Child App — separately declared per
+Phases 1–3 are Worker scope, 4/5 Management App, 6 Child App, 7 both (declared as such —
+§5's route table listed `GET /api/grading/remediation` from the start, but no Worker phase
+ever built it; Phase 7 closes that gap in the same session as the report that reads it,
+rather than opening a ninth phase for a single ~15-line handler) — separately declared per
 §I.A.
 
 **Phase 3 is the only phase that spends money.** Everything before it is free to build and
