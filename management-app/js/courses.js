@@ -218,6 +218,10 @@ const Courses = (() => {
         return { error: 'Page range start and end must both be set, or both left blank.' };
       }
     }
+    if ('answerKeyText' in input) {
+      const raw = input.answerKeyText;
+      out.answerKeyText = raw === undefined || raw === null || String(raw).trim() === '' ? null : String(raw).trim();
+    }
     if ('activityCountTargets' in input) {
       const raw = input.activityCountTargets || [];
       const targets = [];
@@ -239,7 +243,7 @@ const Courses = (() => {
   }
 
   function applyOptionalLessonFields(record, normalized) {
-    for (const key of ['pageRangeStart', 'pageRangeEnd', 'activityCountTargets']) {
+    for (const key of ['pageRangeStart', 'pageRangeEnd', 'answerKeyText', 'activityCountTargets']) {
       if (key in normalized) {
         if (normalized[key] === null) delete record[key];
         else record[key] = normalized[key];
@@ -354,12 +358,16 @@ const Courses = (() => {
       out.instructions =
         raw === undefined || raw === null || String(raw).trim() === '' ? null : String(raw).trim();
     }
+    if ('answerKeyText' in input) {
+      const raw = input.answerKeyText;
+      out.answerKeyText = raw === undefined || raw === null || String(raw).trim() === '' ? null : String(raw).trim();
+    }
     return { fields: out };
   }
 
   // Set when a value is present, delete when null. Never touches any other field.
   function applyOptionalActivityFields(record, normalized) {
-    for (const key of ['expectedDurationMin', 'instructions']) {
+    for (const key of ['expectedDurationMin', 'instructions', 'answerKeyText']) {
       if (key in normalized) {
         if (normalized[key] === null) delete record[key];
         else record[key] = normalized[key];
@@ -1411,6 +1419,7 @@ const Courses = (() => {
         <label>Start<input type="number" name="pageRangeStart" min="1" step="1" value="${lesson.pageRangeStart ?? ''}"></label>
         <label>End<input type="number" name="pageRangeEnd" min="1" step="1" value="${lesson.pageRangeEnd ?? ''}"></label>
       </fieldset>
+      <label>Answer key text (whole lesson)<textarea name="answerKeyText" rows="8" placeholder="Pasted from the Claude Project transcription. Used when a pdf Activity under this Lesson has no answer key text of its own; falls back further to the uploaded PDF.">${escapeHtml(lesson.answerKeyText || '')}</textarea></label>
       <p class="error" hidden></p>
       <p class="success" hidden></p>
       <button type="submit">Save Lesson</button>
@@ -1430,6 +1439,7 @@ const Courses = (() => {
         order: editLessonForm.order.value,
         pageRangeStart: editLessonForm.pageRangeStart.value,
         pageRangeEnd: editLessonForm.pageRangeEnd.value,
+        answerKeyText: editLessonForm.answerKeyText.value,
         activityCountTargets: editLessonTargetsFieldset.collect(),
       });
       if (result.error) {
@@ -1971,6 +1981,14 @@ const Courses = (() => {
       )
       .join('');
 
+    // §12.5.3 — the answer key as text, resolved activity-first. Offered only
+    // on `pdf` Activities, the only ones the Grading Assistant grades; other
+    // types have no answer key to attach.
+    const answerKeyFieldHtml =
+      activity.activityType === 'pdf'
+        ? `<label>Answer key text (this activity)<textarea name="answerKeyText" rows="6" placeholder="Pasted from the Claude Project transcription. Blank falls back to the Lesson's answer key text, then the uploaded PDF.">${escapeHtml(activity.answerKeyText || '')}</textarea></label>`
+        : '';
+
     const form = document.createElement('form');
     form.innerHTML = `
       <h3>Edit Activity <code>${escapeHtml(activity.id)}</code></h3>
@@ -1979,6 +1997,7 @@ const Courses = (() => {
       <label>Difficulty Tier<select name="difficultyTier"><option value="">(select)</option>${tierOptions}</select></label>
       <label>Expected duration (min)<input type="number" name="expectedDurationMin" min="1" step="1" value="${activity.expectedDurationMin ?? ''}"></label>
       <label>Instructions<input type="text" name="instructions" value="${escapeHtml(activity.instructions || '')}"></label>
+      ${answerKeyFieldHtml}
       <p class="error" hidden></p>
       <button type="submit">Save</button>
       <button type="button" data-action="cancel">Cancel</button>
@@ -1993,16 +2012,14 @@ const Courses = (() => {
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const tier = tiers.find((t) => t.tierId === form.difficultyTier.value);
-      const result = await editActivity(
-        activity.id,
-        {
-          title: form.title.value,
-          required: form.required.checked,
-          expectedDurationMin: form.expectedDurationMin.value,
-          instructions: form.instructions.value,
-        },
-        tier
-      );
+      const editFields = {
+        title: form.title.value,
+        required: form.required.checked,
+        expectedDurationMin: form.expectedDurationMin.value,
+        instructions: form.instructions.value,
+      };
+      if (form.answerKeyText) editFields.answerKeyText = form.answerKeyText.value;
+      const result = await editActivity(activity.id, editFields, tier);
       if (result.error) {
         errorEl.hidden = false;
         errorEl.textContent = result.error;
