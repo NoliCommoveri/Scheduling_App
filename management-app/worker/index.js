@@ -2991,8 +2991,26 @@ async function handleGradingReviewDecision(request, env, assignmentId, body) {
     newState = 'overridden';
   }
 
+  // Reviewing a grade is not doing the work, so it must not restamp when the
+  // work happened. If the row already carries a `completed_at`, that is the
+  // fact of record and this route leaves it alone: a proposal accepted the
+  // morning after would otherwise re-date yesterday's lesson to today, moving
+  // it in reporting's completion-date rollups and in the CSV export's
+  // `completed_on` column (reporting.js:167) for a reason the parent never
+  // asked for. `completedAt` is sent only when the row has no completion time
+  // at all — the case where the parent's accept genuinely is the completion.
+  //
+  // Omitting the key rather than passing the old value back is deliberate:
+  // ASSIGNMENT_COMPLETION_FIELDS builds its SET clause from the keys present,
+  // so an absent `completedAt` leaves the column untouched instead of
+  // rewriting it to itself.
+  const existing = await env.DB.prepare(
+    `SELECT completed_at FROM assignments WHERE id = ?1 AND child_id = ?2`
+  ).bind(assignmentId, review.child_id).first();
+
   const now = Date.now();
-  const completionFields = { status: 'complete', completedAt: now, grade: score };
+  const completionFields = { status: 'complete', grade: score };
+  if (!existing || existing.completed_at == null) completionFields.completedAt = now;
   if (typeof body.completionNote === 'string') completionFields.completionNote = body.completionNote;
 
   const parentActor = { childId: review.child_id, actorTag: 'parent' };
