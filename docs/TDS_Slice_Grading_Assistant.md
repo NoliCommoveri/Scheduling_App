@@ -2,7 +2,7 @@
 
 ## Scope: Grading Assistant — photo capture, AI-proposed grades, tunable per-course rubrics, and a mechanics-error record for remediation
 
-**Date:** 2026-08-15 · **Status:** §11.1 confirmed 2026-08-15; building Phase 3. §11.2–5 remain open, none blocking.
+**Date:** 2026-08-15 · **Status:** §11.1 confirmed 2026-08-15; Phases 1–6 shipped. §0.7 corrected 2026-08-16 (no offline photo queue — see `CLAUDE.md` v2.6). §11.2–5 remain open, none blocking.
 
 **Applies to:** Child App (capture), Worker (grading route, rubric resolution, mechanics
 filter), Management App (rubric authoring, review surface, remediation report). Three
@@ -47,8 +47,15 @@ route's contract.
    already reach D1 inside `records` (`store = 'courses'`) via the existing sync push, and
    the Worker reads them with `json_extract` exactly as migration `0002` does for children.
 7. **Grading is online-required.** Same class of narrowing as `claim_group` rows
-   (§III.A) and the Wall App — not a new kind of departure. A capture with no network
-   queues the *photo* in the outbox and grades on drain; it never blocks the completion.
+   (§III.A) and the Wall App, but simpler than either: there is no offline path at all.
+   Capture-and-submit requires a live connection end to end — a capture with no network
+   is not queued anywhere, in the outbox or otherwise; the capture UI declines to submit
+   and the child tries again once connected. **Corrected 2026-08-16, before Phase 6
+   build:** this section originally described a photo queued in the outbox and graded on
+   drain. That was never built. What survives from the original intent is the boundary,
+   not the mechanism — capture-and-grade is still a separate action from marking the
+   assignment done, and still never blocks the completion, which stays fully local-first.
+   See `CLAUDE.md` §III.A / v2.6.
 
 ---
 

@@ -103,7 +103,9 @@
 // projection shipped, so its page-range line has been silently blank since
 // then. The bump is what gets the repair (and the lesson-header rework) onto
 // the device.
-const CACHE_NAME = "daily-plan-shell-v16";
+// v17: Grading Assistant Phase 6 adds the capture UI (grading-core.js,
+// grading.js) to the shell.
+const CACHE_NAME = "daily-plan-shell-v17";
 
 const APP_SHELL = [
   "./",
@@ -121,11 +123,13 @@ const APP_SHELL = [
   "./js/reward-core.js",
   "./js/settings-core.js",
   "./js/outbox-core.js",
+  "./js/grading-core.js",
   "./js/db.js",
   "./js/pairing.js",
   "./js/plan-sync.js",
   "./js/outbox.js",
   "./js/claim.js",
+  "./js/grading.js",
   "./js/theming.js",
   "./js/completion.js",
   "./js/deferment.js",
