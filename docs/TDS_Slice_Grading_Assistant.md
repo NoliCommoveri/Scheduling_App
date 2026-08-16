@@ -10,6 +10,9 @@ three routes — a course's Lessons keyed from one page instead of one drill-dow
 real assignments are 2–8, so the shipped build silently replaces page 1's proposal with
 page 2's. §12 amends §1.1, §4, §5 and §6 for multi-page capture and a composite grade, and
 is blocked on the §12.9 `CLAUDE.md` amendment and the §12.8 cost re-authorization.
+§12.5.3 additionally moves answer keys from PDF documents to text on the activity record
+where the answers are text — a ~10× cut on what turns out to be three quarters of every
+request, and the reason §0's authorized budget survives the multi-page correction at all.
 
 **Applies to:** Child App (capture), Worker (grading route, rubric resolution, mechanics
 filter), Management App (rubric authoring, review surface, remediation report). Three
@@ -700,24 +703,126 @@ relationship needs the key's internal structure read page by page, which this se
 not do — the container has no PDF renderer and `pypdf` would not install. Until someone
 reads one, every option below rests on an unverified assumption.
 
-Three ways forward, none yet chosen:
+Four ways forward. **D supersedes A and B and is the chosen direction** — Ray, in-session
+2026-08-16. A and B are kept here because they remain the fallback wherever D cannot
+apply.
 
 | Option | Effect | Cost |
 |---|---|---|
-| **A. Answer keys per `pdf` activity** rather than per lesson | Removes the problem outright — no mapping, no slicing, no over-sent pages, and §12.5's "the key covers more than the assignment" bound becomes unnecessary | Ray splits each key PDF by activity: 158 uploads for this course rather than 66. §4.2's matcher already places files by title, and "Day 2" / "Day 3" are in both the CSV and the filenames |
-| **B. Per-lesson key + a stored page offset + Worker-side slicing** | Same token saving, one upload per lesson as today | Needs a PDF library bundled into the Worker, breaking the "no npm runtime dependencies" property `index.js`'s Phase 3 header claims; and needs the mapping to be regular enough for one integer offset to describe |
+| **A. Answer keys per `pdf` activity** rather than per lesson | ~5× on the key: no mapping, no slicing, no over-sent pages | Ray splits each key PDF by activity: 158 uploads for this course rather than 66 |
+| **B. Per-lesson key + a stored page offset + Worker-side slicing** | Same ~5×, one upload per lesson as today | Needs a PDF library bundled into the Worker, breaking the "no npm runtime dependencies" property `index.js`'s Phase 3 header claims; and needs a mapping regular enough for one integer offset to describe |
 | **C. Change nothing** | — | ~$0.15 per assignment, ~$24 per course per child at introductory pricing |
+| **D. The key as text, not a document** | **~10× on the key**, and it delivers A's per-activity scoping for free — no PDF splitting, no mapping, no new dependency | Transcription, once per lesson, and answers that are pictures do not survive it. See §12.5.3 |
 
-**A is the recommendation**, on grounds beyond cost: it is the only option that also
-deletes the phantom-items risk in §12.5 and the review-surface pollution that follows from
-it, and it needs no new dependency and no heuristic. Its cost is Ray's labour, once per
-course, in whatever tool splits the PDF — which is a real cost and his to weigh.
+**Why D wins on more than cost.** It needs no migration and no new storage route — the
+same argument §0.6 already makes for rubrics. It makes the key per-activity without
+splitting anything, so A's benefit arrives without A's labour. It removes §12.5's
+phantom-items risk at the source rather than instructing around it. And it leaves the
+photographs as the dominant term, which is where the cost belongs, since that part is
+irreducible.
 
-**Before any of this is chosen, measure rather than estimate.** The per-page PDF token
-figures above are inferred from the file's structure, not observed.
-`POST /v1/messages/count_tokens` against one real answer key returns the exact number, is
-free, and needs no grading call. It should be the first thing done, because every figure in
-§12.8 scales off it.
+A and B are **not** repealed. Where an activity's answers are figures rather than text
+(§12.5.3), the PDF path stays, and slicing it is still the only way to shrink it.
+
+**Measure rather than estimate.** The per-page PDF token figures above are inferred from
+the file's structure, not observed. `POST /v1/messages/count_tokens` against one real
+answer key returns the exact number, is free, and needs no grading call. It should be the
+first thing done, because every figure in §12.8 scales off it.
+
+### 12.5.3 The answer key as text
+
+[DECISION] Ray, in-session 2026-08-16.
+**Decided:** an answer key is *text* wherever the answers are text. The PDF path stays for
+answers that are figures.
+**Rationale:** the model needs the correct answers, not the publisher's layout. L03's key
+is a genuine text document — 1,432 text-showing operators, ~62 per page — carrying ~50K
+tokens of PDF to convey answers that are ~1–2K tokens of prose. **Sending both formats is
+never right**: it pays the dominant cost twice for one fact and gives the model two sources
+that can disagree.
+**Locked for:** the Grading Assistant milestone.
+
+#### Resolution — three layers, PDF at the bottom
+
+Mirrors §2's rubric resolution, and is backward compatible by construction: every lesson
+that has only a PDF today keeps working with nothing changed.
+
+```
+activity.answerKeyText     ← per-assignment, the target state
+  └── lesson.answerKeyText ← whole-lesson text, when segmentation is not available
+        └── keys/{lesson_id} PDF   ← §4, unchanged
+              └── 422 "No answer key has been uploaded for this lesson yet."
+```
+
+`answerKeyText` is a **sparse field on the activity record**, and on the lesson record as
+the middle layer. It needs **no migration and no new route**: activities and lessons
+already reach D1 inside `records` via the existing sync push, and the Worker reads them
+with `readRecordValue` exactly as `resolveGradingContext` already does. This is §0.6's
+argument for rubrics, applied unchanged.
+
+The middle layer exists because per-activity segmentation may not be achievable (below).
+Whole-lesson text still delivers most of the saving — it is the *format* change that buys
+the ~10×, not the scoping.
+
+#### Prompt contract
+
+Block 1 becomes a `text` block instead of a `document` block when a text key resolves.
+Nothing else in §12.5's ordering changes.
+
+**Once text keys are in use, remove `cache_control` entirely.** §12.5.1 weighed a 5-minute
+TTL against removal for a ~50K-token prefix; at ~2K the absolute saving from a cache read
+is pennies, while the write premium is still real and reads remain near-impossible across
+days. The question §12.5.1 left open stops mattering rather than being answered — recorded
+so nobody re-opens it.
+
+#### Transcription
+
+Ray does not type these. The model transcribes each key once, and he reviews it.
+
+A new route, `POST /api/grading/keys/transcribe` — `SYNC_TOKEN` only, consistent with the
+other three key routes — takes a `lessonId`, reads the PDF already in R2, and returns
+proposed text **segmented per activity**, plus a per-activity flag for sections whose
+answers depend on a figure. **It writes nothing.** The Management App shows the proposal
+for editing on the §4.2 bulk screen, and the approved text reaches the activity records
+through the ordinary `records` sync push. Keeping the write on the existing path is
+deliberate: no new write surface, and the parent's approval is the gate.
+
+**Segmentation is attempted, not assumed.** The Worker sends the activities' page ranges
+(§12.11.4 — already on the activity record) and asks the model to attribute each answer to
+one of them by the workbook page numbers printed on the key's own pages. This sidesteps the
+unresolved workbook-page-to-key-page mapping of §12.5.2 entirely, because the model reads
+the printed numbers rather than computing an offset. **If the key's pages carry no printed
+numbers, segmentation fails** — and the fallback is the middle resolution layer, one text
+key for the whole lesson. That is a worse outcome, not a broken one.
+
+**One-time cost:** ~50K input plus the transcribed output, ≈ **$0.15–0.20 per lesson**,
+≈ $10–13 for all 66 lessons of `MIAPHYSCI6`, paid once. Against ~$18 per course per child
+saved on every subsequent grading call, and saved again for the second child a year later.
+
+#### What does not survive, and the escape hatch
+
+1.64 MB of the key's 2.3 MB is image data — 123 image XObjects, 19 larger than 600×600,
+several at 2048×2048. In a physical science course those are the diagrams items refer to:
+atomic models, waveforms, force arrows. **An answer that is a picture does not become
+text.** "Label the parts of the atom" and "which graph shows constant acceleration" need
+the figure.
+
+The escape hatch is the resolution order itself: leave `answerKeyText` absent on that
+activity and the PDF is used, per assignment, with no flag to set. The transcription's
+per-activity figure flag is what tells Ray which ones to leave alone.
+
+#### Risks
+
+**A wrong transcription is worse than no transcription.** It puts an incorrect answer in
+the key, and the child is marked wrong for being right — surfacing weeks later as
+inexplicable grades. This is precisely the failure §4.2 already argues about mis-matched
+files ("a wrong placement arms a Lesson with another Lesson's answers"). Parent review is
+not optional, and the screen must present the transcription as a proposal, never as a
+completed action.
+
+**§11.2's accuracy test is now load-bearing.** Grading the same real pages twice — once
+against the PDF key, once against the extracted text — and comparing is a cheap experiment
+that settles by measurement what this section argues by inference. It should run before
+Phase F ships, not after.
 
 **What is *not* recoverable.** The key is re-sent, and re-billed, on each of the up-to-four
 assignments per lesson. The Messages API is stateless and the Files API changes only how
@@ -802,13 +907,28 @@ figures are inferred from the file's structure, not observed.
 `POST /v1/messages/count_tokens` against one real answer key is free, needs no grading
 call, and pins the largest term in the table. Do it before authorizing anything.
 
-Four things move the number, in descending order of leverage: **sending only the relevant
-answer-key pages** (§12.5.2) cuts ~80% off the dominant term and is worth more than
-everything below combined; **dropping the 1-hour cache TTL** (§12.5.1) removes a 2×
-write premium that never pays out, and is free; **fewer, larger assignments per lesson**
-cuts key re-sends proportionally and is a pacing decision, not a code one; and
-**`effort: 'medium'`** is already the cost-disciplined setting and should not be raised
-without re-running this table.
+**With text keys (§12.5.3) the table collapses.** The answer key falls from ~50K tokens to
+~1–2K, leaving the photographs as the dominant term — which is where the cost belongs,
+being the one part that cannot be reduced without losing the work:
+
+| | Per assignment | Per course, per child |
+|---|---|---|
+| PDF key, as shipped | ~65K tokens → **$0.15** | ~$24 |
+| PDF key, page-sliced (§12.5.2 A/B) | ~28K → $0.06 | ~$10 |
+| **Text key (§12.5.3 D)** | ~16K → **$0.035** | **~$5.50** |
+
+plus a one-time ~$10–13 per course to transcribe all 66 keys.
+
+At that point §0's "~$7–11/month" is roughly right again for a comparable volume, which is
+worth stating plainly: **the milestone's authorized budget survives the multi-page
+correction if, and only if, the key stops being sent as a document.**
+
+Four things move the number, in descending order of leverage: **the key as text**
+(§12.5.3) is worth more than everything below combined; **sending only the relevant
+answer-key pages** (§12.5.2 A/B) is the fallback where text cannot apply; **dropping
+`cache_control`** (§12.5.1, and §12.5.3 for why the question dissolves) removes a write
+premium that never pays out, and is free; and **`effort: 'medium'`** is already the
+cost-disciplined setting and should not be raised without re-running this table.
 
 For contrast, the **shipped** per-page behaviour costs considerably more than this
 amendment does — it re-sends the whole lesson key on *every photographed page* rather than
@@ -825,14 +945,21 @@ Smaller than v2.5's, and of a kind already established rather than a new departu
 
 - **§0's "Free tier only" row** — the `~$7–11/month` estimate is restated for multi-page
   assignments, per §12.8. The narrowing itself is unchanged and still milestone-scoped.
+  Worth recording alongside it that §12.5.3 brings the figure back to roughly what was
+  authorized: the estimate moves, the narrowing does not widen.
 - **§I.A's Data Flow cell** — `POST /api/grading/page` becomes `POST /api/grading/pages`,
-  and `GET /api/grading/review/:id/photo` gains its `?page=` parameter. Restated in the
-  same breath that this widens nothing on `assignments`: the grading call still touches no
-  `assignments` column, and the §I.A exception for the parent's accept/override is
-  unchanged in scope.
+  `GET /api/grading/review/:id/photo` gains its `?page=` parameter, and the Management App
+  gains `POST /api/grading/keys/transcribe`. Restated in the same breath that this widens
+  nothing on `assignments`: the grading call still touches no `assignments` column, the
+  transcribe route writes nothing at all, and the §I.A exception for the parent's
+  accept/override is unchanged in scope.
 - **§VII's Grading Assistant row** — a pointer to this section.
 
 No new narrowing of §III.A, §III.E, or the column-ownership rule is sought or implied.
+**§12.5.3 adds no storage surface and no credential class**: `answerKeyText` is a sparse
+field on records that already sync, read with `readRecordValue` like every other, and the
+transcribe route is `SYNC_TOKEN`-only and read-only. This is §0.6's rubric argument reused,
+not a new kind of departure.
 
 ### 12.10 Phasing
 
@@ -842,10 +969,18 @@ No new narrowing of §III.A, §III.E, or the column-ownership rule is sought or 
 | **B** | Worker + Management App | `?page=` on the photo route; review surface renders all pages of a proposal | ~1.5h |
 | **C** | Child App | Multi-select capture, canvas resize to 2576px, one submit for the set | ~2h |
 | **D** | — | Acceptance checks below, on a real 5+ page assignment | ~1h |
+| **E** | Worker | §12.5.3 resolution: `activity.answerKeyText` → `lesson.answerKeyText` → PDF; block 1 becomes text or document accordingly; `cache_control` removed | ~1.5h |
+| **F** | Worker + Management App | `POST /api/grading/keys/transcribe`; the §4.2 bulk screen gains per-lesson transcribe, per-activity review and edit, and the figure flag | ~2.5h |
 
-~7 hours. Each phase leaves the system working; A alone fixes the wrong grade, and C is
-what makes the capture usable. Per `CLAUDE.md` §V.A this exceeds one session — declare a
-single scope per session, in order.
+~11 hours. Each phase leaves the system working. **A alone fixes the wrong grade** and is
+the only phase that corrects a live defect; C is what makes the capture usable; E is the
+cost fix and is independently useful the moment any `answerKeyText` exists, even one typed
+by hand; F is what makes E practical at 66 lessons. Per `CLAUDE.md` §V.A this exceeds one
+session by a wide margin — declare a single scope per session, in order.
+
+**§11.2's accuracy test belongs between E and F**, not after: it is what decides whether
+text keys grade as well as PDF ones, and F is the expensive phase to build on an unproven
+assumption.
 
 ### Acceptance checks
 
@@ -874,7 +1009,19 @@ single scope per session, in order.
     dropped. If §12.5.1's alternative is taken and `cache_control` is removed, this check
     becomes "neither call reports cache activity" instead.
 12. A device token is still 401 on the parent routes and a `SYNC_TOKEN` still 401 on
-    `POST /api/grading/pages`.
+    `POST /api/grading/pages`. A device token is 401 on
+    `POST /api/grading/keys/transcribe`.
+13. An activity with `answerKeyText` grades against that text and **no PDF is fetched from
+    R2** — verified by the absence of the `MEDIA.get` and by `usage.input_tokens` falling
+    to roughly a quarter of the same assignment's PDF-key figure.
+14. An activity with no `answerKeyText` whose lesson has one grades against the lesson
+    text; an activity where neither exists still grades against the PDF, unchanged; and an
+    assignment with none of the three still returns §4's 422.
+15. `POST /api/grading/keys/transcribe` writes nothing — `grading_reviews`, the activity
+    records, and R2 are all unchanged by it. Verified by direct read after a call.
+16. A transcription of a lesson whose key pages carry printed workbook page numbers returns
+    text segmented per activity; one whose pages do not returns a single unsegmented body
+    rather than a wrong segmentation.
 
 ### 12.11 Open items
 
@@ -898,8 +1045,19 @@ single scope per session, in order.
    that activity. Naming the span in the lesson-context block is therefore a prompt change
    against data already in hand, and should be done alongside §12.5's bound rather than
    held back as a fallback. See §12.5.2 for the larger thing this unlocks.
-5. **Do same-day assignments of one lesson occur?** §12.5.1's choice between the 5-minute
-   TTL and no caching at all turns on this, and only Ray can answer it. Neither option is
-   wrong; the 5-minute default is the safe one under uncertainty.
+5. **~~Do same-day assignments of one lesson occur?~~ Dissolved by §12.5.3.** §12.5.1's
+   choice between the 5-minute TTL and removal only mattered for a ~50K-token prefix. At
+   ~2K the answer is "remove it" regardless of the same-day question, which therefore no
+   longer needs answering. Left recorded rather than deleted so the reasoning is not
+   re-derived.
 6. **The billable-unit ambiguity in §12.8** — 240 worksheets, or 240 assignments? — must be
-   resolved before the cost is re-authorized. It is a 4× spread.
+   resolved before the cost is re-authorized. It is a 4× spread, and it is the one open
+   item still blocking §12.9.
+7. **Do the answer key's pages carry printed workbook page numbers?** §12.5.3's per-activity
+   segmentation depends on it and this session could not read the PDF to check. If they do
+   not, the fallback is a whole-lesson text key — most of the saving, none of the scoping.
+   One person looking at one page settles it.
+8. **Are the 2048×2048 images answers, or decoration?** §12.5.3 assumes they are diagrams
+   that items refer to, which is why the PDF escape hatch exists. If they turn out to be
+   headers, borders, or logos, the escape hatch is dead weight and every key can be text.
+   Settled by the same one-page look as item 7.
