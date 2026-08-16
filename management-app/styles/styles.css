@@ -1317,3 +1317,19 @@ button.secondary {
   width: 100%;
   max-width: 32rem;
 }
+
+/* Grading_Assistant §4 — the answer key panel on a Lesson. The global `form`
+   rule stacks every child, which turns an upload and its undo into two
+   unrelated full-width buttons; they belong on one row. */
+.answer-key-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+/* The per-lesson badge is quieter than the lesson's own title but still has
+   to be readable as a warning when a key is missing, so it keeps .row-meta's
+   size and only separates itself from the lesson code beside it. */
+.answer-key-badge {
+  font-style: italic;
+}

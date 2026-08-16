@@ -164,8 +164,8 @@ need it again in step 6, and on every new device.
 
 ## 5. Grading Assistant: R2 bucket and API key
 
-Two dashboard steps, needed only once the Grading Assistant's Phase 3 build lands
-(`docs/TDS_Slice_Grading_Assistant.md`). Skip this section if that feature isn't in use yet —
+Two dashboard steps and one in the app, needed only once the Grading Assistant's Phase 3 build
+lands (`docs/TDS_Slice_Grading_Assistant.md`). Skip this section if that feature isn't in use yet —
 `wrangler.toml`'s R2 binding simply resolves once the bucket exists, same as D1 did in step 1.
 
 **5a. Create the R2 bucket.** Dashboard → **R2 Object Storage → Create bucket**, name it exactly
@@ -192,6 +192,21 @@ the value isn't viewable again once saved — keep a copy somewhere safe before 
 
 Until both the bucket and the key exist, `/api/grading/*` routes return a 500 naming whichever is
 missing — same fail-closed shape as `SYNC_TOKEN` above, not a broken deploy.
+
+**5c. Upload an answer key for each lesson you want graded.** This one is in the app, not the
+dashboard: **Assigned Courses → the Course → the Lesson → Answer key**, which takes a PDF and shows
+whether one is already there. The Lesson list on the Course marks which lessons still need one, so
+you can see the gaps without opening each in turn.
+
+Grading needs a key: a child capturing a page for a lesson that has none gets "No answer key has
+been uploaded for this lesson yet. Ask a parent to add one," and nothing is graded or charged.
+Answer keys attach to the **assigned** Course's lesson, not the template's, so a course stamped for
+two children needs the PDF on each — deliberate, since curriculum editions change between years and
+a key shared across every year would eventually be the wrong one (§4 of the TDS).
+
+Keys live in R2 alongside the photos and are served only through the Worker with the parent token.
+They are never in the repo and never reachable from a child's device — which is the whole reason
+this is an upload rather than a file in the tree.
 
 ---
 

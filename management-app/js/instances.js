@@ -55,6 +55,89 @@ const Instances = (() => {
     return div.innerHTML;
   }
 
+  // ---- Answer keys (Grading_Assistant §4) ----
+  //
+  // An answer key is a PDF in R2 at keys/{lessonId}, reachable only through the
+  // Worker: `[assets]` points at the repo root, so a key kept in the tree would
+  // be world-downloadable, and the child's own device is never allowed to read
+  // one. The route has existed since Phase 1 with nothing calling it — this is
+  // the screen §4's "written by: Management App upload" always meant.
+  //
+  // It hangs off the *instance* Lesson, not the template Lesson, because that
+  // is the id the grading route resolves from the activity when it fetches the
+  // key. worker/index.js's handleGradingKeyUpload says why that is deliberate.
+  //
+  // Sync.api serializes its body as JSON, so a PDF cannot go through it. These
+  // three use fetch directly with the same Bearer header Sync.api sets — the
+  // idiom grading-review.js's photo load already uses for a non-JSON payload.
+
+  const ANSWER_KEY_MAX_BYTES = 20 * 1024 * 1024; // MAX_ANSWER_KEY_BYTES, worker/index.js:50
+
+  async function answerKeyRequest(path, { method = 'GET', body, contentType } = {}) {
+    const { token } = await Sync.getConfig();
+    if (!token) throw new Error('Set the sync token in Settings before managing answer keys.');
+
+    const response = await fetch(path, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(contentType ? { 'Content-Type': contentType } : {}),
+      },
+      body,
+    });
+
+    if (response.status === 401) throw new Error('Sync token rejected by the server.');
+    if (!response.ok) {
+      let detail = `HTTP ${response.status}`;
+      try {
+        const parsed = await response.json();
+        if (parsed && parsed.error) detail = parsed.error;
+      } catch { /* non-JSON error body — keep the status line */ }
+      throw new Error(detail);
+    }
+    return response.json();
+  }
+
+  // Answers "which of these lessons has a key?" as { keys, error }.
+  //
+  // `keys` is null — not an empty Map — when the question could not be put to
+  // the server at all, because the two are different answers and must render
+  // differently: "no key uploaded" is a prompt to upload one, "couldn't check"
+  // must not be, or an offline parent is told every lesson is missing a key
+  // that is sitting in R2. `error` carries why, so the panel can say "set the
+  // sync token" instead of blaming the network for a local misconfiguration.
+  async function listAnswerKeys(lessonIds) {
+    if (lessonIds.length === 0) return { keys: new Map(), error: null };
+    const query = lessonIds.map((id) => `lessonId=${encodeURIComponent(id)}`).join('&');
+    try {
+      const { keys } = await answerKeyRequest(`/api/grading/keys?${query}`);
+      return { keys: new Map(keys.map((k) => [k.lessonId, k])), error: null };
+    } catch (err) {
+      return { keys: null, error: err.message };
+    }
+  }
+
+  function uploadAnswerKey(lessonId, file) {
+    return answerKeyRequest(`/api/grading/keys?lessonId=${encodeURIComponent(lessonId)}`, {
+      method: 'POST',
+      body: file,
+      contentType: 'application/pdf',
+    });
+  }
+
+  function deleteAnswerKey(lessonId) {
+    return answerKeyRequest(`/api/grading/keys?lessonId=${encodeURIComponent(lessonId)}`, {
+      method: 'DELETE',
+    });
+  }
+
+  function formatBytes(n) {
+    if (typeof n !== 'number') return '';
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
   // ---- Instance reads ----
 
   async function listForChild(childId) {
@@ -730,10 +813,12 @@ const Instances = (() => {
     lessons.forEach((l) => {
       const item = document.createElement('li');
       item.className = 'list-row';
+      item.dataset.lessonId = l.id;
       item.innerHTML = `
         <div class="row-text">
           <span class="row-title lesson-title">${escapeHtml(l.title)}</span>
           <span class="row-meta lesson-code">${escapeHtml(l.lessonCode)}</span>
+          <span class="row-meta answer-key-badge" hidden></span>
         </div>
         <div class="row-actions">
           <button data-action="open">Open</button>
@@ -751,6 +836,21 @@ const Instances = (() => {
       list.appendChild(item);
     });
     root.appendChild(list);
+
+    // Which lessons still need an answer key, answered for the whole course at
+    // once. Deliberately not awaited: the Lessons list is useful without it,
+    // and a parent who never touches grading should not wait on a request they
+    // do not care about. A failure leaves every badge hidden rather than
+    // claiming the keys are missing (see listAnswerKeys).
+    listAnswerKeys(lessons.map((l) => l.id)).then(({ keys }) => {
+      if (!keys) return;
+      list.querySelectorAll('.list-row').forEach((row) => {
+        const badge = row.querySelector('.answer-key-badge');
+        if (!badge) return;
+        badge.hidden = false;
+        badge.textContent = keys.has(row.dataset.lessonId) ? 'answer key ✓' : 'no answer key';
+      });
+    });
 
     const form = document.createElement('form');
     form.innerHTML = `
@@ -868,7 +968,124 @@ const Instances = (() => {
     });
     root.appendChild(list);
 
+    // Between the Lesson's contents and the form for adding more: the answer
+    // key describes this Lesson, like the Activities above it, rather than
+    // being another thing to author into it.
+    root.appendChild(buildAnswerKeySection(lesson));
     root.appendChild(buildActivityForm(root, lesson, activityTypes, tiers));
+  }
+
+  // The answer key panel on a Lesson. Renders immediately in a "checking"
+  // state and fills in from the network, so a slow or absent connection costs
+  // the rest of the Lesson page nothing.
+  function buildAnswerKeySection(lesson) {
+    const section = document.createElement('section');
+    section.className = 'answer-key';
+    section.innerHTML = `
+      <h3>Answer key</h3>
+      <p class="row-meta">
+        A PDF of this lesson's answers, read by the Grading Assistant before it grades a photo of
+        the child's page. Without one, grading this lesson's activities fails with a message asking
+        for it. Stored outside the app and never sent to a child's device.
+      </p>
+      <p class="answer-key-state row-meta">Checking…</p>
+      <form class="answer-key-form">
+        <label>PDF<input type="file" name="file" accept="application/pdf,.pdf" required></label>
+        <div class="answer-key-actions">
+          <button type="submit">Upload</button>
+          <button type="button" data-action="remove" hidden>Remove</button>
+        </div>
+      </form>
+      <p class="error" hidden></p>
+      <p class="success" hidden></p>
+    `;
+
+    const stateEl = section.querySelector('.answer-key-state');
+    const form = section.querySelector('.answer-key-form');
+    const fileInput = form.querySelector('[name="file"]');
+    const uploadBtn = form.querySelector('button[type="submit"]');
+    const removeBtn = form.querySelector('[data-action="remove"]');
+    const errorEl = section.querySelector('.error');
+    const okEl = section.querySelector('.success');
+
+    function say(el, message) {
+      errorEl.hidden = true;
+      okEl.hidden = true;
+      if (!el) return;
+      el.hidden = false;
+      el.textContent = message;
+    }
+
+    async function refresh() {
+      const { keys, error } = await listAnswerKeys([lesson.id]);
+      if (!keys) {
+        stateEl.textContent = `Could not check whether a key is uploaded — ${error}`;
+        removeBtn.hidden = true;
+        return;
+      }
+      const existing = keys.get(lesson.id);
+      if (!existing) {
+        stateEl.textContent = 'No answer key uploaded for this lesson yet.';
+        uploadBtn.textContent = 'Upload';
+        removeBtn.hidden = true;
+        return;
+      }
+      const when = existing.uploadedAt ? new Date(existing.uploadedAt).toLocaleString() : 'unknown date';
+      stateEl.textContent = `Answer key uploaded ${when} · ${formatBytes(existing.size)}`;
+      uploadBtn.textContent = 'Replace';
+      removeBtn.hidden = false;
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) return say(errorEl, 'Choose a PDF first.');
+
+      // Checked here as well as in the Worker so the parent hears about a
+      // 30MB scan before it goes up the wire rather than after.
+      const looksPdf = file.type === 'application/pdf' || (!file.type && /\.pdf$/i.test(file.name));
+      if (!looksPdf) return say(errorEl, 'The answer key must be a PDF.');
+      if (file.size === 0) return say(errorEl, 'That file is empty.');
+      if (file.size > ANSWER_KEY_MAX_BYTES) {
+        return say(errorEl, `That PDF is ${formatBytes(file.size)}; the limit is ${formatBytes(ANSWER_KEY_MAX_BYTES)}.`);
+      }
+
+      say(null);
+      uploadBtn.disabled = true;
+      uploadBtn.textContent = 'Uploading…';
+      try {
+        await uploadAnswerKey(lesson.id, file);
+        form.reset();
+        say(okEl, 'Answer key saved.');
+      } catch (err) {
+        say(errorEl, err.message);
+      } finally {
+        uploadBtn.disabled = false;
+        await refresh();
+      }
+    });
+
+    removeBtn.addEventListener('click', async () => {
+      const warned = window.confirm(
+        'Remove this lesson\'s answer key? Grades already proposed keep their scores and ' +
+        'transcriptions — but this lesson cannot be graded again until a key is uploaded.'
+      );
+      if (!warned) return;
+      say(null);
+      removeBtn.disabled = true;
+      try {
+        await deleteAnswerKey(lesson.id);
+        say(okEl, 'Answer key removed.');
+      } catch (err) {
+        say(errorEl, err.message);
+      } finally {
+        removeBtn.disabled = false;
+        await refresh();
+      }
+    });
+
+    refresh();
+    return section;
   }
 
   function buildActivityForm(root, lesson, activityTypes, tiers) {
