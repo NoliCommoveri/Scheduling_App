@@ -107,6 +107,8 @@ const Courses = (() => {
     if (fields.description) record.description = fields.description.trim();
     if (fields.defaultPacingHint) record.defaultPacingHint = fields.defaultPacingHint.trim();
     if (fields.titlePatterns) record.titlePatterns = fields.titlePatterns;
+    if (fields.gradingRubric) record.gradingRubric = fields.gradingRubric;
+    if (fields.gradingModel) record.gradingModel = fields.gradingModel;
     return record;
   }
 
@@ -158,10 +160,15 @@ const Courses = (() => {
 
     // Preserve every field the edit form doesn't manage (curriculumId,
     // subject, description, coreElective, defaultPacingHint) — only name,
-    // courseCode, and titlePatterns are ever overwritten here.
+    // courseCode, titlePatterns, gradingRubric, and gradingModel are ever
+    // overwritten here.
     const record = { ...existing, name: fields.name.trim(), courseCode };
     if (patternsResult.titlePatterns) record.titlePatterns = patternsResult.titlePatterns;
     else delete record.titlePatterns;
+    if (fields.gradingRubric) record.gradingRubric = fields.gradingRubric;
+    else delete record.gradingRubric;
+    if (fields.gradingModel) record.gradingModel = fields.gradingModel;
+    else delete record.gradingModel;
     await Storage.put('courses', record);
     return { record };
   }
@@ -884,6 +891,87 @@ const Courses = (() => {
     return details;
   }
 
+  // Grading Assistant §2.1 — a Course's sparse rubric override, plus the
+  // per-course model override (§6). Option values/labels mirror
+  // worker/grading-core.js's RUBRIC_DEFAULTS/RUBRIC_VALIDATORS; duplicated
+  // here (not imported) because worker/ is never served as a public asset,
+  // so this browser app cannot reach it. Keep in sync if §2.1 changes.
+  const GRADING_RUBRIC_FIELD_OPTIONS = {
+    spelling: [['off', 'Off'], ['listOnly', 'Common words only'], ['all', 'All misspellings']],
+    grammar: [['off', 'Off'], ['on', 'On']],
+    paraphraseTolerance: [['strict', 'Strict'], ['normal', 'Normal'], ['generous', 'Generous']],
+  };
+
+  // Sparse by construction: a field left on "(use household default)" is
+  // omitted from the result entirely, not written as an empty/default value
+  // — same blank-means-omit discipline as sanitizeTitlePatterns, and what
+  // lets resolveRubric's fall-through (§2.2) actually reach this course.
+  function resolveGradingRubricInput(raw) {
+    const out = {};
+    if (raw.spelling) out.spelling = raw.spelling;
+    if (raw.grammar) out.grammar = raw.grammar;
+    if (raw.paraphraseTolerance) out.paraphraseTolerance = raw.paraphraseTolerance;
+    if (raw.partialCredit) out.partialCredit = raw.partialCredit === 'true';
+    if (raw.houseRules && raw.houseRules.trim()) out.houseRules = raw.houseRules.trim();
+    return Object.keys(out).length ? out : undefined;
+  }
+
+  function buildGradingRubricFieldset(existingOverride, existingModel) {
+    const selectOptions = (key) =>
+      ['<option value="">(use household default)</option>']
+        .concat(GRADING_RUBRIC_FIELD_OPTIONS[key].map(([v, l]) => `<option value="${v}">${escapeHtml(l)}</option>`))
+        .join('');
+
+    const details = document.createElement('details');
+    details.className = 'grading-rubric';
+    details.innerHTML = `
+      <summary>Grading rubric (optional override)</summary>
+      <p class="field-help">Leave a field on "(use household default)" to inherit the setting from
+        Settings → Grading defaults. Only fields changed here are saved as an override.</p>
+      <label>Spelling<select name="rubric:spelling">${selectOptions('spelling')}</select></label>
+      <label>Grammar<select name="rubric:grammar">${selectOptions('grammar')}</select></label>
+      <label>Paraphrase tolerance<select name="rubric:paraphraseTolerance">${selectOptions('paraphraseTolerance')}</select></label>
+      <label>Partial credit<select name="rubric:partialCredit">
+        <option value="">(use household default)</option>
+        <option value="true">Yes — partial credit counts as half</option>
+        <option value="false">No — partial credit counts as incorrect</option>
+      </select></label>
+      <label>House rules for this course
+        <textarea name="rubric:houseRules" rows="2" placeholder="Appended verbatim to the grading prompt for this course only."></textarea>
+      </label>
+      <label>Grading model<select name="gradingModel">
+        <option value="">Default (Sonnet)</option>
+        <option value="claude-opus-5">Opus (more accurate, costs more)</option>
+      </select></label>
+    `;
+
+    // Assigns via .value rather than templating into innerHTML, so a
+    // course's free-text house rules never need HTML-escaping and this
+    // doubles as the "copy settings from" prefill setter below.
+    details.applyValues = (rubric, model) => {
+      const r = rubric || {};
+      details.querySelector('[name="rubric:spelling"]').value = r.spelling || '';
+      details.querySelector('[name="rubric:grammar"]').value = r.grammar || '';
+      details.querySelector('[name="rubric:paraphraseTolerance"]').value = r.paraphraseTolerance || '';
+      details.querySelector('[name="rubric:partialCredit"]').value = 'partialCredit' in r ? String(r.partialCredit) : '';
+      details.querySelector('[name="rubric:houseRules"]').value = r.houseRules || '';
+      details.querySelector('[name="gradingModel"]').value = model || '';
+    };
+    details.applyValues(existingOverride, existingModel);
+
+    details.collect = () => ({
+      gradingRubric: resolveGradingRubricInput({
+        spelling: details.querySelector('[name="rubric:spelling"]').value,
+        grammar: details.querySelector('[name="rubric:grammar"]').value,
+        paraphraseTolerance: details.querySelector('[name="rubric:paraphraseTolerance"]').value,
+        partialCredit: details.querySelector('[name="rubric:partialCredit"]').value,
+        houseRules: details.querySelector('[name="rubric:houseRules"]').value,
+      }),
+      gradingModel: details.querySelector('[name="gradingModel"]').value || undefined,
+    });
+    return details;
+  }
+
   // The header is a whole-file gate (TDS_Slice_M8 §4.1) — one wrong or
   // reordered column rejects the file before a row is read, and the twelve
   // columns changed under anyone still holding a pre-reduction spreadsheet.
@@ -1064,6 +1152,8 @@ const Courses = (() => {
     `;
     const titlePatternsFieldset = buildTitlePatternsFieldset(activityTypes, null);
     form.querySelector('.error').before(titlePatternsFieldset);
+    const rubricFieldset = buildGradingRubricFieldset(null, undefined);
+    form.querySelector('.error').before(rubricFieldset);
     const errorEl = form.querySelector('.error');
 
     // §5.7 — a form pre-fill, not a link: every value stays editable, and
@@ -1084,10 +1174,12 @@ const Courses = (() => {
           if (input) input.value = picked.titlePatterns[t.activityTypeKey] || '';
         });
       }
+      rubricFieldset.applyValues(picked.gradingRubric, picked.gradingModel);
     });
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
+      const rubricCollected = rubricFieldset.collect();
       const result = await createCourse({
         name: form.name.value,
         curriculumId: form.curriculumId.value,
@@ -1097,6 +1189,8 @@ const Courses = (() => {
         description: form.description.value,
         defaultPacingHint: form.defaultPacingHint.value,
         titlePatterns: titlePatternsFieldset.collect(),
+        gradingRubric: rubricCollected.gradingRubric,
+        gradingModel: rubricCollected.gradingModel,
       });
       if (result.error) {
         errorEl.hidden = false;
@@ -1155,14 +1249,19 @@ const Courses = (() => {
     `;
     const titlePatternsFieldset = buildTitlePatternsFieldset(activityTypes, course.titlePatterns);
     editForm.querySelector('.error').before(titlePatternsFieldset);
+    const rubricFieldset = buildGradingRubricFieldset(course.gradingRubric, course.gradingModel);
+    editForm.querySelector('.error').before(rubricFieldset);
     const editErr = editForm.querySelector('.error');
     const editOk = editForm.querySelector('.success');
     editForm.addEventListener('submit', async (e) => {
       e.preventDefault();
+      const rubricCollected = rubricFieldset.collect();
       const result = await editCourse(course.id, {
         name: editForm.name.value,
         courseCode: frozen ? course.courseCode : editForm.courseCode.value,
         titlePatterns: titlePatternsFieldset.collect(),
+        gradingRubric: rubricCollected.gradingRubric,
+        gradingModel: rubricCollected.gradingModel,
       });
       if (result.error) {
         editErr.hidden = false;

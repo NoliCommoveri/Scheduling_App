@@ -315,7 +315,7 @@ const RecipeCore = (() => {
   // source (editing the source afterward changes nothing on the copy).
   function pickCourseSettingsToCopy(course) {
     const out = {};
-    for (const key of ['subject', 'coreElective', 'description', 'defaultPacingHint', 'curriculumId', 'titlePatterns']) {
+    for (const key of ['subject', 'coreElective', 'description', 'defaultPacingHint', 'curriculumId', 'titlePatterns', 'gradingRubric', 'gradingModel']) {
       if (course[key] !== undefined) out[key] = course[key];
     }
     return out;
