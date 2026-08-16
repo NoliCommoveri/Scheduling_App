@@ -17,6 +17,7 @@ import {
   fryCeilingForGrade,
   resolveMechanicsFinding,
   normalizeScore,
+  distinctPageCount,
 } from '../management-app/worker/grading-core.js';
 import { FRY_HUNDREDS, fryRank } from '../management-app/worker/word-list.js';
 
@@ -248,4 +249,82 @@ test('normalizeScore guards the empty-denominator case: score is null, not NaN o
     normalizeScore([{ verdict: 'BLANK' }, { verdict: 'UNSURE' }], rubric),
     { score: null, outOf: 0, excluded: 2 },
   );
+});
+
+// ------------------------------------- score normalization across pages (§12.7.1)
+
+test('normalizeScore folds items drawn from several pages into one score', () => {
+  const rubric = resolveRubric({}, {});
+  const result = normalizeScore(
+    [
+      { verdict: 'CORRECT', page: 1 },
+      { verdict: 'INCORRECT', page: 1 },
+      { verdict: 'CORRECT', page: 2 },
+      { verdict: 'PARTIAL', page: 3 },
+    ],
+    rubric,
+  );
+  assert.deepEqual(result, { score: 2.5, outOf: 4, excluded: 0 });
+});
+
+test('normalizeScore across pages still excludes BLANK/UNSURE from the denominator', () => {
+  const rubric = resolveRubric({}, {});
+  const result = normalizeScore(
+    [
+      { verdict: 'CORRECT', page: 1 },
+      { verdict: 'BLANK', page: 2 },
+      { verdict: 'UNSURE', page: 3 },
+      { verdict: 'INCORRECT', page: 3 },
+    ],
+    rubric,
+  );
+  assert.deepEqual(result, { score: 1, outOf: 2, excluded: 2 });
+});
+
+test('normalizeScore is unaffected by a page contributing no items at all', () => {
+  const rubric = resolveRubric({}, {});
+  // Page 2 contributes nothing (e.g. it was a read-only page) — the result
+  // must be identical to an item set that never mentions page 2 at all.
+  const withGap = normalizeScore(
+    [{ verdict: 'CORRECT', page: 1 }, { verdict: 'INCORRECT', page: 3 }],
+    rubric,
+  );
+  const withoutGap = normalizeScore(
+    [{ verdict: 'CORRECT', page: 1 }, { verdict: 'INCORRECT', page: 2 }],
+    rubric,
+  );
+  assert.deepEqual(withGap, withoutGap);
+});
+
+// -------------------------------------------------- page attribution (§12.7.2)
+
+test('distinctPageCount counts unique page numbers referenced by an item set', () => {
+  const items = [{ page: 1 }, { page: 1 }, { page: 2 }, { page: 3 }, { page: 3 }];
+  assert.equal(distinctPageCount(items), 3);
+});
+
+test('distinctPageCount ignores items with a missing or non-integer page', () => {
+  const items = [{ page: 1 }, { page: null }, {}, { page: 'two' }, { page: 1.5 }];
+  assert.equal(distinctPageCount(items), 1);
+});
+
+test('distinctPageCount is 0 for an empty, null, or non-array item list', () => {
+  assert.equal(distinctPageCount([]), 0);
+  assert.equal(distinctPageCount(null), 0);
+  assert.equal(distinctPageCount(undefined), 0);
+});
+
+test('distinctPageCount never exceeds page_count for a well-formed multi-page response', () => {
+  const pageCount = 3;
+  const items = [
+    { page: 1 }, { page: 1 }, { page: 2 }, { page: 3 }, { page: 3 }, { page: 3 },
+  ];
+  assert.ok(distinctPageCount(items) <= pageCount);
+});
+
+test('distinctPageCount flags a response that attributes items beyond the pages actually sent', () => {
+  const pageCount = 2;
+  // page 5 was never photographed for this 2-page assignment
+  const items = [{ page: 1 }, { page: 2 }, { page: 5 }];
+  assert.ok(distinctPageCount(items) > pageCount);
 });

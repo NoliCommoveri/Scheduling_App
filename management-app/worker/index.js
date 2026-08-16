@@ -42,16 +42,31 @@ import {
   rubricToPrompt,
   resolveMechanicsFinding,
   normalizeScore,
+  distinctPageCount,
 } from './grading-core.js';
 
 const MAX_BATCH = 500;
-// Grading Assistant §4 — generous headroom under R2's free-tier 10 GB; a
-// scanned answer key runs a few hundred KB to a few MB.
-const MAX_ANSWER_KEY_BYTES = 20 * 1024 * 1024;
-// A phone photo of a worksheet page. Generous headroom over a typical
-// few-MB capture; large enough that a legitimate photo is never the reason
-// this rejects, small enough to bound a malicious upload.
-const MAX_GRADING_PHOTO_BYTES = 15 * 1024 * 1024;
+// Grading Assistant §12.6 — corrected sizing. The shipped single-page guards
+// (MAX_ANSWER_KEY_BYTES, MAX_GRADING_PHOTO_BYTES) each checked one side alone,
+// but the Anthropic request carries both, base64-encoded (~1.33x): 35 MB of
+// file becomes ~47 MB on the wire against a 32 MB request cap, so the old caps
+// already permitted a single request the API would reject. Four guards now,
+// not two: three per-side caps below, plus MAX_GRADING_REQUEST_BYTES, the
+// combined check that actually bounds what goes over the wire.
+const MAX_GRADING_PAGES = 12; // above the 8-page worst case (§12), with headroom; bounds the request before any byte is read
+// Lowered from 20 MB so a maximal key can never alone exhaust the combined
+// budget. Generous headroom under R2's free-tier 10 GB regardless — a scanned
+// answer key runs a few hundred KB to a few MB.
+const MAX_ANSWER_KEY_BYTES = 12 * 1024 * 1024;
+// Per page, post-resize — the Child App resizes each capture to 2576px on the
+// long edge before upload (§12.6), which lands at roughly 400-800 KB. This
+// catches a client that skipped the resize, not a legitimate capture.
+const MAX_GRADING_PHOTO_BYTES = 4 * 1024 * 1024;
+// New in §12.6, and the one that matters: answer-key bytes + summed page
+// bytes, checked once the key's size is known and before any model call. 20
+// MB raw is ~27 MB encoded, leaving margin under the API's 32 MB cap for
+// prompt text and JSON overhead.
+const MAX_GRADING_REQUEST_BYTES = 20 * 1024 * 1024;
 const DEFAULT_SNAPSHOT_LIMIT = 2000;
 const MAX_SNAPSHOT_LIMIT = 5000;
 const PAIR_CODE_TTL_MS = 15 * 60 * 1000;
@@ -340,12 +355,17 @@ async function routeApi(request, env, ctx, url) {
     return withDevice(request, env, ctx, (device) => handleMessages(request, env, device));
   }
 
-  // ---- Grading Assistant (Grading_Assistant §5, Phase 3) — child device
-  // credential. §0.2: the child's own device requests grading for its own
-  // assignment; child_id derives from the token exactly as every other
-  // route in this section does. No new §III.E exception.
-  if (pathname === '/api/grading/page' && method === 'POST') {
-    return withDevice(request, env, ctx, (device) => handleGradingPageCapture(request, env, deviceActor(device), url));
+  // ---- Grading Assistant (Grading_Assistant §5, §12.4, Phase 3 / Phase A)
+  // — child device credential. §0.2: the child's own device requests grading
+  // for its own assignment; child_id derives from the token exactly as every
+  // other route in this section does. No new §III.E exception.
+  //
+  // §12.4 — replaces the old singular POST /api/grading/page. multipart/
+  // form-data, one "page" file part per page, in capture order; the old path
+  // is not kept as an alias, so a device pinned to it now gets a 404 rather
+  // than silently keeping single-page behavior.
+  if (pathname === '/api/grading/pages' && method === 'POST') {
+    return withDevice(request, env, ctx, (device) => handleGradingPagesCapture(request, env, deviceActor(device), url));
   }
   const gradingReviewMatch = /^\/api\/grading\/review\/([^/]+)$/.exec(pathname);
   if (gradingReviewMatch && method === 'GET') {
@@ -2580,7 +2600,8 @@ async function handleGradingKeyDelete(env, url) {
 }
 
 // ============================================================================
-// Grading Assistant (Grading_Assistant §5, §6, Phase 3) — the grading call.
+// Grading Assistant (Grading_Assistant §5, §6, §12, Phase 3 / Phase A) — the
+// grading call.
 //
 // Reads the answer key and rubric context Phases 1/2 already made possible to
 // store, calls the Anthropic Messages API directly over fetch (this Worker
@@ -2590,6 +2611,12 @@ async function handleGradingKeyDelete(env, url) {
 // — a proposal reaches `grade` only through the existing completion path,
 // using exactly ASSIGNMENT_COMPLETION_FIELDS, same as any other completion
 // (§0.1, CLAUDE.md §0's column-ownership row).
+//
+// §12 amends this to one call per assignment rather than one per photographed
+// page: every page goes up in one request and produces one composite
+// proposal (§12.0's decision). The cached prefix — answer key, rubric,
+// lesson context — is unchanged and is now sent once per assignment instead
+// of once per page.
 // ============================================================================
 
 const GRADING_MODEL_DEFAULT = 'claude-sonnet-5';
@@ -2597,10 +2624,11 @@ const GRADING_MODEL_OVERRIDE = 'claude-opus-5'; // §6 — the only per-course o
 const ANTHROPIC_MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_API_VERSION = '2023-06-01';
 
-// §6's response shape, pinned with structured outputs rather than parsed
-// from prose. `items` order is item order — no separate index field, so a
-// reordered response can't silently mislabel an item. `mechanics` mirrors
-// §3.2's model-reported shape exactly: the model reports, resolveMechanicsFinding
+// §6/§12.5's response shape, pinned with structured outputs rather than
+// parsed from prose. `items` order is item order — no separate index field,
+// so a reordered response can't silently mislabel an item; `page` (§12.5) is
+// attribution only and never reorders it. `mechanics` mirrors §3.2's
+// model-reported shape exactly: the model reports, resolveMechanicsFinding
 // (grading-core.js) decides what counts — never this schema.
 const GRADING_OUTPUT_SCHEMA = {
   type: 'object',
@@ -2610,11 +2638,12 @@ const GRADING_OUTPUT_SCHEMA = {
       items: {
         type: 'object',
         properties: {
+          page: { type: 'integer', minimum: 1 },
           transcription: { type: 'string' },
           verdict: { type: 'string', enum: ['CORRECT', 'PARTIAL', 'INCORRECT', 'BLANK', 'UNSURE'] },
           reason: { type: 'string' },
         },
-        required: ['transcription', 'verdict', 'reason'],
+        required: ['page', 'transcription', 'verdict', 'reason'],
         additionalProperties: false,
       },
     },
@@ -2638,12 +2667,32 @@ const GRADING_OUTPUT_SCHEMA = {
   additionalProperties: false,
 };
 
+// §12.5 rewrite. Two things changed from the single-page instruction: the
+// graded set now spans every photographed page of the assignment, numbered
+// continuously with each item's page recorded; and the set is explicitly
+// bounded to what the photographs show. That bound is load-bearing, not
+// cosmetic — an answer key is scoped to a whole lesson, and a lesson splits
+// across up to four assignments on different days, so the key routinely
+// answers more than any one assignment's photos cover. Without the bound the
+// model would emit verdicts for the whole lesson on every one of those
+// assignments; BLANK is excluded from normalizeScore's denominator so the
+// score would look fine while the review surface listed items from days that
+// were never photographed and mechanics_findings quietly accrued rows for
+// unattempted work (§12.5).
 const GRADING_OUTPUT_INSTRUCTION =
-  'Grade every item on the page against the answer key. For each item, transcribe exactly ' +
-  'what the child wrote, give a verdict (CORRECT, PARTIAL, INCORRECT, BLANK, or UNSURE), and a ' +
-  'short reason. Separately, list every suspected spelling or grammar issue you notice — report ' +
-  'all of them, pre-filtering none. Finish with one short paragraph of feedback addressed ' +
-  'directly to the child, in an encouraging tone appropriate to their grade level.';
+  'Grade every item shown across the photographed pages of this assignment, in the order given. ' +
+  'Number items continuously across pages — do not restart numbering per page — and record each ' +
+  'item\'s 1-based page number. An item that continues across a page break is one item: grade it ' +
+  'once, on the page where it begins. ' +
+  'The answer key may cover more of the lesson than this assignment does — bound what you grade to ' +
+  'what the photographs actually show. Do not produce an item for anything the answer key covers ' +
+  'but the photographs do not; a key item with no corresponding photographed work is simply outside ' +
+  'this assignment, not BLANK and not unattempted. ' +
+  'For each item, transcribe exactly what the child wrote, give a verdict (CORRECT, PARTIAL, ' +
+  'INCORRECT, BLANK, or UNSURE), and a short reason. Separately, list every suspected spelling or ' +
+  'grammar issue you notice — report all of them, pre-filtering none. Finish with one short ' +
+  'paragraph of feedback addressed directly to the child, in an encouraging tone appropriate to ' +
+  'their grade level.';
 
 // The `records` mirror keys every row on JSON.stringify(key) (online-revamp
 // §3.1 — the same convention handlePair's fallback lookup already uses
@@ -2717,11 +2766,18 @@ async function resolveGradingContext(env, assignment) {
   return { lessonId: activity.lessonId, course, rubric, gradeLabel, model };
 }
 
-// The Anthropic call. §6's block ordering is load-bearing for the cache: the
-// answer key, the resolved rubric, and the lesson context are byte-identical
-// for every child doing this lesson, so the breakpoint sits after the third
-// block — a household grading three children's copies of one lesson in a
-// sitting pays full price once and roughly a tenth of it twice more.
+// The Anthropic call. §6/§12.5's block ordering is load-bearing for the
+// cache: the answer key, the resolved rubric, and the lesson context are
+// byte-identical for every child doing this lesson, so the breakpoint sits
+// after the third block — a household grading three children's copies of one
+// lesson in a sitting pays full price once and roughly a tenth of it twice
+// more. §12.5.1 leaves the 1h TTL exactly as it is (Phase E removes it); not
+// touched here.
+//
+// §12.0/§12.5 — one call per assignment, not one per page: every photographed
+// page is appended as its own image block, in capture order, after the
+// cached prefix and before the output instruction. `pages` is an ordered
+// array of { base64, contentType }.
 //
 // Thinking is explicitly disabled rather than left to run adaptive by
 // default: this call carries no tools, so the "tool call written as plain
@@ -2729,9 +2785,8 @@ async function resolveGradingContext(env, assignment) {
 // malformed response degrades cleanly to a `failed` row (the caller's JSON
 // parse simply fails) rather than corrupting a grade. Effort `medium` is the
 // other half of the same cost discipline this feature exists under (§0's
-// narrowed free-tier row, CLAUDE.md §0): ~$7-11/month at ~240 worksheets
-// assumes a mid-effort call, not `xhigh`.
-async function callGradingModel(env, { model, answerKeyBase64, rubricPromptText, lessonContextText, photoBase64, photoContentType }) {
+// narrowed free-tier row, CLAUDE.md §0).
+async function callGradingModel(env, { model, answerKeyBase64, rubricPromptText, lessonContextText, pages }) {
   const body = {
     model,
     max_tokens: 8000,
@@ -2743,7 +2798,10 @@ async function callGradingModel(env, { model, answerKeyBase64, rubricPromptText,
           { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: answerKeyBase64 } },
           { type: 'text', text: rubricPromptText },
           { type: 'text', text: lessonContextText, cache_control: { type: 'ephemeral', ttl: '1h' } },
-          { type: 'image', source: { type: 'base64', media_type: photoContentType, data: photoBase64 } },
+          ...pages.map((page) => ({
+            type: 'image',
+            source: { type: 'base64', media_type: page.contentType, data: page.base64 },
+          })),
           { type: 'text', text: GRADING_OUTPUT_INSTRUCTION },
         ],
       },
@@ -2767,20 +2825,27 @@ async function callGradingModel(env, { model, answerKeyBase64, rubricPromptText,
 // row regardless of whether the household's rubric counts it (§0.4 —
 // recording is decoupled from counting). `state` is 'proposed' on success,
 // 'failed' on any grading-call fault; a failed row still records the attempt
-// (model, rubric_digest, photo_key) so a parent or a later session can see
-// an attempt happened and why it produced nothing, rather than guessing from
-// an absent row.
-async function saveGradingOutcome(env, { assignmentId, childId, photoKey, model, rubricDigest, state, proposedScore, verdictItems, mechanicsFindings, feedback, gradeLabel, rubric }) {
+// (model, rubric_digest, photo_key, page_count) so a parent or a later
+// session can see an attempt happened and why it produced nothing, rather
+// than guessing from an absent row.
+//
+// §12.2 — `photoKey` is now the pages/{assignmentId} prefix, not an object
+// key, and `pageCount` (migration 0014) says how many objects under it
+// belong to this live proposal. A re-grade with fewer pages than before
+// leaves higher-numbered objects orphaned in R2 (no deletion, §12.2) but the
+// row's own `pageCount` always reflects the current attempt.
+async function saveGradingOutcome(env, { assignmentId, childId, photoKey, pageCount, model, rubricDigest, state, proposedScore, verdictItems, mechanicsFindings, feedback, gradeLabel, rubric }) {
   const now = Date.now();
   await env.DB.prepare(
-    `INSERT INTO grading_reviews (assignment_id, child_id, photo_key, proposed_score, items, feedback, rubric_digest, model, state, created_at, reviewed_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL)
+    `INSERT INTO grading_reviews (assignment_id, child_id, photo_key, page_count, proposed_score, items, feedback, rubric_digest, model, state, created_at, reviewed_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL)
      ON CONFLICT (assignment_id) DO UPDATE SET
-       child_id = excluded.child_id, photo_key = excluded.photo_key, proposed_score = excluded.proposed_score,
+       child_id = excluded.child_id, photo_key = excluded.photo_key, page_count = excluded.page_count,
+       proposed_score = excluded.proposed_score,
        items = excluded.items, feedback = excluded.feedback, rubric_digest = excluded.rubric_digest,
        model = excluded.model, state = excluded.state, created_at = excluded.created_at, reviewed_at = NULL`
   ).bind(
-    assignmentId, childId, photoKey, proposedScore,
+    assignmentId, childId, photoKey, pageCount, proposedScore,
     verdictItems ? JSON.stringify(verdictItems) : null, feedback || null,
     rubricDigest, model, state, now
   ).run();
@@ -2797,14 +2862,24 @@ async function saveGradingOutcome(env, { assignmentId, childId, photoKey, model,
   await env.DB.batch(findingRows);
 }
 
-// POST /api/grading/page — §5, §6. Upload a captured worksheet photo,
-// resolve the rubric and answer key, run the grading call, and return the
-// proposal. Online-required (§0.7; CLAUDE.md §III.A's third narrowing) — the
-// Child App's capture UI requires a live connection before it will submit at
-// all, so a capture made offline never reaches this handler. There is no
-// outbox queue for the photo (corrected 2026-08-16; §0.7 originally described
-// one, never built).
-async function handleGradingPageCapture(request, env, actor, url) {
+// POST /api/grading/pages — §5, §6, §12.4. Replaces the old singular
+// POST /api/grading/page (not kept as an alias, §12.4 — a device pinned to
+// it would silently keep single-page behavior, which is exactly the failure
+// this amendment removes). Upload every captured page of one assignment in a
+// single multipart/form-data request, resolve the rubric and answer key, run
+// one batched grading call, and return one composite proposal.
+//
+// Online-required (§0.7; CLAUDE.md §III.A's third narrowing) — the Child
+// App's capture UI requires a live connection before it will submit at all,
+// so a capture made offline never reaches this handler. There is no outbox
+// queue for the photos (corrected 2026-08-16; §0.7 originally described one,
+// never built).
+//
+// Multipart contract (§12.4): one file part per page, field name "page",
+// repeated in capture order — `formData.getAll('page')` preserves insertion
+// order, which is what makes "in order" true without a separate index field.
+// `?assignmentId=` is unchanged from the old route.
+async function handleGradingPagesCapture(request, env, actor, url) {
   if (!env.MEDIA) {
     return json({ error: 'R2 binding "MEDIA" is not configured on this Worker.' }, 500);
   }
@@ -2818,7 +2893,7 @@ async function handleGradingPageCapture(request, env, actor, url) {
   }
 
   // child_id is part of the WHERE, never trusted from the body (§4.2 of the
-  // revamp slice — same discipline as handleCompletions above): a photo can
+  // revamp slice — same discipline as handleCompletions above): a capture can
   // only be graded against the calling device's own assignment.
   const assignment = await env.DB.prepare(
     `SELECT id, child_id, kind, source_id, title, course_name FROM assignments
@@ -2827,19 +2902,64 @@ async function handleGradingPageCapture(request, env, actor, url) {
   if (!assignment) return json({ error: 'Assignment not found for this child.' }, 404);
 
   const contentType = (request.headers.get('Content-Type') || '').toLowerCase();
-  if (!contentType.startsWith('image/')) {
-    return json({ error: 'Content-Type must be an image/* type.' }, 400);
+  if (!contentType.startsWith('multipart/form-data')) {
+    return json({ error: 'Content-Type must be multipart/form-data.' }, 400);
   }
 
-  const photoBytes = await request.arrayBuffer();
-  if (photoBytes.byteLength === 0) return json({ error: 'Request body must not be empty.' }, 400);
-  if (photoBytes.byteLength > MAX_GRADING_PHOTO_BYTES) {
-    return json({ error: `Photo must be at most ${MAX_GRADING_PHOTO_BYTES} bytes.` }, 413);
+  let formData;
+  try {
+    formData = await request.formData();
+  } catch {
+    return json({ error: 'Could not parse the multipart request body.' }, 400);
+  }
+
+  // §12.6 — MAX_GRADING_PAGES "bounds the request before any byte is read":
+  // counting file parts and reading each one's declared size/type is metadata
+  // only, no page's bytes are read into memory yet.
+  const pageFiles = formData.getAll('page').filter((v) => typeof v === 'object' && v !== null && typeof v.arrayBuffer === 'function');
+  if (pageFiles.length === 0) {
+    return json({ error: 'At least one "page" file part is required.' }, 400);
+  }
+  if (pageFiles.length > MAX_GRADING_PAGES) {
+    return json({ error: `At most ${MAX_GRADING_PAGES} pages per assignment.` }, 413);
+  }
+  for (const [i, file] of pageFiles.entries()) {
+    const fileType = (file.type || '').toLowerCase();
+    if (!fileType.startsWith('image/')) {
+      return json({ error: `Page ${i + 1} must be an image/* type.` }, 400);
+    }
+    if (file.size === 0) return json({ error: `Page ${i + 1} must not be empty.` }, 400);
+    if (file.size > MAX_GRADING_PHOTO_BYTES) {
+      return json({ error: `Page ${i + 1} must be at most ${MAX_GRADING_PHOTO_BYTES} bytes.` }, 413);
+    }
   }
 
   const context = await resolveGradingContext(env, assignment);
   if (context.error) return context.error;
   const { lessonId, course, rubric, gradeLabel, model } = context;
+
+  // §12.6's combined guard needs the key's size before deciding whether to
+  // proceed at all; `.head()` gets that without downloading the PDF body for
+  // a request that is about to be rejected anyway.
+  const keyHead = await env.MEDIA.head(`keys/${lessonId}`);
+  if (!keyHead) {
+    return json({ error: 'No answer key has been uploaded for this lesson yet. Ask a parent to add one.' }, 422);
+  }
+
+  const totalPageBytes = pageFiles.reduce((sum, file) => sum + file.size, 0);
+  const totalRequestBytes = keyHead.size + totalPageBytes;
+  if (totalRequestBytes > MAX_GRADING_REQUEST_BYTES) {
+    // §12.6 — name whichever side is the larger contributor, so "shrink the
+    // answer key PDF" and "fewer pages" are distinguishable to the parent.
+    const keyIsLarger = keyHead.size >= totalPageBytes;
+    return json({
+      error: `Grading request too large: answer key is ${keyHead.size} bytes, photographed pages total ` +
+        `${totalPageBytes} bytes, combined limit is ${MAX_GRADING_REQUEST_BYTES} bytes. ` +
+        (keyIsLarger
+          ? 'The answer key is the larger contributor — ask a parent to shrink the answer key PDF.'
+          : 'The photographed pages are the larger contributor — retake with fewer or smaller pages.'),
+    }, 413);
+  }
 
   const keyObject = await env.MEDIA.get(`keys/${lessonId}`);
   if (!keyObject) {
@@ -2847,22 +2967,29 @@ async function handleGradingPageCapture(request, env, actor, url) {
   }
   const answerKeyBase64 = bufferToBase64(await keyObject.arrayBuffer());
 
-  const photoKey = `pages/${assignmentId}`;
-  await env.MEDIA.put(photoKey, photoBytes, { httpMetadata: { contentType } });
-  const photoBase64 = bufferToBase64(photoBytes);
+  const pageBytesList = await Promise.all(pageFiles.map((file) => file.arrayBuffer()));
+  const photoKeyPrefix = `pages/${assignmentId}`;
+  await Promise.all(pageBytesList.map((bytes, i) =>
+    env.MEDIA.put(`${photoKeyPrefix}/${i + 1}`, bytes, { httpMetadata: { contentType: pageFiles[i].type } })
+  ));
+  const pages = pageBytesList.map((bytes, i) => ({
+    base64: bufferToBase64(bytes),
+    contentType: pageFiles[i].type,
+  }));
 
   const rubricPromptText = rubricToPrompt(rubric, gradeLabel || 'not specified');
   const rubricDigest = await sha256Hex(rubricPromptText);
   const lessonContextText = `Lesson: ${assignment.title}\nCourse: ${course.name || assignment.course_name || 'unknown'}`;
 
   const failOutcome = (extra) => saveGradingOutcome(env, {
-    assignmentId, childId: actor.childId, photoKey, model, rubricDigest, state: 'failed',
+    assignmentId, childId: actor.childId, photoKey: photoKeyPrefix, pageCount: pageFiles.length,
+    model, rubricDigest, state: 'failed',
     proposedScore: null, verdictItems: null, mechanicsFindings: [], feedback: null, gradeLabel, rubric, ...extra,
   });
 
   let apiResponse;
   try {
-    apiResponse = await callGradingModel(env, { model, answerKeyBase64, rubricPromptText, lessonContextText, photoBase64, photoContentType: contentType });
+    apiResponse = await callGradingModel(env, { model, answerKeyBase64, rubricPromptText, lessonContextText, pages });
   } catch (err) {
     await failOutcome();
     return json({ error: `Could not reach the grading service: ${String((err && err.message) || err)}` }, 502);
@@ -2878,7 +3005,7 @@ async function handleGradingPageCapture(request, env, actor, url) {
 
   if (payload.stop_reason === 'refusal') {
     await failOutcome();
-    return json({ error: 'Grading was declined for this content. Try a different photo, or ask a parent to grade it directly.' }, 422);
+    return json({ error: 'Grading was declined for this content. Try different photos, or ask a parent to grade it directly.' }, 422);
   }
 
   const textBlock = (payload.content || []).find((b) => b.type === 'text');
@@ -2892,11 +3019,19 @@ async function handleGradingPageCapture(request, env, actor, url) {
     await failOutcome();
     return json({ error: 'The grading service returned an unusable response.' }, 502);
   }
+  // §12.5/§12.7 — a well-formed response never attributes an item to a page
+  // beyond how many were actually sent. Treated the same as any other
+  // unusable response rather than silently accepted.
+  if (distinctPageCount(parsed.items) > pageFiles.length) {
+    await failOutcome();
+    return json({ error: 'The grading service attributed items to pages outside this assignment.' }, 502);
+  }
 
   const score = normalizeScore(parsed.items, rubric);
 
   await saveGradingOutcome(env, {
-    assignmentId, childId: actor.childId, photoKey, model, rubricDigest, state: 'proposed',
+    assignmentId, childId: actor.childId, photoKey: photoKeyPrefix, pageCount: pageFiles.length,
+    model, rubricDigest, state: 'proposed',
     proposedScore: score.score, verdictItems: parsed.items, mechanicsFindings: parsed.mechanics,
     feedback: parsed.feedback, gradeLabel, rubric,
   });
@@ -2904,6 +3039,7 @@ async function handleGradingPageCapture(request, env, actor, url) {
   return json({
     assignmentId,
     state: 'proposed',
+    pageCount: pageFiles.length,
     score: score.score,
     outOf: score.outOf,
     items: parsed.items,
@@ -2911,8 +3047,9 @@ async function handleGradingPageCapture(request, env, actor, url) {
   });
 }
 
-// GET /api/grading/review/:assignmentId — §5. Read back a standing proposal
-// for the calling device's own child.
+// GET /api/grading/review/:assignmentId — §5, §12.4. Read back a standing
+// proposal for the calling device's own child. §12.4 — response gains
+// `pageCount`; every other field is unchanged.
 async function handleGradingReviewRead(env, actor, assignmentId) {
   const owned = await env.DB.prepare(
     `SELECT id FROM assignments WHERE id = ?1 AND child_id = ?2`
@@ -2920,7 +3057,7 @@ async function handleGradingReviewRead(env, actor, assignmentId) {
   if (!owned) return json({ error: 'Assignment not found for this child.' }, 404);
 
   const row = await env.DB.prepare(
-    `SELECT assignment_id, child_id, photo_key, proposed_score, items, feedback, rubric_digest, model, state, created_at, reviewed_at
+    `SELECT assignment_id, child_id, photo_key, page_count, proposed_score, items, feedback, rubric_digest, model, state, created_at, reviewed_at
      FROM grading_reviews WHERE assignment_id = ?1`
   ).bind(assignmentId).first();
   if (!row) return json({ error: 'No grading proposal for this assignment.' }, 404);
@@ -2929,6 +3066,7 @@ async function handleGradingReviewRead(env, actor, assignmentId) {
     review: {
       assignmentId: row.assignment_id,
       childId: row.child_id,
+      pageCount: row.page_count,
       proposedScore: row.proposed_score,
       items: row.items ? JSON.parse(row.items) : null,
       feedback: row.feedback,
