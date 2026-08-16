@@ -1333,3 +1333,89 @@ button.secondary {
 .answer-key-badge {
   font-style: italic;
 }
+
+/* Grading_Assistant §4 — the bulk answer-key page (Assigned Courses → a
+   Course → Answer keys). The per-Lesson panel above styles one upload; this
+   styles a page of them, where the parent's question is "which rows still
+   need something from me?" and the answer has to survive a thirty-row scan. */
+
+.course-keys-link {
+  margin: 0.25rem 0 0.75rem;
+}
+
+.key-stage {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  background: #fafafa;
+  margin-bottom: 1.25rem;
+}
+
+.key-stage h2 {
+  margin-top: 0;
+}
+
+.key-stage label {
+  display: block;
+  margin: 0.5rem 0;
+}
+
+.key-reject-list,
+.key-staged-list,
+.key-lesson-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0;
+}
+
+/* A staged file's row carries a dropdown as well as two buttons, which is
+   wider than .list-row's action track expects on a narrow screen; letting it
+   wrap under the filename beats squeezing the filename to nothing. */
+.key-staged-list .row-actions select {
+  max-width: 18rem;
+}
+
+/* The two states a parent scans for. "Ready to upload" is the one that says
+   the button below has work to do; "no key yet" is the one that says this
+   Lesson cannot be graded at all. Neither is an error — both are quieter
+   than .error, and only the missing-key line is coloured like a warning. */
+.key-row-state {
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.key-row-pending {
+  color: var(--color-accent-dark);
+  font-weight: 600;
+}
+
+.key-row-missing {
+  color: #8a6d1f;
+  font-style: italic;
+}
+
+.key-lesson-row .row-actions input[type="file"] {
+  max-width: 15rem;
+}
+
+.key-bulk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--color-border);
+}
+
+/* The run's verdict takes the whole row beneath the buttons rather than
+   sitting beside them, where a two-clause failure summary would push the
+   retry button off the line it belongs on. */
+.key-bulk-summary {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.key-bulk-summary[hidden] {
+  display: none;
+}

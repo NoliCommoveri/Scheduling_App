@@ -4,7 +4,8 @@
 
 **Date:** 2026-08-15 · **Status:** §11.1 confirmed 2026-08-15; Phases 1–7 shipped. §0.7 corrected 2026-08-16 (no offline photo queue — see `CLAUDE.md` v2.6). Phase 7 also built the §5 `GET /api/grading/remediation` route, which Phase 3 had not — see §9's note. §11.2–5 remain open, none blocking. Answer key upload built 2026-08-16 (§4, §5) — the
 route had shipped in Phase 1 with no screen calling it; answer keys key to the *instance*
-Lesson, decided the same day.
+Lesson, decided the same day. The bulk screen (§4.2) followed the same day, over the same
+three routes — a course's Lessons keyed from one page instead of one drill-down each.
 
 **Applies to:** Child App (capture), Worker (grading route, rubric resolution, mechanics
 filter), Management App (rubric authoring, review surface, remediation report). Three
@@ -208,7 +209,7 @@ R2 bucket `grading-media`, bound in `wrangler.toml` as `MEDIA`. Free tier: 10 GB
 | Prefix | Contents | Written by |
 |---|---|---|
 | `pages/{assignment_id}` | Captured worksheet photo | Child device, via the Worker |
-| `keys/{lesson_id}` | Answer key PDF | Management App upload — Assigned Courses → the Course → the Lesson |
+| `keys/{lesson_id}` | Answer key PDF | Management App upload — Assigned Courses → the Course → **Answer keys** (all Lessons at once), or → the Lesson (one at a time) |
 
 **`lesson_id` here is the *instance* Lesson's id, not the template's.** [DECISION] Ray,
 in-session 2026-08-16. `stampCourse` mints fresh lesson ids per instance
@@ -228,6 +229,43 @@ Worker-mediated and token-gated on both prefixes.
 
 Bucket creation is a dashboard action and the binding is a `wrangler.toml` edit deployed
 from GitHub. No CLI step, per §0.
+
+### 4.2 The bulk answer-key screen
+
+Added 2026-08-16, after the per-Lesson panel shipped the same day. Same three routes, no
+schema change, no new field — this is a second *shape* of the same upload, sized to the
+job it is actually used for. A parent starting a term has a folder of PDFs and a course of
+twenty Lessons; the per-Lesson panel made that twenty drill-downs, each with its own
+network round trip, and the count of what was still missing existed only in the parent's
+head.
+
+One page per Course Instance, reached from the Course, listing every Lesson with:
+
+- what it currently has — uploaded date and size, "no answer key yet", or the honest
+  "could not check" when the probe failed (the distinction §4.1's `listAnswerKeys` already
+  drew for the badges);
+- a file box of its own, for the single key you came to fix;
+- what is staged against it, before anything uploads.
+
+Files reach a Lesson two ways. Either its own box, or the multi-file picker at the top:
+pick the whole folder and `management-app/js/answer-keys-core.js` places the ones whose
+filenames unambiguously name a Lesson — by its code (`L02`), its title, or its number, in
+that order of confidence. Everything else waits in a tray with a dropdown and a stated
+reason. **The matcher is deliberately conservative**: matching is token-anchored rather
+than substring (so `level1.pdf` is not lesson `L1` by code), a tier never falls through to
+a weaker one to break its own tie, and both directions of ambiguity — two Lessons matching
+one file, two files matching one Lesson — leave every file involved in the tray. A wrong
+placement arms a Lesson with another Lesson's answers and surfaces weeks later as nonsense
+grades; an unplaced file is a visible task on screen. The matcher is pure and DOM-free,
+tested directly in `tests/management-answer-keys-core.test.js`.
+
+Nothing uploads until **Upload all**. The run is sequential — these are multi-megabyte
+PDFs on a home connection — and it is **not a transaction**: each Lesson's outcome is
+written to its own row as it lands, a failure leaves that file pending, and pressing the
+button again retries exactly what did not go up. Replacing existing keys is confirmed once,
+before the run, naming the Lessons affected. `GET /api/grading/keys` is chunked at 100
+lessonIds per request against the route's 200 cap (§5), which one long course is the first
+thing that would ever reach.
 
 ---
 
