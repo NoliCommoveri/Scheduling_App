@@ -1,10 +1,15 @@
-/* Module: grading-review.js — Grading Assistant Phase 5.
+/* Module: grading-review.js — Grading Assistant Phase 5, amended §12.10 Phase B.
  * Per TDS_Slice_Grading_Assistant.md §9 Phase 5: the parent's review
  * surface. Lists AI-graded proposals (worker/index.js's
- * GET /api/grading/reviews), shows the captured photo and per-item
+ * GET /api/grading/reviews), shows the captured pages and per-item
  * verdicts, and lets a parent accept a proposal as-is or override its score
  * and feedback before it lands on the assignment
  * (POST /api/grading/review/:id/decision).
+ *
+ * §12.4/§12.5: a proposal now spans every captured page of an assignment
+ * (`review.pageCount`), not one photo, and each item carries the page it
+ * came from — rendered here as every page in order, with a link from each
+ * item to the page it was verdicted against.
  *
  * §0.1: this file never writes `assignments.grade` itself — it only calls
  * the decision route, which reaches `grade` through the same completion
@@ -20,6 +25,14 @@ const GradingReview = (() => {
   const STATE_LABELS = {
     proposed: 'Needs review', accepted: 'Accepted', overridden: 'Overridden', failed: 'Failed',
   };
+  // §12 — a proposal now spans a captured set of pages, not one photo. Mirrors
+  // worker/index.js's MAX_GRADING_PAGES: a defensive render bound, not a
+  // source of truth — the server already refused anything past this.
+  const MAX_GRADING_PAGES = 12;
+
+  function pagePhotoAnchorId(assignmentId, page) {
+    return `grading-photo-${assignmentId}-${page}`;
+  }
 
   function escapeHtml(str) {
     const div = document.createElement('div');
@@ -182,18 +195,34 @@ const GradingReview = (() => {
   async function buildDetail(detailEl, review) {
     detailEl.innerHTML = '';
 
-    const photoWrap = document.createElement('p');
-    photoWrap.textContent = 'Loading photo…';
-    detailEl.appendChild(photoWrap);
-    loadPhoto(review.assignmentId).then((url) => {
-      if (!url) { photoWrap.textContent = 'Photo unavailable.'; return; }
-      photoWrap.innerHTML = '';
-      const img = document.createElement('img');
-      img.className = 'grading-photo';
-      img.src = url;
-      img.alt = `Captured worksheet for ${review.assignmentTitle || review.assignmentId}`;
-      photoWrap.appendChild(img);
-    }).catch(() => { photoWrap.textContent = 'Photo unavailable.'; });
+    // §12.4 — the proposal is a set of pages (`pageCount`), not one photo.
+    // Render every page, in capture order, bounded by MAX_GRADING_PAGES the
+    // same way the server bounds a capture on the way in.
+    const pageCount = Math.min(Math.max(Number(review.pageCount) || 1, 1), MAX_GRADING_PAGES);
+    const photosWrap = document.createElement('div');
+    photosWrap.className = 'grading-photos';
+    detailEl.appendChild(photosWrap);
+
+    for (let page = 1; page <= pageCount; page++) {
+      const figure = document.createElement('figure');
+      figure.className = 'grading-photo-page';
+      figure.id = pagePhotoAnchorId(review.assignmentId, page);
+      figure.innerHTML = `<figcaption>Page ${page}</figcaption><p class="grading-photo-loading">Loading photo…</p>`;
+      photosWrap.appendChild(figure);
+      loadPhoto(review.assignmentId, page).then((url) => {
+        const loadingEl = figure.querySelector('.grading-photo-loading');
+        if (!url) { if (loadingEl) loadingEl.textContent = 'Photo unavailable.'; return; }
+        if (loadingEl) loadingEl.remove();
+        const img = document.createElement('img');
+        img.className = 'grading-photo';
+        img.src = url;
+        img.alt = `Captured worksheet page ${page} for ${review.assignmentTitle || review.assignmentId}`;
+        figure.appendChild(img);
+      }).catch(() => {
+        const loadingEl = figure.querySelector('.grading-photo-loading');
+        if (loadingEl) loadingEl.textContent = 'Photo unavailable.';
+      });
+    }
 
     if (review.feedback) {
       const feedback = document.createElement('p');
@@ -207,8 +236,14 @@ const GradingReview = (() => {
       for (const it of review.items) {
         const li = document.createElement('li');
         li.className = `grading-item verdict-${(it.verdict || '').toLowerCase()}`;
+        // §12.5 — a wrong verdict is only actionable if the parent can reach
+        // the page it came from, same diagnostic argument as transcription.
+        const pageLabel = it.page
+          ? `<a class="grading-item-page" href="#${pagePhotoAnchorId(review.assignmentId, it.page)}">Page ${escapeHtml(String(it.page))}</a>`
+          : '';
         li.innerHTML = `
           <span class="grading-item-verdict">${escapeHtml(VERDICT_LABELS[it.verdict] || it.verdict)}</span>
+          ${pageLabel}
           <span class="grading-item-transcription">"${escapeHtml(it.transcription)}"</span>
           <span class="grading-item-reason">${escapeHtml(it.reason)}</span>
         `;
@@ -224,9 +259,9 @@ const GradingReview = (() => {
     detailEl.appendChild(meta);
   }
 
-  async function loadPhoto(assignmentId) {
+  async function loadPhoto(assignmentId, page) {
     const { token } = await Sync.getConfig();
-    const response = await fetch(`/api/grading/review/${encodeURIComponent(assignmentId)}/photo`, {
+    const response = await fetch(`/api/grading/review/${encodeURIComponent(assignmentId)}/photo?page=${encodeURIComponent(page)}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!response.ok) return null;

@@ -299,7 +299,7 @@ async function routeApi(request, env, ctx, url) {
   }
   const gradingPhotoMatch = /^\/api\/grading\/review\/([^/]+)\/photo$/.exec(pathname);
   if (gradingPhotoMatch && method === 'GET') {
-    return withParent(request, env, () => handleGradingPhotoServe(env, gradingPhotoMatch[1]));
+    return withParent(request, env, () => handleGradingPhotoServe(env, gradingPhotoMatch[1], url));
   }
   const gradingDecisionMatch = /^\/api\/grading\/review\/([^/]+)\/decision$/.exec(pathname);
   if (gradingDecisionMatch && method === 'POST') {
@@ -3117,6 +3117,7 @@ async function handleGradingReviewsQuery(url, env) {
     assignmentCourse: row.assignment_course,
     assignmentRescindedAt: row.assignment_rescinded_at,
     photoKey: row.photo_key,
+    pageCount: row.page_count,
     proposedScore: row.proposed_score,
     items: row.items ? JSON.parse(row.items) : null,
     feedback: row.feedback,
@@ -3165,18 +3166,26 @@ async function handleGradingRemediation(url, env) {
   return json(capRows(rows, 'words'));
 }
 
-// GET /api/grading/review/:assignmentId/photo — streams the captured
-// worksheet back out of R2 (§4) so the review UI can show it beside the
-// proposal. SYNC_TOKEN has full scope (CLAUDE.md §III.E), so unlike the
-// device read-back this needs no ownership check beyond the token itself.
-async function handleGradingPhotoServe(env, assignmentId) {
+// GET /api/grading/review/:assignmentId/photo — streams a captured worksheet
+// page back out of R2 (§4) so the review UI can show it beside the proposal.
+// SYNC_TOKEN has full scope (CLAUDE.md §III.E), so unlike the device
+// read-back this needs no ownership check beyond the token itself.
+//
+// §12.4 — `photo_key` is the `pages/{assignmentId}` prefix (§12.2), not an
+// object key; `?page=n` selects which page under it to stream, defaulting to
+// 1. Resolves `pages/{id}/{n}` and nothing else — the flat-object fallback
+// §12.2 describes and cancels does not exist here.
+async function handleGradingPhotoServe(env, assignmentId, requestUrl) {
   if (!env.MEDIA) return json({ error: 'R2 binding "MEDIA" is not configured on this Worker.' }, 500);
   const review = await env.DB.prepare(
     `SELECT photo_key FROM grading_reviews WHERE assignment_id = ?1`
   ).bind(assignmentId).first();
   if (!review) return json({ error: 'No grading proposal for this assignment.' }, 404);
 
-  const object = await env.MEDIA.get(review.photo_key);
+  const pageParam = Number(requestUrl.searchParams.get('page'));
+  const page = Number.isInteger(pageParam) && pageParam >= 1 ? pageParam : 1;
+
+  const object = await env.MEDIA.get(`${review.photo_key}/${page}`);
   if (!object) return json({ error: 'Photo not found in storage.' }, 404);
   return new Response(object.body, {
     headers: {
