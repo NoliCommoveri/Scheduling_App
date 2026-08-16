@@ -2688,9 +2688,11 @@ async function saveGradingOutcome(env, { assignmentId, childId, photoKey, model,
 
 // POST /api/grading/page — §5, §6. Upload a captured worksheet photo,
 // resolve the rubric and answer key, run the grading call, and return the
-// proposal. Online-required (§0.7; CLAUDE.md §III.A's third narrowing) — a
-// capture made offline never reaches this handler at all; the Child App
-// queues the photo in its ordinary outbox and grades on drain.
+// proposal. Online-required (§0.7; CLAUDE.md §III.A's third narrowing) — the
+// Child App's capture UI requires a live connection before it will submit at
+// all, so a capture made offline never reaches this handler. There is no
+// outbox queue for the photo (corrected 2026-08-16; §0.7 originally described
+// one, never built).
 async function handleGradingPageCapture(request, env, actor, url) {
   if (!env.MEDIA) {
     return json({ error: 'R2 binding "MEDIA" is not configured on this Worker.' }, 500);
