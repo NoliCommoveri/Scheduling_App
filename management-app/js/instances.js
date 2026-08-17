@@ -424,16 +424,46 @@ const Instances = (() => {
       out.instructions =
         raw === undefined || raw === null || String(raw).trim() === '' ? null : String(raw).trim();
     }
+    // TDS_Slice_Grading_Assistant.md §12.5.3 — the answer key's text layer. The
+    // grader resolves it off the *instance* Activity (the assignment's
+    // `source_id`), so an assigned course needs its own way to author one; the
+    // template's copy only ever reaches an instance at stamp time.
+    if ('answerKeyText' in input) {
+      const raw = input.answerKeyText;
+      out.answerKeyText = raw === undefined || raw === null || String(raw).trim() === '' ? null : String(raw).trim();
+    }
     return { fields: out };
   }
 
   function applyOptionalActivityFields(record, normalized) {
-    for (const key of ['expectedDurationMin', 'instructions']) {
+    for (const key of ['expectedDurationMin', 'instructions', 'answerKeyText']) {
       if (key in normalized) {
         if (normalized[key] === null) delete record[key];
         else record[key] = normalized[key];
       }
     }
+  }
+
+  // FR-6 (SRS Module 03 §7) — a `page-range`-structured Activity requires both
+  // ends of its range, on the instance path exactly as on the template path.
+  // Mirrors `normalizeActivityPageRange` in courses.js — this file has always
+  // kept its own copy of the Activity write path, so it keeps its own copy of
+  // the rule too. Change one, change both.
+  function normalizeActivityPageRange(fields) {
+    const hasStart =
+      fields.pageRangeStart !== undefined && fields.pageRangeStart !== null && String(fields.pageRangeStart).trim() !== '';
+    const hasEnd =
+      fields.pageRangeEnd !== undefined && fields.pageRangeEnd !== null && String(fields.pageRangeEnd).trim() !== '';
+    if (!hasStart || !hasEnd) {
+      return { error: 'Page range start and end are required for this Activity Type.' };
+    }
+    const start = Number(fields.pageRangeStart);
+    const end = Number(fields.pageRangeEnd);
+    if (!Number.isInteger(start) || !Number.isInteger(end)) {
+      return { error: 'Page range start and end must be whole numbers.' };
+    }
+    if (start > end) return { error: 'Page range start must not exceed end.' };
+    return { start, end };
   }
 
   // A new Activity mints from THIS Instance's own instanceToken (read off
@@ -447,12 +477,10 @@ const Instances = (() => {
     let pageRangeStart;
     let pageRangeEnd;
     if (type.structurePattern === 'page-range') {
-      if (!fields.pageRangeStart || !fields.pageRangeEnd) {
-        return { error: 'Page range start and end are required for this Activity Type.' };
-      }
-      pageRangeStart = Number(fields.pageRangeStart);
-      pageRangeEnd = Number(fields.pageRangeEnd);
-      if (pageRangeStart > pageRangeEnd) return { error: 'Page range start must not exceed end.' };
+      const rangeNorm = normalizeActivityPageRange(fields);
+      if (rangeNorm.error) return { error: rangeNorm.error };
+      pageRangeStart = rangeNorm.start;
+      pageRangeEnd = rangeNorm.end;
     }
 
     const optNorm = normalizeOptionalActivityFields(fields);
@@ -497,18 +525,38 @@ const Instances = (() => {
 
   // FR-12 — editing/deleting never re-mints the id; the caller (UI layer)
   // surfaces the unconditional divergence warning before calling this.
-  async function editInstanceActivity(id, fields, tier) {
+  // `type` is the Activity's resolved Activity Type — optional, and used for one
+  // thing: deciding whether this Activity takes a page range (FR-6). Editing has
+  // never changed an Activity's type, so it is the record's own type either way.
+  async function editInstanceActivity(id, fields, tier, type) {
     const existing = await Storage.get('activities', id);
     if (!fields.title || !fields.title.trim()) return { error: 'Title is required.' };
     if (!tier) return { error: 'Difficulty Tier must resolve to an existing Tier.' };
+
+    // FR-6 — the page range is an editable Activity field here on the same
+    // terms as create. A `count`-structured type is never sent one; a type that
+    // no longer resolves falls back to the presence of the fields themselves,
+    // so a row whose Activity Type was removed stays repairable.
+    const takesPageRange = type
+      ? type.structurePattern === 'page-range'
+      : 'pageRangeStart' in fields || 'pageRangeEnd' in fields;
+    let pageRange = null;
+    if (takesPageRange) {
+      const rangeNorm = normalizeActivityPageRange(fields);
+      if (rangeNorm.error) return { error: rangeNorm.error };
+      pageRange = rangeNorm;
+    }
 
     const optNorm = normalizeOptionalActivityFields(fields);
     if (optNorm.error) return { error: optNorm.error };
 
     // Instance edit writes only this instance row (never the template); spread
-    // preserves id/seq/order/instanceToken-derived id/page range — editing
-    // never re-mints.
+    // preserves id/seq/order/instanceToken-derived id — editing never re-mints.
     const record = { ...existing, title: fields.title.trim(), required: !!fields.required, difficultyTier: tier.tierId };
+    if (pageRange) {
+      record.pageRangeStart = pageRange.start;
+      record.pageRangeEnd = pageRange.end;
+    }
     applyOptionalActivityFields(record, optNorm.fields);
     await Storage.put('activities', record);
     return { record };
@@ -1687,10 +1735,14 @@ const Instances = (() => {
     return form;
   }
 
-  // Edit form for an existing Instance Activity. Edits title, required, tier,
-  // and the optional trio. Page range untouched. Saving surfaces the FR-12
-  // divergence warning, writes only this instance row (never the template),
-  // and never re-mints id or touches seq/order.
+  // Edit form for an existing Instance Activity. Edits every parent-authored
+  // field on the record: title, required, tier, page range where the type takes
+  // one, the optional trio, and the answer key text on a `pdf` Activity. The
+  // Activity Type itself is not editable here, and `id`/`seq`/`order` are
+  // structural — `order` moves via the reorder controls, `excludeFromGeneration`
+  // (FR-14) via its own row toggle. Saving surfaces the FR-12 divergence
+  // warning, writes only this instance row (never the template), and never
+  // re-mints id or touches seq/order.
   function buildActivityEditForm(root, lesson, activity, activityTypes, tiers) {
     const tierOptions = tiers
       .map(
@@ -1699,14 +1751,38 @@ const Instances = (() => {
       )
       .join('');
 
+    // FR-6 — shown only for a `page-range`-structured type, which is the only
+    // kind that may carry a range. Also shown when the record already holds one
+    // but its type no longer resolves, so the range stays editable rather than
+    // frozen into the row.
+    const type = activityTypes.find((t) => t.activityTypeKey === activity.activityType);
+    const takesPageRange = type
+      ? type.structurePattern === 'page-range'
+      : typeof activity.pageRangeStart === 'number';
+    const pageRangeFieldsHtml = takesPageRange
+      ? `<label>Page range start<input type="number" name="pageRangeStart" step="1" value="${activity.pageRangeStart ?? ''}" required></label>
+      <label>Page range end<input type="number" name="pageRangeEnd" step="1" value="${activity.pageRangeEnd ?? ''}" required></label>`
+      : '';
+
+    // §12.5.3 — the answer key as text, offered on `pdf` Activities only, the
+    // same as on the template path. It matters more here: the grader reads the
+    // instance row, so this is where a key authored after stamping must land.
+    const answerKeyFieldHtml =
+      activity.activityType === 'pdf'
+        ? `<label>Answer key text (this activity)<textarea name="answerKeyText" rows="6" placeholder="Pasted from the Claude Project transcription. Blank falls back to this Lesson's answer key text, then the uploaded PDF.">${escapeHtml(activity.answerKeyText || '')}</textarea></label>`
+        : '';
+
     const form = document.createElement('form');
     form.innerHTML = `
       <h3>Edit Activity <code>${escapeHtml(activity.id)}</code></h3>
+      <p class="row-meta activity-type">Activity Type: ${escapeHtml(type ? type.label : activity.activityType)}${takesPageRange ? '' : ' — takes no page range'}</p>
       <label>Title<input type="text" name="title" value="${escapeHtml(activity.title)}" required></label>
       <label>Required<input type="checkbox" name="required" ${activity.required ? 'checked' : ''}></label>
       <label>Difficulty Tier<select name="difficultyTier"><option value="">(select)</option>${tierOptions}</select></label>
+      ${pageRangeFieldsHtml}
       <label>Expected duration (min)<input type="number" name="expectedDurationMin" min="1" step="1" value="${activity.expectedDurationMin ?? ''}"></label>
       <label>Instructions<input type="text" name="instructions" value="${escapeHtml(activity.instructions || '')}"></label>
+      ${answerKeyFieldHtml}
       <p class="error" hidden></p>
       <button type="submit">Save</button>
       <button type="button" data-action="cancel">Cancel</button>
@@ -1725,16 +1801,18 @@ const Instances = (() => {
       );
       if (!warned) return;
       const tier = tiers.find((t) => t.tierId === form.difficultyTier.value);
-      const result = await editInstanceActivity(
-        activity.id,
-        {
-          title: form.title.value,
-          required: form.required.checked,
-          expectedDurationMin: form.expectedDurationMin.value,
-          instructions: form.instructions.value,
-        },
-        tier
-      );
+      const editFields = {
+        title: form.title.value,
+        required: form.required.checked,
+        expectedDurationMin: form.expectedDurationMin.value,
+        instructions: form.instructions.value,
+      };
+      if (takesPageRange) {
+        editFields.pageRangeStart = form.pageRangeStart.value;
+        editFields.pageRangeEnd = form.pageRangeEnd.value;
+      }
+      if (form.answerKeyText) editFields.answerKeyText = form.answerKeyText.value;
+      const result = await editInstanceActivity(activity.id, editFields, tier, type);
       if (result.error) {
         errorEl.hidden = false;
         errorEl.textContent = result.error;

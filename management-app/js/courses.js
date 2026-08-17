@@ -365,6 +365,29 @@ const Courses = (() => {
     return { fields: out };
   }
 
+  // FR-6 (SRS Module 03 §7) — a `page-range`-structured Activity requires both
+  // ends of its range, and the rule is one rule across every authoring path.
+  // Lifted out of createActivity when the edit form gained the same fields, so
+  // create and edit cannot drift apart on what a valid range is. Whole numbers
+  // (matching the CSV path's `validateCsvPageRange`), start not past end.
+  // Returns `{ start, end }` or `{ error }`.
+  function normalizeActivityPageRange(fields) {
+    const hasStart =
+      fields.pageRangeStart !== undefined && fields.pageRangeStart !== null && String(fields.pageRangeStart).trim() !== '';
+    const hasEnd =
+      fields.pageRangeEnd !== undefined && fields.pageRangeEnd !== null && String(fields.pageRangeEnd).trim() !== '';
+    if (!hasStart || !hasEnd) {
+      return { error: 'Page range start and end are required for this Activity Type.' };
+    }
+    const start = Number(fields.pageRangeStart);
+    const end = Number(fields.pageRangeEnd);
+    if (!Number.isInteger(start) || !Number.isInteger(end)) {
+      return { error: 'Page range start and end must be whole numbers.' };
+    }
+    if (start > end) return { error: 'Page range start must not exceed end.' };
+    return { start, end };
+  }
+
   // Set when a value is present, delete when null. Never touches any other field.
   function applyOptionalActivityFields(record, normalized) {
     for (const key of ['expectedDurationMin', 'instructions', 'answerKeyText']) {
@@ -401,12 +424,10 @@ const Courses = (() => {
     let pageRangeStart;
     let pageRangeEnd;
     if (type.structurePattern === 'page-range') {
-      if (!fields.pageRangeStart || !fields.pageRangeEnd) {
-        return { error: 'Page range start and end are required for this Activity Type.' };
-      }
-      pageRangeStart = Number(fields.pageRangeStart);
-      pageRangeEnd = Number(fields.pageRangeEnd);
-      if (pageRangeStart > pageRangeEnd) return { error: 'Page range start must not exceed end.' };
+      const rangeNorm = normalizeActivityPageRange(fields);
+      if (rangeNorm.error) return { error: rangeNorm.error };
+      pageRangeStart = rangeNorm.start;
+      pageRangeEnd = rangeNorm.end;
     }
 
     const optNorm = normalizeOptionalActivityFields(fields);
@@ -506,22 +527,44 @@ const Courses = (() => {
     return { ids: mintedIds };
   }
 
-  async function editActivity(id, fields, tier) {
+  // `type` is the Activity's resolved Activity Type — optional, and used for one
+  // thing: deciding whether this Activity takes a page range (FR-6). Editing has
+  // never changed an Activity's type, so it is the record's own type either way.
+  async function editActivity(id, fields, tier, type) {
     const existing = await Storage.get('activities', id);
     if (!fields.title || !fields.title.trim()) return { error: 'Title is required.' };
     if (!tier) return { error: 'Difficulty Tier must resolve to an existing Tier.' };
 
+    // FR-4/FR-6 — the page range is an editable Activity field, on exactly the
+    // terms create uses. A `count`-structured type is never sent one and keeps
+    // having none. When `type` does not resolve (its row was removed out from
+    // under the Activity), the presence of the fields is what asks for the
+    // rewrite, so such a row stays repairable rather than stranded.
+    const takesPageRange = type
+      ? type.structurePattern === 'page-range'
+      : 'pageRangeStart' in fields || 'pageRangeEnd' in fields;
+    let pageRange = null;
+    if (takesPageRange) {
+      const rangeNorm = normalizeActivityPageRange(fields);
+      if (rangeNorm.error) return { error: rangeNorm.error };
+      pageRange = rangeNorm;
+    }
+
     const optNorm = normalizeOptionalActivityFields(fields);
     if (optNorm.error) return { error: optNorm.error };
 
-    // Spread preserves id/seq/order/lessonId/pageRangeStart/pageRangeEnd —
-    // editing never re-mints the id and never touches seq, order, or page range.
+    // Spread preserves id/seq/order/lessonId — editing never re-mints the id and
+    // never touches seq or order.
     const record = {
       ...existing,
       title: fields.title.trim(),
       required: !!fields.required,
       difficultyTier: tier.tierId,
     };
+    if (pageRange) {
+      record.pageRangeStart = pageRange.start;
+      record.pageRangeEnd = pageRange.end;
+    }
     applyOptionalActivityFields(record, optNorm.fields);
     await Storage.put('activities', record);
     return { record };
@@ -1969,10 +2012,11 @@ const Courses = (() => {
     return form;
   }
 
-  // Edit form for an existing Activity. Edits title, required, difficulty
-  // tier, and the optional trio. Page range is left untouched here (never
-  // re-validated) — same as the prior rename flow. Saving never re-mints id
-  // and never touches seq/order.
+  // Edit form for an existing Activity. Edits every parent-authored field on
+  // the record: title, required, difficulty tier, page range where the type
+  // takes one, and the optional trio. The Activity Type itself is not editable
+  // here, and `id`/`seq`/`order` are structural — `order` moves via FR-9's
+  // reorder controls. Saving never re-mints id and never touches seq/order.
   function buildActivityEditForm(root, lesson, activity, activityTypes, tiers) {
     const tierOptions = tiers
       .map(
@@ -1980,6 +2024,19 @@ const Courses = (() => {
           `<option value="${t.tierId}"${t.tierId === activity.difficultyTier ? ' selected' : ''}>${escapeHtml(t.label)}</option>`
       )
       .join('');
+
+    // FR-6 — shown only for a `page-range`-structured type, which is the only
+    // kind that may carry a range. Also shown when the record already holds one
+    // but its type no longer resolves, so the range stays editable instead of
+    // being frozen into the row forever.
+    const type = activityTypes.find((t) => t.activityTypeKey === activity.activityType);
+    const takesPageRange = type
+      ? type.structurePattern === 'page-range'
+      : typeof activity.pageRangeStart === 'number';
+    const pageRangeFieldsHtml = takesPageRange
+      ? `<label>Page range start<input type="number" name="pageRangeStart" step="1" value="${activity.pageRangeStart ?? ''}" required></label>
+      <label>Page range end<input type="number" name="pageRangeEnd" step="1" value="${activity.pageRangeEnd ?? ''}" required></label>`
+      : '';
 
     // §12.5.3 — the answer key as text, resolved activity-first. Offered only
     // on `pdf` Activities, the only ones the Grading Assistant grades; other
@@ -1992,9 +2049,11 @@ const Courses = (() => {
     const form = document.createElement('form');
     form.innerHTML = `
       <h3>Edit Activity <code>${escapeHtml(activity.id)}</code></h3>
+      <p class="row-meta activity-type">Activity Type: ${escapeHtml(type ? type.label : activity.activityType)}${takesPageRange ? '' : ' — takes no page range'}</p>
       <label>Title<input type="text" name="title" value="${escapeHtml(activity.title)}" required></label>
       <label>Required<input type="checkbox" name="required" ${activity.required ? 'checked' : ''}></label>
       <label>Difficulty Tier<select name="difficultyTier"><option value="">(select)</option>${tierOptions}</select></label>
+      ${pageRangeFieldsHtml}
       <label>Expected duration (min)<input type="number" name="expectedDurationMin" min="1" step="1" value="${activity.expectedDurationMin ?? ''}"></label>
       <label>Instructions<input type="text" name="instructions" value="${escapeHtml(activity.instructions || '')}"></label>
       ${answerKeyFieldHtml}
@@ -2018,8 +2077,12 @@ const Courses = (() => {
         expectedDurationMin: form.expectedDurationMin.value,
         instructions: form.instructions.value,
       };
+      if (takesPageRange) {
+        editFields.pageRangeStart = form.pageRangeStart.value;
+        editFields.pageRangeEnd = form.pageRangeEnd.value;
+      }
       if (form.answerKeyText) editFields.answerKeyText = form.answerKeyText.value;
-      const result = await editActivity(activity.id, editFields, tier);
+      const result = await editActivity(activity.id, editFields, tier, type);
       if (result.error) {
         errorEl.hidden = false;
         errorEl.textContent = result.error;
