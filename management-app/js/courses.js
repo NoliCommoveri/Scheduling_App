@@ -1327,6 +1327,13 @@ const Courses = (() => {
     });
     root.appendChild(editForm);
 
+    // Bulk `expectedDurationMin`, one row per Activity Type present beneath
+    // this Course (FR-11). Sits above Lessons because it is about all of them
+    // at once — the same reasoning as the Assigned Course page's answer-key
+    // link. Setting durations here also means a Course stamped afterward
+    // arrives with them, since stamping copies the Activity row whole.
+    await CourseDurations.renderInto(root, course);
+
     const lessonHeading = document.createElement('h2');
     lessonHeading.textContent = 'Lessons';
     root.appendChild(lessonHeading);
