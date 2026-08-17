@@ -881,6 +881,13 @@ const Instances = (() => {
     // pacing.js still owns every write to `pacingProfiles`.
     await Pacing.renderInto(root, instance, () => render(root));
 
+    // Directly beneath Pacing, because the two answer halves of one question:
+    // the Profile above sets the minutes-per-day budget, and this sets the
+    // per-Activity minutes that budget is spent against (Mgmt SRS 04 FR-15).
+    // Writes exactly one field on the Activities it touches — see that
+    // module's header for the bound.
+    await CourseDurations.renderInto(root, instance);
+
     const lessonHeading = document.createElement('h2');
     lessonHeading.textContent = 'Lessons';
     root.appendChild(lessonHeading);

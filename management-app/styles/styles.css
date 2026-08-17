@@ -730,7 +730,12 @@ button.secondary {
    <details>/<summary> — same convention as .course-subject-group; the
    browser owns open/closed state, so it defaults closed by omitting the
    `open` attribute. */
-.pacing-card {
+/* .duration-card (Mgmt SRS 03 FR-11) shares this chrome deliberately: it sits
+   directly beneath the pacing card on an Assigned Course and two disclosures
+   in a column that opened differently would read as two unrelated widgets.
+   Only the chrome is shared — its own rules are in its section below. */
+.pacing-card,
+.duration-card {
   border: 1px solid var(--color-border);
   border-radius: 6px;
   padding: 1rem;
@@ -738,22 +743,26 @@ button.secondary {
   background: #fff;
 }
 
-.pacing-card > summary {
+.pacing-card > summary,
+.duration-card > summary {
   cursor: pointer;
   font-weight: 600;
   font-size: 1.05rem;
   list-style: none;
 }
 
-.pacing-card[open] > summary {
+.pacing-card[open] > summary,
+.duration-card[open] > summary {
   margin-bottom: 0.5rem;
 }
 
-.pacing-card > summary::-webkit-details-marker {
+.pacing-card > summary::-webkit-details-marker,
+.duration-card > summary::-webkit-details-marker {
   display: none;
 }
 
-.pacing-card > summary::before {
+.pacing-card > summary::before,
+.duration-card > summary::before {
   content: "▶";
   display: inline-block;
   margin-right: 0.5rem;
@@ -761,7 +770,8 @@ button.secondary {
   transition: transform 0.1s ease;
 }
 
-.pacing-card[open] > summary::before {
+.pacing-card[open] > summary::before,
+.duration-card[open] > summary::before {
   transform: rotate(90deg);
 }
 
@@ -1447,4 +1457,43 @@ button.secondary {
 
 .key-bulk-summary[hidden] {
   display: none;
+}
+
+/* ---- Bulk Activity durations (Mgmt SRS 03 FR-11 / 04 FR-15) ----
+   One row per Activity Type present beneath a Course, on the Course's own
+   page. The disclosure chrome comes from .pacing-card above; what is left is
+   the row itself, whose right-hand track carries a number field as well as a
+   button — wider than .list-row's action track assumes. */
+
+.duration-form {
+  margin-bottom: 0;
+}
+
+.duration-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0 1rem;
+}
+
+/* The label is "Minutes" beside its box, not stacked above it: the row is
+   already labelled by the Activity Type in its own left-hand track, and a
+   stacked caption on every row doubles the panel's height for no meaning. */
+.duration-row .duration-input {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+}
+
+/* Held to about four digits. Without a cap the global `input { width: 100% }`
+   lets one number field take the whole action track and push Clear onto a
+   line of its own. */
+.duration-row .duration-input input[type="number"] {
+  width: 5.5rem;
+}
+
+/* Quieter than an error and quieter than the type's own name: this line is
+   read once per scan, to find the types that still say "no duration set". */
+.duration-row .duration-row-state {
+  font-variant-numeric: tabular-nums;
 }

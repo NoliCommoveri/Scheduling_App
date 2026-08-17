@@ -46,6 +46,7 @@ Both patterns are chosen from a fixed set of two options each when a type is cre
 - As a parent, I want the page range to just be a starting suggestion, not a rule, so I can freely adjust it day to day without fighting the app.
 - As a parent, I want to fix or add a single Activity by hand without re-running a whole CSV, so small corrections don't require a full re-import.
 - As a parent, I want a bad import file rejected outright, not partially applied, so I never end up with a half-imported semester I have to debug.
+- As a parent, I want to say once that a Quiz in this Course takes twenty minutes and a Practice takes ten, so pacing by minutes reflects what the work actually costs without me typing a number onto three hundred Activity forms.
 
 ## 4. Entity fields (as authored here)
 
@@ -56,6 +57,8 @@ Both patterns are chosen from a fixed set of two options each when a type is cre
 **Lesson** — Required: `id`, `courseId` (parent link), `lessonCode` (short, parent-entered or auto-derived from `order`; **unique within its Course**; **frozen once any Activity exists under the Lesson** — FR-3), `order`, `title`, `activities[]`, `nextActivitySeq` (the persisted, never-reused `seq` counter, Domain Model §2.5/§2.8 — system-maintained, never parent-facing). Optional: `objective`, `estimatedDays`, `pageRangeStart`/`pageRangeEnd` (the shared content-planning budget, §6), `activityCountTargets[]` (list of `{activityTypeKey, targetCount}`, §6).
 
 **Activity** — Required: `id`, `lessonId` (parent link), `activityType` (references the Activity Type table, Module 12 — not a hardcoded enum), `title`, `required` (bool), `difficultyTier` (references Module 2's Tier table), `order` (integer — position within the Lesson; contiguous from `0`, system-maintained; **this is the pacing walk order**, Mgmt SRS 05 §2.4; reorderable via FR-9). For `page-range`-structured types only, also required: `pageRangeStart`, `pageRangeEnd` (integers, top-level fields). Optional: `expectedDurationMin`, `instructions`.
+
+**`expectedDurationMin` has three entry paths, all writing this same field on this same record** — the single-Activity form (FR-4), a CSV column (FR-5), and the Course's bulk per-type panel (FR-11). None of them is a default or an inheritance: the value lives on the Activity and nowhere else, absent when unset, and an absent value is counted as 15 minutes at generation time (Mgmt SRS 05 §2.3) rather than being written as one.
 
 **Seven fields left this record** (`TDS_Slice_Lesson_Recipe.md` §3.1, shipped 2026-08-13): `payload` (one shape survived, so its two page-range members are top-level fields instead), `reference` and `text` (`title` carries what they did), `blockHint` (collected and never read — a row's block hint comes from the pacing profile at generation), `sequenceNumber` (§6/FR-P6 — the ordinal lives in the title now), `capturesGrade` (a pure function of `activityType`, computed at packet projection), and `lessonTitle` (derivable from `lessonId`; the snapshot that matters is the committed D1 row, which still freezes it — so renaming a Lesson now flows into future commits instead of leaving templates on the old name).
 
@@ -128,6 +131,29 @@ The Course create form additionally carries a **"Copy settings from"** dropdown 
 **FR-9 — Reorder Activities within a Lesson.** The parent can move an Activity up or down within its Lesson, swapping `order` with its neighbour (the same mechanism as Module 02's tier reorder). **This is the pacing consumption order** (Mgmt SRS 05 §2.4) — without this action, an Activity authored out of sequence could only be fixed by deleting and re-creating it, which permanently burns a `seq`. **Reordering changes `order` only** — never `seq`.
 
 **FR-10 — `capturesGrade` is computed from the type, never stored on the Activity.** No entry path — manual (FR-4), bulk import (FR-5), or recipe (FR-P7) — writes `capturesGrade`. It is derived from the type's `capturePattern` at packet-projection time (`TDS_Slice_Lesson_Recipe.md` §7.2), which is safe precisely *because* Module 12 makes `capturePattern` immutable: a stored copy could never drift, so it was three copies to keep in sync for no gain. **This reverses the earlier rule** (copy-at-creation, stored on the record) rather than qualifying it.
+
+**FR-11 — Bulk-set `expectedDurationMin` by Activity Type.** The Course's detail view carries a
+collapsed panel with **one row per Activity Type present beneath that Course** — never the whole
+Activity Type table — each row showing that type's current state (`8 Activities · all 20 min`,
+`· 20 min · 3 with none`, `· 10, 20, 30 min`, `· no duration set`) and a minutes box. Saving writes
+that number onto every Activity of that type in the Course, in one transaction, skipping any
+Activity already at the value. **A row left blank is not touched** — the panel saves every row at
+once, so blank cannot mean "clear" without letting one Save wipe the types the parent had not
+reached yet; removing a type's durations is a confirmed per-row **Clear**, which deletes the key
+outright (absent, never `null` or `0`, per §4). Validation is FR-4's rule unchanged: positive whole
+number or blank. A single invalid value rejects the whole run, nothing written — the same
+all-or-nothing shape as FR-5 and FR-P7.
+
+**This stores nothing on the Course and creates no default or inheritance.** There is no "this
+Course says a Quiz is 20 minutes" anywhere in the data — only the Activities that were each written
+`20`. An Activity created afterward gets nothing from it; FR-4's form still writes and overrides
+the same field on the same record, and every consumer reads the Activity exactly as before.
+Durations set on a template flow to a Course stamped afterward only because stamping copies the
+Activity row whole (Mgmt SRS 04 FR-4 step 4), not through any link. The panel touches exactly one
+field — a bulk save leaves `id`, `order`, `activityType`, `difficultyTier`, `title`, `required`,
+the page range and `instructions` byte-identical — and does not appear on a Course with no
+Activities. See `TDS_Slice_Course_Duration_Bulk_Edit.md`; the same panel serves an Assigned Course
+(Mgmt SRS 04 FR-15).
 
 ## 8. Type-specific field reference
 
@@ -206,5 +232,8 @@ No *additional* per-action PIN. The Management App requires its own `launchPin` 
 23. A Lesson with no targets opens Stage 1 with no rows and no page-range type selected.
 24. Adding a Lesson under a Course whose `titlePatterns` names Practice, and whose Curriculum suggests Video and Quiz, opens the count-target group with exactly those three rows, counts blank, in Activity Type table order; saving without typing any count stores no `activityCountTargets` at all.
 25. A type named by neither the Course nor the Curriculum is still selectable from a target row's dropdown, and a Lesson that already has targets shows those targets rather than the suggested rows.
+26. A Course holding 8 Quiz and 12 Practice Activities across several Lessons shows exactly two duration rows (FR-11); typing 20 on the Quiz row and saving sets `expectedDurationMin: 20` on all 8 Quizzes and leaves every Practice Activity byte-identical, including the ones that already had a duration of their own.
+27. Saving that same panel again immediately reports no changes and writes nothing; leaving a row blank never alters that type, and **Clear** on a row removes the property outright — the reloaded Activities have no `expectedDurationMin` key at all, not `null` and not `0`.
+28. A bulk save leaves every other field on the Activities it touches unchanged — an Activity carrying `pageRangeStart`/`pageRangeEnd` and `instructions` keeps both, and its `id`, `order` and `difficultyTier` are byte-identical afterward.
 
 *(AC-9–AC-11 from the prior revision — Activity Type creation, delete-guard, and pattern-immutability checks — moved to Module 12's acceptance criteria; they are no longer this module's to verify.)*

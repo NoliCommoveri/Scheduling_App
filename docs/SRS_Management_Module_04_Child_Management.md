@@ -90,6 +90,10 @@ Neither is blocked. Both are warned. The app cannot verify either condition with
 
 **FR-14 — Set/clear `excludeFromGeneration` on an Instance Activity.** The parent may flag or unflag any Instance Activity as excluded from generation, at any time, independent of Packet Generation's Propose/Review/Commit cycle (Domain Model §2.5, §2.10). Setting the flag removes the Activity from the **pending remainder**: every future Propose skips it (Mgmt SRS 08 FR-2). Clearing it before the Activity has been sent restores ordinary pacing; clearing it after it was already sent does nothing, since a sent Activity is never re-proposed. There is no cursor to move in either direction. Never available on a template Activity.
 
+**FR-15 — Bulk-set `expectedDurationMin` across an Instance, by Activity Type.** The Assigned Course's detail view carries the same per-type duration panel the Course Template page does (Mgmt SRS 03 FR-11), on identical rules: one row per Activity Type present beneath *this Instance*, a blank row is left alone, clearing is its own confirmed per-row action, and a save writes exactly one field — every other field on the Activities it touches, `id` and `excludeFromGeneration` included, survives byte-identical. It sits directly beneath the Pacing card because the two answer halves of one question: the Profile sets the minutes-per-day budget (Mgmt SRS 05), and this sets the per-Activity minutes that budget is spent against.
+
+**Template isolation is unaffected** — the panel reads and writes rows beneath the Course it is rendered on and no other, so the Instance's copy diverges from the template's exactly as FR-10's single-Activity edit does. **No FR-12 divergence warning is required**: `expectedDurationMin` is snapshotted onto the assignment row at Commit (Mgmt SRS 08), so a change here moves future Propose runs only and never touches, recalls, or contradicts anything already delivered to the child's device. See `TDS_Slice_Course_Duration_Bulk_Edit.md`.
+
 ## 5. Validation rules
 
 | Rule | Detail |
@@ -104,6 +108,7 @@ Neither is blocked. Both are warned. The app cannot verify either condition with
 | Instance edit ≠ re-mint | No edit path re-mints an existing Activity's `id`, in a template or an instance. |
 | Template isolation | No instance-editing path writes to any row with `state: template`. |
 | `excludeFromGeneration` | Bool, default `false`; settable only on Instance Activities (`state: instance`); no UI path exposes it on a template Activity. |
+| Bulk duration (FR-15) | Positive whole number or blank — Mgmt SRS 03 FR-4's rule unchanged, since it is the same field on the same record. A blank row writes nothing; an invalid value on any row rejects the whole run. |
 
 ## 6. Permissions
 
@@ -140,3 +145,5 @@ No *additional* per-action PIN. The Management App requires its own `launchPin` 
 15. No UI path anywhere edits an Instance's `sourceTemplateId`, `childId`, or `instanceToken`.
 16. Flagging an Instance Activity `excludeFromGeneration` succeeds independent of whether a Propose/Review cycle is currently open, and the same field is readable/settable from inside Packet Generation's Review stage (Mgmt SRS 08) — one field, two entry points, never a divergent second mechanism.
 17. No UI path anywhere offers `excludeFromGeneration` on a template Activity.
+18. Bulk-setting a duration on an Instance (FR-15) writes only rows with `state: instance` beneath that Instance; the source template's Activities are byte-identical afterward, and so is every Instance stamped from the same template for a sibling.
+19. A Propose run under a `minutesBudget` Pacing Profile, taken before and after a bulk duration save, packs a different number of Activities into a day — the durations reach generation; an assignment already committed keeps the duration it was sent with.
