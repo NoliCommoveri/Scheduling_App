@@ -45,6 +45,56 @@ const Packet = (() => {
   let session = null; // the in-memory proposal; null between runs
   let lastResult = null; // {ok, message} | {error} for the result banner
 
+  // ---- Generation scope (Module 08 FR-1a) ----
+  //
+  // FR-1 made the generation unit "one child, one range". A fortnight of one
+  // child's school walk, chores and events arrives as several hundred rows on
+  // one screen, and reviewing it is one long sitting that cannot be broken up:
+  // the proposal lives in memory and Abandon is the only way to put it down.
+  // The unit is now "one child, one range, one or more **kinds**", so School and
+  // Chores can be proposed, reviewed and committed on separate passes.
+  //
+  // This is a filter on what Propose *places*, and nothing else. Every step it
+  // gates was already independent of the others — the school walk reads pacing
+  // profiles, the chore expansion reads chore recurrence, events read overlap —
+  // so a narrowed run is the same code walking a subset, never a different
+  // algorithm. What makes the passes safe to run separately is machinery that
+  // already exists: §6.6 marks anything a previous pass made live as
+  // `committed`, shows it frozen, and leaves it out of Commit. So the second
+  // pass over the same range sees the first pass's work and declines to re-send
+  // it, exactly as a re-Propose of the same range always has.
+  const KINDS = ['school', 'chores', 'events'];
+  const KIND_LABEL = { school: 'School', chores: 'Chores', events: 'Family events' };
+
+  // Remembered between runs so proposing chores-only for one child and then the
+  // next does not mean re-unchecking School each time. Session-lifetime only —
+  // nothing about generation scope is persisted, because it is a property of
+  // how the parent chose to work today, not of the child or the range.
+  let lastInclude = { school: true, chores: true, events: true };
+
+  function normalizeInclude(include) {
+    // Absent means everything, which is what every call site before FR-1a
+    // meant. A run must place something.
+    if (!include) return { school: true, chores: true, events: true };
+    const out = {};
+    for (const k of KINDS) out[k] = !!include[k];
+    return out;
+  }
+
+  function includedKinds(include) {
+    return KINDS.filter((k) => include[k]);
+  }
+
+  // "School and Chores" / "Chores only" / "everything" — used in the proposal
+  // header and in Commit's empty-source messages, where the scope is the
+  // difference between "there is nothing here" and "there is nothing here
+  // *that you asked for*".
+  function scopeLabel(include) {
+    const on = includedKinds(include);
+    if (on.length === KINDS.length) return 'School, chores and events';
+    return on.map((k) => KIND_LABEL[k]).join(' and ') + ' only';
+  }
+
   // ---- date helpers (calendar dates as strings — no timezone, ever) ----
 
   function isValidDate(str) {
@@ -158,9 +208,11 @@ const Packet = (() => {
 
   // ---- Propose (FR-1–FR-6) — writes nothing ----
 
-  async function propose(childId, semesterLabel, coversFrom, coversTo) {
+  async function propose(childId, semesterLabel, coversFrom, coversTo, include) {
     if (!isValidDate(coversFrom) || !isValidDate(coversTo)) return { error: 'Both dates must be valid calendar dates.' };
     if (coversFrom > coversTo) return { error: 'coversFrom must be on or before coversTo.' };
+    const inc = normalizeInclude(include);
+    if (!includedKinds(inc).length) return { error: 'Include at least one of School, Chores or Family events.' };
     const child = await Storage.get('children', childId);
     if (!child) return { error: 'Select an existing child.' };
 
@@ -190,7 +242,10 @@ const Packet = (() => {
     const walkIndex = new Map(); // instanceId -> Map(activityId -> index)
     const blockLayoutByInstance = new Map();
     const instancesWithProfiles = [];
-    for (const inst of instances) {
+    // Skipped wholesale on a chores-only run: this loop is a pacing-profile read
+    // and a full activity walk per assigned course, and nothing outside the
+    // School steps consults what it builds.
+    for (const inst of inc.school ? instances : []) {
       const walk = await Pacing.instanceActivitiesInWalkOrder(inst.id);
       walkByInstance.set(inst.id, walk);
       walkIndex.set(inst.id, new Map(walk.map((a, i) => [a.id, i])));
@@ -231,9 +286,15 @@ const Packet = (() => {
     }
 
     // Step 2 — Reproduce in-range prior decisions from current records (§4.2.2).
+    // Reproduction is filtered by the same scope as fresh placement (FR-1a): a
+    // chores-only run reproduces prior chore decisions and leaves the school
+    // rows out of the proposal entirely. It does not *unmake* them — a decision
+    // this run does not reproduce is one it also does not touch at Commit,
+    // because Commit's log write is built from what is on screen.
     for (const row of logRows) {
       if (row.assignedDate < coversFrom || row.assignedDate > coversTo) continue;
       if (row.disposition !== 'sent') continue; // in-range dropped chore rows are suppressions — not re-proposed
+      if (!(row.instanceId ? inc.school : inc.chores)) continue;
       if (row.instanceId) {
         const record = await Storage.get('activities', row.itemId);
         if (!record) continue; // deleted since — cannot reproduce content
@@ -288,7 +349,7 @@ const Packet = (() => {
     // Chores §4.1 — participation-and-days test in place of the old flat
     // childId match, so a chore whose days are split (§4.3) yields no
     // occurrence on the other participant's days.
-    for (const chore of allChores.filter((c) => Chores.participantsOf(c).includes(childId))) {
+    for (const chore of inc.chores ? allChores.filter((c) => Chores.participantsOf(c).includes(childId)) : []) {
       const token = chore.id.slice(4);
       const days = Chores.daysFor(chore, childId) || [];
       for (const d of rangeDates) {
@@ -308,7 +369,7 @@ const Packet = (() => {
     }
 
     // Step 5 — Family Events (FR-4): overlap + childIds membership, per covered day.
-    for (const ev of allEvents) {
+    for (const ev of inc.events ? allEvents : []) {
       if (!(ev.childIds || []).includes(childId)) continue;
       if (ev.endDate < coversFrom || ev.startDate > coversTo) continue; // no overlap
       for (const d of rangeDates) {
@@ -334,6 +395,12 @@ const Packet = (() => {
     session = {
       childId, childName: child.name, semesterLabel: (semesterLabel || '').trim(),
       coversFrom, coversTo, days, maps, coursesById,
+      // What this pass was asked to place (FR-1a). Read by the proposal heading
+      // and by both empty-source messages, which have to say "chores only"
+      // rather than imply the range itself is bare. The Pull-forward buckets
+      // need no such check — `pendingByInstance` is only filled by the school
+      // walk, so it is already empty when School is out.
+      include: inc,
       droppedChores: new Map(), excluded: new Set(), pendingByInstance,
       // §6.6 bookkeeping: how many of the items on screen are already on the
       // child's plan, and whether that was read from the plan itself or
@@ -585,9 +652,29 @@ const Packet = (() => {
       // position within the day, and the row holding that position is already
       // in D1 with that number on it. Skipping the slot as well would renumber
       // the new rows on top of the existing ones and scramble the day.
+      //
+      // Each kind numbers within its own band (FR-1a). One counter across all
+      // three made a slot's number depend on how many items of the *other*
+      // kinds this proposal happened to place — harmless while every run placed
+      // all three, because the count was then the same every time. A narrowed
+      // run breaks that: propose chores-only over a day whose five activities
+      // are already live and the chores start at 0 instead of 5, so a chore
+      // added on a later pass sorts above chores committed on an earlier one.
+      // Banding makes a kind's numbering depend only on that kind, so a
+      // narrowed pass and a full pass give the same item the same slot.
+      //
+      // Nothing compares across bands: every consumer sorts within one kind
+      // (planner-core's `filterView` splits School from Chores, and its day view
+      // builds `school`/`chores` as separate arrays), and the child's reorder
+      // math is midpoint-relative, so the gaps cost nothing. Rows committed
+      // before this change keep their old numbers and stay correctly ordered
+      // among themselves — the bands only ever push newer rows later.
+      const BAND = 1000;
       let sortOrder = 0;
       for (const it of o.activities) { const n = sortOrder++; if (!it.committed) rows.push(assignmentFromActivity(it, n)); }
+      sortOrder = BAND;
       for (const it of o.chores) { const n = sortOrder++; if (!it.committed) rows.push(assignmentFromChore(it, n)); }
+      sortOrder = BAND * 2;
       for (const it of o.events) { const n = sortOrder++; if (!it.committed) rows.push(assignmentFromEvent(it, date, n)); }
     }
     return rows;
@@ -699,8 +786,17 @@ const Packet = (() => {
     // just assigns nothing. `rows.length` replaces the old `packet.days.length`
     // and tests the same thing: buildPacket dropped days that had no items, so
     // a day survived it exactly when it contributed at least one row here.
+    // Both empty-source messages name the scope when it is narrowed (FR-1a).
+    // "Nothing to generate for this range" is actively misleading after a
+    // chores-only run over a fortnight with a full school walk in it — the
+    // parent's next move should be to re-propose with School ticked, not to go
+    // looking for why their courses produced nothing.
+    const scopeNote = includedKinds(session.include).length === KINDS.length
+      ? ''
+      : ` This run covered ${scopeLabel(session.include).toLowerCase()} — the other kinds were not proposed and are unaffected.`;
+
     if (!rows.length && !sentRows.length && !droppedRows.length && !excludeIds.length) {
-      return { error: 'Nothing to generate for this child and range (empty-source).' };
+      return { error: `Nothing to generate for this child and range (empty-source).${scopeNote}` };
     }
 
     // The re-Propose of an already-covered range (§6.6): there is content on
@@ -711,7 +807,7 @@ const Packet = (() => {
       return {
         error: `Every item in ${session.coversFrom} → ${session.coversTo} is already assigned to ` +
           `${session.childName} (${session.committedCount} of them). There is nothing new to send. ` +
-          'To change what is already there, use the Assignments view.',
+          `To change what is already there, use the Assignments view.${scopeNote}`,
       };
     }
 
@@ -837,12 +933,27 @@ const Packet = (() => {
     const opts = ['<option value="">(select)</option>']
       .concat(children.map((c) => `<option value="${c.id}">${escapeHtml(c.name)}</option>`))
       .join('');
+    // The Include fieldset (FR-1a). All three ticked is the pre-FR-1a run, so
+    // the default path through this form is unchanged; unticking is what makes
+    // a fortnight reviewable in one sitting.
+    const includeBoxes = KINDS.map((k) => `
+      <label><input type="checkbox" name="include" value="${k}" ${lastInclude[k] ? 'checked' : ''}> ${KIND_LABEL[k]}</label>
+    `).join('');
     form.innerHTML = `
       <h2>Propose assignments</h2>
       <label>Child<select name="childId">${opts}</select></label>
       <label>Semester label<input type="text" name="semesterLabel" placeholder="e.g. Fall 2026"></label>
       <label>Covers from<input type="date" name="coversFrom" required></label>
       <label>Covers to<input type="date" name="coversTo" required></label>
+      <fieldset class="include-kinds">
+        <legend>Include</legend>
+        ${includeBoxes}
+        <p class="hint">
+          Propose one kind at a time to keep a run reviewable. Kinds you leave out are
+          untouched — propose the same range again with them ticked, and anything this
+          run assigned is recognised and never sent twice.
+        </p>
+      </fieldset>
       <p class="error" hidden></p>
       <button type="submit">Propose</button>
     `;
@@ -850,12 +961,17 @@ const Packet = (() => {
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       lastResult = null;
-      const result = await propose(form.childId.value, form.semesterLabel.value, form.coversFrom.value, form.coversTo.value);
+      const include = {};
+      for (const el of form.querySelectorAll('input[name="include"]')) include[el.value] = el.checked;
+      const result = await propose(
+        form.childId.value, form.semesterLabel.value, form.coversFrom.value, form.coversTo.value, include
+      );
       if (result.error) {
         errorEl.hidden = false;
         errorEl.textContent = result.error;
         return;
       }
+      lastInclude = normalizeInclude(include); // carried to the next run, not persisted
       render(root);
     });
     root.appendChild(form);
@@ -864,7 +980,11 @@ const Packet = (() => {
   function renderProposal(root) {
     const bar = document.createElement('div');
     bar.className = 'propose-bar';
-    bar.innerHTML = `<h2>Proposal — ${escapeHtml(session.childName)} · ${session.coversFrom} → ${session.coversTo}</h2>`;
+    // The scope rides in the heading rather than a note beside it: a chores-only
+    // proposal and a full one look identical once the school walk happens to be
+    // short, and Commit is one press away.
+    bar.innerHTML = `<h2>Proposal — ${escapeHtml(session.childName)} · ${session.coversFrom} → ${session.coversTo} ` +
+      `<em class="scope-tag">${escapeHtml(scopeLabel(session.include))}</em></h2>`;
 
     const commitBtn = document.createElement('button');
     commitBtn.textContent = 'Commit & assign';
@@ -1033,7 +1153,10 @@ const Packet = (() => {
 
     if (dates.length === 0) {
       const empty = document.createElement('p');
-      empty.textContent = 'Proposal is empty — nothing to commit for this child and range.';
+      empty.textContent = 'Proposal is empty — nothing to commit for this child and range' +
+        (includedKinds(session.include).length === KINDS.length
+          ? '.'
+          : ` within ${scopeLabel(session.include).toLowerCase()}. Abandon and propose again with the other kinds ticked to see them.`);
       root.appendChild(empty);
       return;
     }
