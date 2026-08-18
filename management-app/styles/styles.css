@@ -802,6 +802,27 @@ button.secondary {
   font-size: 1.05rem;
 }
 
+/* Generation scope (Module 08 FR-1a). The tag rides inside the proposal
+   heading, so it is styled down to a subordinate note rather than reading as a
+   second title. */
+.propose-bar .scope-tag {
+  font-style: normal;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: #555;
+  white-space: nowrap;
+}
+
+/* The Include fieldset's explanatory line takes its own row beneath the
+   checkboxes — `fieldset` is a flex row, so without the basis it would try to
+   share one with them. */
+.include-kinds .hint {
+  flex-basis: 100%;
+  margin: 0.15rem 0 0;
+  font-size: 0.8rem;
+  color: #555;
+}
+
 /* <details>/<summary> — same convention as .course-subject-group; closed by
    default so a multi-course proposal doesn't dump every course's remainder
    onto the screen at once. */

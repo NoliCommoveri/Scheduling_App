@@ -56,7 +56,11 @@ Conflating Defer with Exclude is the bug that either deletes work the parent mea
 
 ### Trigger
 
-**FR-1 — Trigger a run.** The parent selects one Child and a date range (`coversFrom` ≤ `coversTo`, both valid calendar dates). This is the generation unit — one child, one range, per invocation. A UI may batch-select several children for convenience, but each child gets an independent run; nothing about generation is shared or merged across children.
+**FR-1 — Trigger a run.** The parent selects one Child and a date range (`coversFrom` ≤ `coversTo`, both valid calendar dates), and the **kinds** to include (FR-1a). This is the generation unit — one child, one range, one or more kinds, per invocation. A UI may batch-select several children for convenience, but each child gets an independent run; nothing about generation is shared or merged across children.
+
+**FR-1a — Generation scope.** The parent chooses which of **School**, **Chores** and **Family events** a run proposes; at least one is required, and all three is the default. A kind left out is not placed by FR-2/FR-3/FR-4, is not reproduced by FR-2's replay, and is not decided at Commit — its Generation Log rows and its live assignments are left exactly as they were. A kind is therefore proposed on its own pass over the same child and range, and FR-10's idempotence is what makes the passes compose: the second pass sees the first pass's assignments as already-live, shows them frozen, and never re-sends them. Scope is a property of the invocation only — it is not stored on the Child, the range, or the Generation Log, and nothing downstream can tell which passes produced a day.
+
+*Rationale: FR-1's unit put a fortnight of one child's school walk, chores and events on a single screen — several hundred rows — and the proposal lives only in memory, so reviewing it could not be broken across sittings.*
 
 ### Propose (writes nothing)
 
@@ -127,7 +131,7 @@ The map is keyed by the canonical Activity Type, **not** derivable from `structu
 - `sequenceNumber` present whenever `payload.kind` is `reference` or `none` (schema-invisible — the schema marks it optional — so this pass is the only thing that catches its absence).
 - Every `eventEntry` overlaps `[coversFrom, coversTo]`.
 
-**FR-14 — Fixed merge order.** Within each day, content is ordered School Activities, then Chores, then Family Events — never reordered or interleaved differently, regardless of counts.
+**FR-14 — Fixed merge order.** Within each day, content is ordered School Activities, then Chores, then Family Events — never reordered or interleaved differently, regardless of counts. The order is carried as an explicit `sortOrder` per emitted row, and each kind numbers **within its own band** (School from 0, Chores from 1000, Events from 2000) so that a row's position depends only on its own kind. Under FR-1a a run may place one kind and not another, and a single counter across all three would otherwise give the same item a different number depending on which kinds shared its pass.
 
 **FR-15 — Empty-source rule.** A valid Packet is produced whenever at least one source (paced Activities, Chores, in-range Events) yields content for the (child, range) — a child with active Chores but zero currently-paced Instances still receives a normal packet, not an error or empty-packet warning.
 
