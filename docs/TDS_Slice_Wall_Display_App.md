@@ -527,7 +527,7 @@ claim. `claim.js:32-38` gets this right today and is the shape to copy: a JSON b
 `Content-Type: application/json` header.
 
 - `{ claimed: true, assignment }` → tick it, patch the cache from the returned row, post the earn.
-- `{ claimed: false }` → **"Talia got there first!"**, cheerful, three seconds, then the row
+- `{ claimed: false }` → **"Talia got there first!"**, cheerful, then the row
   re-renders as claimed. No earn, no local state, nothing to unwind — `handleAssignmentClaim`
   arbitrates the whole group in one statement, so the loser's view is right immediately.
 

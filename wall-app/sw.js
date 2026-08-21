@@ -85,7 +85,18 @@
 // least one row, a 140ms window in which no drag can start, a tap radius
 // wide enough for a wobbly tap, a same-slot drop that writes nothing, and
 // Undo on a move that does happen. store.js gains `dayRowH`. No new files.
-const CACHE_NAME = "wall-display-shell-v13";
+// v14: the tap that opened a sheet also closed it. All five sheets
+// (completion, duration, block span, membership, overflow) dismiss on
+// `pointerdown` rather than `click`, so the click trailing the opening tap
+// can no longer reach the overlay it just created — this is what made a
+// chip feel like it had a "sweet spot". New file `toast.js`: one popup
+// policy for the whole wall (8 seconds or the next tap) hosted on <body>,
+// where a background poll's re-render cannot tear it out; day-ui.js and
+// complete-ui.js both go through it and `.complete-toast` is gone.
+// day-ui.js also wraps each chore chip in a gap-aware transparent tap
+// target, paints school blocks behind chips rather than over them, and
+// indents a chore that falls inside a block.
+const CACHE_NAME = "wall-display-shell-v14";
 
 const APP_SHELL = [
   "./",
@@ -103,6 +114,7 @@ const APP_SHELL = [
   "./js/remind-core.js",
   "./js/sound.js",
   "./js/poll.js",
+  "./js/toast.js",
   "./js/day-ui.js",
   "./js/complete-ui.js",
   "./js/week-ui.js",

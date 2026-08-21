@@ -286,37 +286,15 @@
     return snapped;
   }
 
+  // Every transient message on the wall goes through toast.js, which owns
+  // the one policy (8 seconds or the next tap) and hosts on <body> so a
+  // background poll's re-render cannot tear it out from under the reader.
   // `action` is an optional { label, run } — the Undo a move offers (§3.6:
-  // a placement is never refused, so the recovery from a wrong one has to
-  // be immediate and in reach). A toast carrying one takes pointer events
-  // and stays up longer, since it is now something to answer rather than
-  // something to read.
+  // a placement is never refused, so recovery from a wrong one has to be
+  // immediate and in reach).
   function showToast(message, kind, sticky, action) {
-    var root = currentRoot;
-    if (!root) return;
-    var existing = root.querySelector(".wall-toast");
-    if (existing) existing.remove();
-    if (message == null) return;
-    var toast = el('<div class="wall-toast' + (kind ? " " + kind : "") + (action ? " with-action" : "") + '">' +
-      '<span class="wall-toast-text"></span></div>');
-    toast.querySelector(".wall-toast-text").textContent = message;
-    if (action) {
-      var btn = el('<button class="wall-toast-action" type="button"></button>');
-      btn.textContent = action.label;
-      btn.addEventListener("click", function () {
-        toast.remove();
-        action.run();
-      });
-      toast.appendChild(btn);
-    }
-    root.appendChild(toast);
-    requestAnimationFrame(function () { toast.classList.add("visible"); });
-    if (!sticky) {
-      setTimeout(function () {
-        toast.classList.remove("visible");
-        setTimeout(function () { if (toast.parentNode) toast.remove(); }, 250);
-      }, action ? 7000 : kind === "warning" ? 4500 : 2200);
-    }
+    if (message == null) return g.Toast.clear();
+    g.Toast.show(message, { kind: kind, sticky: sticky, action: action });
   }
 
   function rerenderNow() {
@@ -680,7 +658,14 @@
         rerenderNow();
       });
     });
-    overlay.addEventListener("click", function (ev) {
+    // `pointerdown`, NOT `click`: the tap that OPENS a sheet dispatches its
+    // click after the overlay is already in the DOM, so a click listener
+    // here closed the sheet in the same gesture that opened it — unless the
+    // tap happened to land where the card ended up. That is what made a
+    // chip feel like it had a "sweet spot": the sheet was opening every
+    // time and dismissing itself before it could be seen. A pointerdown
+    // that began before this overlay existed can never reach it.
+    overlay.addEventListener("pointerdown", function (ev) {
       if (ev.target === overlay) closeDurationSheet(); // backdrop tap cancels
     });
     overlay.querySelector("#durCancel").addEventListener("click", closeDurationSheet);
@@ -710,7 +695,10 @@
   // there; a tap on a chip is left to the chip's own gesture handler.
   function attachGridTapToPlace(bodyEl, rangeStart, rangeEnd) {
     bodyEl.addEventListener("click", function (ev) {
-      if (!selectedForPlacement || ev.target.closest(".day-chip")) return;
+      // `.day-chip-hit` counts as the chip: it IS the chip's tap target, and
+      // a tap that lands on its padding must not place an armed tray chore
+      // there instead.
+      if (!selectedForPlacement || ev.target.closest(".day-chip, .day-chip-hit")) return;
       var virtual = startMinFromPointer(ev.clientY, bodyEl, rangeStart, rangeEnd);
       var row = selectedForPlacement.row;
       selectedForPlacement = null;
@@ -1052,7 +1040,14 @@
         rerenderNow();
       });
     });
-    overlay.addEventListener("click", function (ev) {
+    // `pointerdown`, NOT `click`: the tap that OPENS a sheet dispatches its
+    // click after the overlay is already in the DOM, so a click listener
+    // here closed the sheet in the same gesture that opened it — unless the
+    // tap happened to land where the card ended up. That is what made a
+    // chip feel like it had a "sweet spot": the sheet was opening every
+    // time and dismissing itself before it could be seen. A pointerdown
+    // that began before this overlay existed can never reach it.
+    overlay.addEventListener("pointerdown", function (ev) {
       if (ev.target === overlay) closeBlockSheet();
     });
     overlay.querySelector("#blockCancel").addEventListener("click", closeBlockSheet);
@@ -1123,7 +1118,14 @@
       });
       list.appendChild(li);
     });
-    overlay.addEventListener("click", function (ev) {
+    // `pointerdown`, NOT `click`: the tap that OPENS a sheet dispatches its
+    // click after the overlay is already in the DOM, so a click listener
+    // here closed the sheet in the same gesture that opened it — unless the
+    // tap happened to land where the card ended up. That is what made a
+    // chip feel like it had a "sweet spot": the sheet was opening every
+    // time and dismissing itself before it could be seen. A pointerdown
+    // that began before this overlay existed can never reach it.
+    overlay.addEventListener("pointerdown", function (ev) {
       if (ev.target === overlay) closeOverflowSheet();
     });
     overlay.querySelector("#overflowDone").addEventListener("click", closeOverflowSheet);
@@ -1181,7 +1183,14 @@
       checkbox.addEventListener("change", function () { toggleMembership(block, name, checkbox.checked); });
       list.appendChild(li);
     });
-    overlay.addEventListener("click", function (ev) {
+    // `pointerdown`, NOT `click`: the tap that OPENS a sheet dispatches its
+    // click after the overlay is already in the DOM, so a click listener
+    // here closed the sheet in the same gesture that opened it — unless the
+    // tap happened to land where the card ended up. That is what made a
+    // chip feel like it had a "sweet spot": the sheet was opening every
+    // time and dismissing itself before it could be seen. A pointerdown
+    // that began before this overlay existed can never reach it.
+    overlay.addEventListener("pointerdown", function (ev) {
       if (ev.target === overlay) closeMembershipSheet();
     });
     overlay.querySelector("#pickerDone").addEventListener("click", closeMembershipSheet);
@@ -1411,45 +1420,45 @@
     return tile;
   }
 
+  // ---- the tap target (§8.1) -------------------------------------------------
+  // A chip is drawn at its duration — one 15-minute row is 30px at the
+  // default zoom — and a fingertip is wider than that. Ray, on the tablet:
+  // "still super hard to find the sweet spot on where to click." So a chip
+  // is wrapped in a transparent hit area that reaches into the EMPTY grid
+  // above and below it, and the gesture lives on the wrapper: tapping a
+  // little high or a little low still lands on the chore.
+  //
+  // Never at a neighbour's expense. The padding is capped at half the real
+  // gap to whatever is next in the column, so no two hit areas can ever
+  // overlap and no tap can be stolen by the wrong chore — the failure that
+  // would be far worse than the one this fixes.
+  var HIT_PAD_MAX_PX = 14;
+
+  function overlapsAnyBlock(spans, top, bottom) {
+    return spans.some(function (span) { return top < span.bottom && span.top < bottom; });
+  }
+
+  function hitPad(gapPx) {
+    if (!(gapPx > 0)) return 0;
+    return Math.min(HIT_PAD_MAX_PX, Math.floor(gapPx / 2));
+  }
+
   function buildColumn(entry, rh, rangeStart, opts) {
     var col = el('<div class="day-column"></div>');
-    groupOverlappingChips(entry.placed).forEach(function (group) {
-      var narrow = group.length > 1;
-      var overflowCount = group.length - MAX_VISIBLE_OVERLAP;
-      var slots = overflowCount > 0 ? MAX_VISIBLE_OVERLAP + 1 : group.length;
-      group.slice(0, MAX_VISIBLE_OVERLAP).forEach(function (placed, i) {
-        var top = ((placed.topMin - rangeStart) / ROW_MIN) * rh;
-        var rows = Math.max(1, Math.ceil(placed.chip.durationMin / ROW_MIN));
-        var height = rows * rh - 2; // 2px gap between chips
-        var chip = el(chipHtml(placed, opts.fmt));
-        chip.style.top = top + "px";
-        if (narrow) {
-          chip.classList.add("day-chip-narrow");
-          height = Math.max(height, NARROW_CHIP_MIN_H);
-          var rect = overlapSlotRect(i, slots);
-          chip.style.left = rect.left;
-          chip.style.right = rect.right;
-        }
-        chip.style.height = height + "px";
-        attachGesture(chip, placed.row.title, function () {
-          if (opts.onChipTap) opts.onChipTap(placed.row, entry.child);
-        }, function () {
-          showDurationSheet(placed.row);
-        }, function (startMin) {
-          commitPlacement(placed.row, startMin);
-        }, function () {
-          unplace(placed.row);
-        }, placed.chip.startMin);
-        col.appendChild(chip);
-      });
-      if (overflowCount > 0) col.appendChild(buildOverflowTile(group, rangeStart, rh, slots, entry, opts));
-    });
+
+    // School blocks go down FIRST, so they sit behind the chore chips: a
+    // block spans hours and a chore inside those hours has to be the thing
+    // a tap lands on (§8.1 — a block has no completion lifecycle to tap
+    // for). Before this, the block was appended last and quietly covered
+    // every chip inside its span.
+    var blockSpans = [];
     (entry.blocks || []).forEach(function (be) {
       var top = ((be.topMin - rangeStart) / ROW_MIN) * rh;
       var rows = Math.max(1, Math.ceil((be.block.end_min - be.block.start_min) / ROW_MIN));
       var chip = el(schoolBlockChipHtml(be, opts.fmt));
       chip.style.top = top + "px";
       chip.style.height = (rows * rh - 2) + "px";
+      blockSpans.push({ top: top, bottom: top + rows * rh - 2 });
       // Tap opens the membership picker (§5.2); long-press opens the
       // span/label editor (§5.4); drag moves it, setting a new standing
       // start time (§3.3) — no tray drop, a block is removed from its sheet.
@@ -1461,6 +1470,90 @@
         moveSchoolBlock(be.block, startMin);
       }, null, be.block.start_min);
       col.appendChild(chip);
+    });
+
+    // Lay every chip out before appending any of it: the hit padding needs
+    // to know where this chip's neighbours ended up.
+    var groups = groupOverlappingChips(entry.placed);
+    var laid = [];
+    groups.forEach(function (group) {
+      var narrow = group.length > 1;
+      var overflowCount = group.length - MAX_VISIBLE_OVERLAP;
+      var slots = overflowCount > 0 ? MAX_VISIBLE_OVERLAP + 1 : group.length;
+      var groupTop = Infinity, groupBottom = -Infinity;
+      var els = [];
+      group.slice(0, MAX_VISIBLE_OVERLAP).forEach(function (placed, i) {
+        var top = ((placed.topMin - rangeStart) / ROW_MIN) * rh;
+        var rows = Math.max(1, Math.ceil(placed.chip.durationMin / ROW_MIN));
+        var height = rows * rh - 2; // 2px gap between chips
+        var chip = el(chipHtml(placed, opts.fmt));
+        var lane = null;
+        if (narrow) {
+          chip.classList.add("day-chip-narrow");
+          height = Math.max(height, NARROW_CHIP_MIN_H);
+          lane = overlapSlotRect(i, slots);
+        }
+        chip.style.height = height + "px";
+        groupTop = Math.min(groupTop, top);
+        groupBottom = Math.max(groupBottom, top + height);
+        els.push({ chip: chip, placed: placed, top: top, height: height, lane: lane });
+      });
+      laid.push({ group: group, els: els, top: groupTop, bottom: groupBottom, slots: slots,
+                  overflowCount: overflowCount, narrow: narrow });
+    });
+
+    var gridBottom = ((GRID_END_MIN - rangeStart) / ROW_MIN) * rh;
+    laid.forEach(function (entryGroup, gi) {
+      var prev = laid[gi - 1];
+      var next = laid[gi + 1];
+      // A clustered group shares its span with a neighbour side by side, so
+      // only its outer edges have free grid to grow into — which is exactly
+      // what these two gaps measure.
+      var padTop = hitPad(entryGroup.top - (prev ? prev.bottom : 0));
+      var padBottom = hitPad((next ? next.top : gridBottom) - entryGroup.bottom);
+
+      entryGroup.els.forEach(function (item) {
+        var placed = item.placed;
+        var hit = el('<div class="day-chip-hit"></div>');
+        // A chore scheduled DURING a school block sits on top of it (the
+        // chore is the thing a tap is for). Indent it so the block's frame
+        // still reads continuously down both sides and the chore reads as
+        // being inside that sitting rather than as a chip that happens to
+        // have landed on one. Lane chips are already narrowed by §9's
+        // side-by-side split, so they keep their own geometry.
+        if (!item.lane && overlapsAnyBlock(blockSpans, item.top, item.top + item.height)) {
+          hit.classList.add("day-chip-in-block");
+        }
+        hit.style.top = (item.top - padTop) + "px";
+        hit.style.height = (item.height + padTop + padBottom) + "px";
+        if (item.lane) {
+          hit.style.left = item.lane.left;
+          hit.style.right = item.lane.right;
+        }
+        // The chip sits at its true position INSIDE the padded wrapper, so
+        // what is drawn still says exactly what the duration says.
+        item.chip.style.top = padTop + "px";
+        item.chip.style.left = "0";
+        item.chip.style.right = "0";
+        hit.appendChild(item.chip);
+        // One gesture, on the wrapper — the padding and the chip are the
+        // same target. wall.css maps the press/drag classes through to the
+        // visible chip inside.
+        attachGesture(hit, placed.row.title, function () {
+          if (opts.onChipTap) opts.onChipTap(placed.row, entry.child);
+        }, function () {
+          showDurationSheet(placed.row);
+        }, function (startMin) {
+          commitPlacement(placed.row, startMin);
+        }, function () {
+          unplace(placed.row);
+        }, placed.chip.startMin);
+        col.appendChild(hit);
+      });
+
+      if (entryGroup.overflowCount > 0) {
+        col.appendChild(buildOverflowTile(entryGroup.group, rangeStart, rh, entryGroup.slots, entry, opts));
+      }
     });
     return col;
   }
