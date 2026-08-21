@@ -161,9 +161,11 @@
     }
     paintFailedEarns();
 
-    // §11.5.2 — per-child sound toggle, stored alongside §11.4's colour
-    // (Phase 8) in the same `wall.childPrefs` record. Default ON: a child
-    // absent from the record (never touched here) still chimes.
+    // §11.5.2 — per-child sound toggle, in the `wall.childPrefs` record.
+    // It is the record's only field: §11.4's colour picker, which would
+    // have sat beside it here, is deferred rather than pending (§17.11).
+    // Default ON: a child absent from the record (never touched here)
+    // still chimes.
     var soundList = body.querySelector(".sound-child-list");
     function paintSoundList() {
       soundList.innerHTML = "";

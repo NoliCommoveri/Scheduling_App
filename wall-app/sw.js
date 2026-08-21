@@ -96,7 +96,16 @@
 // day-ui.js also wraps each chore chip in a gap-aware transparent tap
 // target, paints school blocks behind chips rather than over them, and
 // indents a chore that falls inside a block.
-const CACHE_NAME = "wall-display-shell-v14";
+// v15: §16 Phase 8, second half — the month view (§7). New files
+// `month-core.js` (pure: the six-by-seven Sunday-first grid, its 42-day
+// fetch window, and the per-cell "+N more" split) and `month-ui.js` (the
+// grid, and the one view in this app that fetches for itself — §7.2's
+// household-wide `GET /api/wall/events`, riding Poll's heartbeat rather
+// than a second timer). api.js gains `getEvents`; nav-ui.js gains
+// `goTo(view, date)` so a day-cell tap moves view and date in one poll;
+// app.js drops its last placeholder branch; wall.css gains the grid, the
+// in-cell event lines and the overflow sheet.
+const CACHE_NAME = "wall-display-shell-v15";
 
 const APP_SHELL = [
   "./",
@@ -109,6 +118,7 @@ const APP_SHELL = [
   "./js/time-core.js",
   "./js/events-core.js",
   "./js/chores-core.js",
+  "./js/month-core.js",
   "./js/slots-core.js",
   "./js/school-core.js",
   "./js/remind-core.js",
@@ -118,6 +128,7 @@ const APP_SHELL = [
   "./js/day-ui.js",
   "./js/complete-ui.js",
   "./js/week-ui.js",
+  "./js/month-ui.js",
   "./js/nav-ui.js",
   "./js/settings-ui.js",
   "./js/app.js",

@@ -129,8 +129,8 @@ school blocks that aggregate a course; and completion that asks *when* it was do
 | **5b** | Duration adjust — "just this one" vs "this and future", and the precedence chain. | ~1.5 h | ✅ Landed |
 | **6** | Completion: the sheet (who by column, when by stepper), earns, Undo both paths, the claim path, done-in-place. | ~2.5 h | ✅ Landed |
 | **6b** | Sound — the start-time chime and completion tone, WebAudio unlock, quiet hours, per-child toggle, Settings' Test sound. | ~1.5 h | ✅ Landed |
-| **7** | School blocks — course grouping, the read-only block, the completion rollup. | ~1.5 h | ⬜ |
-| **8** | Week and month views; child colours carried across all three. | ~2.5 h | ⬜ |
+| **7** | School blocks — course grouping, the read-only block, the completion rollup. | ~1.5 h | ✅ Landed 2026-08-15 |
+| **8** | Week and month views; child colours carried across all three. | ~2.5 h | ✅ Landed — week 2026-08-15 (as day-ROWS with a Chores/School token, superseding the slice's columns), month 2026-08-21. **Child colours deferred, not built** — both views they were justified by stopped carrying per-child chips, so they would colour nothing (redesign slice §17.11, Ray 2026-08-21). |
 | **9** | The look pass, remaining tests, `CACHE_NAME` bump, on-device shakedown. | ~2 h | ⬜ |
 
 **Three narrowings signed off in-session, 2026-08-14:** the wall writes tables of its own (§3.2);

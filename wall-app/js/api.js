@@ -7,7 +7,9 @@
 // ("just this one"). Phase 6 adds the write path itself: completions,
 // reward entries, and the arbitrated claim/release (§6.1-§6.5, §8.3.1) —
 // the shape (one wall token, childId per call, 401 -> unpaired) set above
-// only ever needed adding routes, never a second convention.
+// only ever needed adding routes, never a second convention. Phase 8 adds
+// `getEvents` (§7.2) — the month grid's household-wide feed, and the only
+// read here that names no child at all, exactly like `getChildren`.
 
 (function (g) {
   "use strict";
@@ -67,6 +69,27 @@
       "&from=" + encodeURIComponent(from) + "&to=" + encodeURIComponent(to);
     if (since != null) qs += "&since=" + encodeURIComponent(since);
     return request("/api/wall/plan?" + qs);
+  }
+
+  // §7.2 — the household-wide, server-deduped events feed the month grid
+  // runs on, and the ONE read in this app that is not part of `Poll`'s
+  // fan-out. The poll's window is a fortnight ([today-7, today+6],
+  // poll.js); a month grid draws 42 days, and §7.2 exists precisely so
+  // that is one query rather than a per-child plan call per month.
+  //
+  // Its projection is `{ id, source_id, date, title, payload }`: the route
+  // selected `kind = 'event'` in SQL and then dropped the column from what
+  // it returns. `kind` is stamped back on here so `events-core.js`'s own
+  // `eventsOn`/`eventKey`/`spanLabel` run over this feed exactly as they do
+  // over a plan window — one dedupe in the app, not a second one for the
+  // month.
+  function getEvents(from, to) {
+    var qs = "from=" + encodeURIComponent(from) + "&to=" + encodeURIComponent(to);
+    return request("/api/wall/events?" + qs).then(function (res) {
+      return (res.events || []).map(function (row) {
+        return Object.assign({}, row, { kind: "event" });
+      });
+    });
   }
 
   // §12 — every placement, household-wide, plus any `wall_slot_days`
@@ -248,6 +271,7 @@
     pair: pair,
     getChildren: getChildren,
     getPlan: getPlan,
+    getEvents: getEvents,
     getSlots: getSlots,
     putSlot: putSlot,
     deleteSlot: deleteSlot,

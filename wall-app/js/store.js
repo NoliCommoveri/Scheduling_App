@@ -6,10 +6,16 @@
 //   wall.pendingEarns   — [{ id, childId, assignmentId, category, amount, reason, earnedAt, attempts }]
 //   wall.failedEarns    — [{ id, childId, assignmentId, category, amount, reason, at }]
 //   wall.childPrefs     — { [childId]: { soundOn } } — §16 Phase 6b's per-child
-//                          sound toggle (§11.5.2). §11.4's colour picker is the
-//                          same record, keyed the same way; Phase 8 adds a
-//                          `colour` field to each entry rather than a second
-//                          store key, per §11.4's own text.
+//                          sound toggle (§11.5.2). §11.4's colour picker would
+//                          be the same record, keyed the same way, with a
+//                          `colour` field beside `soundOn` rather than a second
+//                          store key. It is DEFERRED, not pending (§17.11):
+//                          both views §11.4 justified it by stopped showing
+//                          per-child chips before Phase 8 built it, so there is
+//                          nothing to colour. The shape above is what it would
+//                          slot into if that changes; `setChildPref` already
+//                          merges rather than replaces, so nothing here needs
+//                          to change first.
 //
 // `wall.pins` — per-child PIN records — is RETIRED (Wall Calendar Redesign
 // §0.4, §1.2). Per-child PIN gating was never built (Phase 4a of the
@@ -107,15 +113,15 @@
     writeJson(KEY_FAILED_EARNS, list);
   }
 
-  // ---- per-child prefs (§11.4/§11.5 — sound now, colour joins in Phase 8) --
+  // ---- per-child prefs (§11.5's sound toggle; §11.4's colour deferred, §17.11) --
 
   function getChildPrefs() {
     return readJson(KEY_CHILD_PREFS, {});
   }
 
   // Merges one child's fields into their existing record rather than
-  // replacing it, so setting `soundOn` today never clobbers a `colour`
-  // Phase 8 writes tomorrow.
+  // replacing it, so setting `soundOn` never clobbers a field added beside
+  // it later — §11.4's deferred `colour` being the one this was written for.
   function setChildPref(childId, patch) {
     var all = getChildPrefs();
     all[childId] = Object.assign({}, all[childId], patch);

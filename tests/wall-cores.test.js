@@ -10,6 +10,12 @@
 // not here. §16 Phase 5b adds slots-core.js's assignedDurationMin and
 // time-core.js's formatDurationMin — the duration-adjust sheet's own DOM
 // wiring stays in day-ui.js, exercised manually alongside Phase 5's.
+// §16 Phase 8 adds month-core.js (§7.1's grid shape, its 42-day fetch
+// window, and the per-cell overflow split). §14.7's "events dedupe,
+// unchanged behaviour, re-asserted against the new month window" is
+// asserted through it rather than beside it: the month grid calls
+// EventsCore.eventsOn once per cell and carries no dedupe of its own, so
+// the month-window assertions below exercise that same function.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -17,10 +23,10 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 const repo = new URL('../', import.meta.url);
-for (const file of ['pin-core.js', 'events-core.js', 'chores-core.js', 'slots-core.js', 'school-core.js', 'time-core.js', 'remind-core.js']) {
+for (const file of ['pin-core.js', 'events-core.js', 'chores-core.js', 'slots-core.js', 'school-core.js', 'time-core.js', 'remind-core.js', 'month-core.js']) {
   vm.runInThisContext(readFileSync(new URL(`wall-app/js/${file}`, repo), 'utf8'), { filename: file });
 }
-const { PinCore, EventsCore, ChoresCore, SlotsCore, SchoolCore, TimeCore, RemindCore } = globalThis;
+const { PinCore, EventsCore, ChoresCore, SlotsCore, SchoolCore, TimeCore, RemindCore, MonthCore } = globalThis;
 
 // ===========================================================  hashing (§12.8)
 
@@ -641,4 +647,141 @@ test('coursesWithTypeCounts: one entry per course with activities that date, eac
     { courseName: 'Language Arts', typeCounts: [{ type: 'Lesson', count: 1 }] },
     { courseName: 'Math', typeCounts: [{ type: 'Lesson', count: 1 }, { type: 'Quiz', count: 1 }] },
   ]);
+});
+
+// =====================================================  month-core (§7, §14.7)
+//
+// §7.1's grid shape, §7.2's fetch window, and §14.7's events dedupe
+// "re-asserted against the new month window" — the last of which is an
+// assertion about EventsCore running unchanged over a 42-day grid, since
+// buildCells calls it per cell and carries no dedupe of its own.
+
+const evt = (id, date, extra = {}) => ({
+  id, kind: 'event', date, source_id: id, title: 'Event ' + id, payload: '{}', ...extra,
+});
+
+test('§7.1 — the grid is always six Sunday-first weeks, whatever shape the month is', () => {
+  // 2026-08-01 is a Saturday: the leading week is almost entirely July, and
+  // a five-row month still draws six rows.
+  const aug = MonthCore.gridDates('2026-08-14');
+  assert.equal(aug.length, 42);
+  assert.equal(aug[0], '2026-07-26'); // the Sunday on or before the 1st
+  assert.equal(aug[41], '2026-09-05');
+
+  // 2026-02-01 is a Sunday and 2026 is not a leap year, so February is
+  // exactly four weeks — the case a "however many rows it needs" grid would
+  // draw at two-thirds height.
+  const feb = MonthCore.gridDates('2026-02-10');
+  assert.equal(feb.length, 42);
+  assert.equal(feb[0], '2026-02-01');
+  assert.equal(feb[27], '2026-02-28');
+  assert.equal(feb[41], '2026-03-14');
+});
+
+test('§7.1 — every drawn date is one day after the last, across both month boundaries', () => {
+  const dates = MonthCore.gridDates('2026-08-14');
+  const dayMs = 86400000;
+  for (let i = 1; i < dates.length; i++) {
+    const gap = Date.parse(dates[i] + 'T00:00:00Z') - Date.parse(dates[i - 1] + 'T00:00:00Z');
+    assert.equal(gap, dayMs, `${dates[i - 1]} -> ${dates[i]}`);
+  }
+});
+
+test('§7.2 — the fetch window is exactly the drawn grid, and inside the route\'s 62-day cap', () => {
+  const win = MonthCore.windowFor('2026-08-14');
+  const dates = MonthCore.gridDates('2026-08-14');
+  assert.equal(win.from, dates[0]);
+  assert.equal(win.to, dates[41]);
+  const span = (Date.parse(win.to + 'T00:00:00Z') - Date.parse(win.from + 'T00:00:00Z')) / 86400000 + 1;
+  assert.equal(span, 42);
+  assert.ok(span <= 62, 'the window must never trip handleWallEvents\' MAX_EVENTS_WINDOW_DAYS');
+});
+
+test('§7.1 — leading and trailing cells are marked out-of-month but still carry their events', () => {
+  const cells = MonthCore.buildCells('2026-08-14', [evt('e1', '2026-07-28')]);
+  const july28 = cells.find((c) => c.date === '2026-07-28');
+  assert.equal(july28.inMonth, false);
+  assert.equal(july28.dayNum, 28);
+  assert.equal(july28.events.length, 1); // drawn, not dropped — just recessed
+  assert.equal(cells.find((c) => c.date === '2026-08-01').inMonth, true);
+});
+
+test('§14.7 — three children\'s rows for one event on one day collapse to one month cell entry', () => {
+  const rows = ['a', 'b', 'c'].map((cid) => ({
+    id: 'row-' + cid, child_id: cid, kind: 'event', date: '2026-08-13',
+    source_id: 'evt-1', title: 'Family movie night', payload: '{}',
+  }));
+  const cells = MonthCore.buildCells('2026-08-14', rows);
+  const cell = cells.find((c) => c.date === '2026-08-13');
+  assert.equal(cell.events.length, 1);
+  assert.equal(cell.events[0].title, 'Family movie night');
+  // and it is on that day only — the other 41 cells stay empty
+  assert.equal(cells.filter((c) => c.events.length > 0).length, 1);
+});
+
+test('§14.7 — a multi-day event yields one entry per day it touches, with the right span label', () => {
+  const row = evt('evt-2', '2026-08-13', {
+    title: 'Grandma visiting',
+    payload: JSON.stringify({ startDate: '2026-08-13', endDate: '2026-08-16' }),
+  });
+  const cells = MonthCore.buildCells('2026-08-14', [row]);
+  const touched = cells.filter((c) => c.events.length > 0);
+  assert.deepEqual(touched.map((c) => c.date), ['2026-08-13', '2026-08-14', '2026-08-15', '2026-08-16']);
+  assert.equal(EventsCore.spanLabel(touched[1].events[0], touched[1].date), 'Day 2 of 4');
+  // one entry per day, never four stacked on the day the row is dated
+  touched.forEach((c) => assert.equal(c.events.length, 1));
+});
+
+test('§7.1 — a cell carries its whole day, however many events that is; an empty one is empty rather than absent', () => {
+  const rows = [1, 2, 3, 4, 5].map((n) => evt('e' + n, '2026-08-13'));
+  const cells = MonthCore.buildCells('2026-08-14', rows);
+  // The whole list travels with the cell whatever gets drawn, because the
+  // "+N more" sheet opens on the WHOLE day, not on the hidden tail.
+  assert.equal(cells.find((c) => c.date === '2026-08-13').events.length, 5);
+  assert.deepEqual(cells.find((c) => c.date === '2026-08-20').events, []);
+});
+
+test('§7.1 — largestFit takes the most a cell can draw, not the first thing that fits', () => {
+  // The fixture: three of five fit. The search must not stop at one.
+  const fits = (n) => n <= 3;
+  assert.equal(MonthCore.largestFit(5, fits), 3);
+  assert.equal(MonthCore.largestFit(3, fits), 3); // nothing hidden when it all fits
+  assert.equal(MonthCore.largestFit(0, fits), 0);
+});
+
+test('§7.1 — largestFit gives up gracefully rather than looping when nothing fits at all', () => {
+  // A cell too short even for one line: the affordance alone is the answer,
+  // never a negative count and never a hang.
+  assert.equal(MonthCore.largestFit(4, () => false), 0);
+});
+
+test('§7.1 — largestFit asks about the affordance\'s own line, so it can never overflow the box it announces', () => {
+  // `fits` is the caller's: month-ui.js shows "+N more" inside the state it
+  // measures whenever n is short of the total. Modelled here as one line for
+  // each drawn event plus one for the affordance, against a 3-line box.
+  const asked = [];
+  const fits = (n) => {
+    asked.push(n);
+    const lines = n + (n < 5 ? 1 : 0);
+    return lines <= 3;
+  };
+  assert.equal(MonthCore.largestFit(5, fits), 2); // 2 events + "+3 more" = 3 lines
+  assert.deepEqual(asked, [5, 4, 3, 2]); // searched down from the whole list
+});
+
+test('§7.1 — a timed event sorts ahead of an untimed one inside a cell, as it does in the day band', () => {
+  const rows = [
+    evt('e1', '2026-08-13', { title: 'No time' }),
+    evt('e2', '2026-08-13', { title: 'Has time', payload: JSON.stringify({ time: '3:00 PM' }) }),
+  ];
+  const cell = MonthCore.buildCells('2026-08-14', rows).find((c) => c.date === '2026-08-13');
+  assert.deepEqual(cell.events.map((e) => e.title), ['Has time', 'No time']);
+});
+
+test('§7.1 — chunkWeeks lays the 42 cells out as six rows of seven, in grid order', () => {
+  const weeks = MonthCore.chunkWeeks(MonthCore.buildCells('2026-08-14', []));
+  assert.equal(weeks.length, MonthCore.WEEKS);
+  weeks.forEach((w) => assert.equal(w.length, 7));
+  assert.equal(weeks[0][0].date, '2026-07-26');
+  assert.equal(weeks[5][6].date, '2026-09-05');
 });

@@ -1726,3 +1726,173 @@ button {
   font-style: italic;
   padding: 0.5rem 0;
 }
+
+/* ---- month view (§16 Phase 8, §7) — six week-rows of seven day-cells,
+   Sunday-first, events only. The grid is fixed at six rows whatever the
+   month needs, so stepping the month never moves a cell under the reader's
+   finger; a row a month doesn't reach simply holds the next month's leading
+   days, dimmed. The whole thing is `height: 100%` with no scroll: a month
+   that had to be scrolled would defeat the one thing this view is for
+   (§7.1's "seeing a whole month of events at once"). --------------------- */
+
+.month-view {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 0 1.5vw 1vh;
+  min-height: 0;
+}
+
+.month-dow-row {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 0.4rem;
+  flex: 0 0 auto;
+  padding-bottom: 0.35rem;
+}
+
+.month-dow {
+  text-align: center;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.month-grid {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  grid-template-rows: repeat(6, minmax(0, 1fr));
+  gap: 0.4rem;
+}
+
+.month-cell {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.25rem 0.4rem;
+  background: var(--panel);
+  border: 2px solid transparent;
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+/* Leading and trailing days belong to the neighbouring months. They are
+   drawn and tappable — a stray event on the 31st of last month should still
+   be visible and still open its day — just recessed. */
+.month-cell.out-of-month {
+  background: transparent;
+  border-color: var(--panel-2);
+}
+
+.month-cell.out-of-month .month-cell-date {
+  color: var(--text-dim);
+  opacity: 0.6;
+}
+
+.month-cell.today {
+  border-color: var(--accent);
+}
+
+.month-cell-date {
+  flex: 0 0 auto;
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.month-cell.today .month-cell-date {
+  color: var(--accent);
+}
+
+.month-cell-events {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+/* One event, exactly one line: time, title and a multi-day event's
+   `Day 2 of 4` (§7.1) share it, and only the title ellipsizes. A fixed
+   one-line height is what lets the smallest cell still show a real event
+   rather than only its "+N more" — see month-ui.js's cellEventHtml. The
+   full, unclipped text is a tap away in either direction: the "+N more"
+   sheet, or the day view. */
+.month-event {
+  background: var(--panel-2);
+  border-left: 3px solid var(--accent);
+  border-radius: 5px;
+  padding: 0.1rem 0.3rem;
+  min-width: 0;
+}
+
+.month-event-head {
+  display: flex;
+  gap: 0.3rem;
+  align-items: baseline;
+  min-width: 0;
+  font-size: 0.85rem;
+  line-height: 1.25;
+}
+
+.month-event-time {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.month-event-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.month-event-span {
+  flex: 0 0 auto;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+}
+
+/* Inside .month-cell-events, as its last child — see month-ui.js's
+   buildCell. No margin: the list's own `gap` already separates it, and a
+   margin would put the box outside what fitGrid's arithmetic sums. */
+.month-more-btn {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  padding: 0.1rem 0.35rem;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* ---- the "+N more" sheet — one day's full list, without leaving the
+   month. Reuses .duration-sheet-overlay/.duration-sheet-card for the modal
+   chrome and .event-row for the lines, the same way the week detail sheet
+   does. ------------------------------------------------------------------ */
+
+.month-more-card {
+  width: min(520px, 90vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.month-more-body {
+  overflow-y: auto;
+  min-height: 0;
+  text-align: left;
+}
