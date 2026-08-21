@@ -76,7 +76,16 @@
 // Sunday-Saturday span, month shows the month name. Stepping now moves by
 // the active view's own unit (a day, a week, or a calendar month) rather
 // than always by one day. nav-ui.js and wall.css only — no new files.
-const CACHE_NAME = "wall-display-shell-v12";
+// v13: day-view density and touch tolerances, from the wall running on the
+// real tablet. wall.css: the 15-minute row goes 18px -> 32px (§4.3's rule
+// unchanged — a row is still 15 minutes, a chip still ceil(duration/15)
+// rows), chip and school-block text scales with it, and the mode bar gains
+// a zoom. day-ui.js: the zoom itself (ZOOM_STEPS, stored per tablet), and
+// `attachGesture` learns that a finger is not a mouse — a drag slop of at
+// least one row, a 140ms window in which no drag can start, a tap radius
+// wide enough for a wobbly tap, a same-slot drop that writes nothing, and
+// Undo on a move that does happen. store.js gains `dayRowH`. No new files.
+const CACHE_NAME = "wall-display-shell-v13";
 
 const APP_SHELL = [
   "./",

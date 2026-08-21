@@ -2,7 +2,7 @@
 // IndexedDB, no outbox, no packet: the wall holds four keys and nothing else.
 //
 //   wall.token         — the one household-scoped bearer credential
-//   wall.settings       — { adminPinSalt, adminPinHash, dimStartHour, dimEndHour, shellVersion, timeFormat }
+//   wall.settings       — { adminPinSalt, adminPinHash, dimStartHour, dimEndHour, shellVersion, timeFormat, dayRowH }
 //   wall.pendingEarns   — [{ id, childId, assignmentId, category, amount, reason, earnedAt, attempts }]
 //   wall.failedEarns    — [{ id, childId, assignmentId, category, amount, reason, at }]
 //   wall.childPrefs     — { [childId]: { soundOn } } — §16 Phase 6b's per-child
@@ -34,6 +34,12 @@
     timeFormat: "24h", // §11.3 — '24h' | '12h'. Absent on an installed tablet's
                         // stored object; this merge (getSettings, below) is
                         // the whole migration.
+    dayRowH: 32,        // px per 15-minute grid row — the day view's zoom
+                        // (day-ui.js ZOOM_STEPS). A property of THIS tablet,
+                        // not of the household: a 10" wall tablet and a
+                        // desktop browser want different densities, and the
+                        // wall owns no server-side per-device settings. Same
+                        // merge-on-read migration as timeFormat above.
   };
 
   function readJson(key, fallback) {
