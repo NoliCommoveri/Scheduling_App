@@ -601,7 +601,8 @@ button {
 }
 
 .day-tray-list li.drag-source,
-.day-chip.drag-source {
+.day-chip.drag-source,
+.day-chip-hit.drag-source > .day-chip {
   opacity: 0.35;
   cursor: grabbing;
 }
@@ -835,6 +836,30 @@ button {
   border-left: 1px solid var(--panel-2);
 }
 
+/* §8.1 — the transparent tap target a chore chip lives inside, reaching
+   into the empty grid above and below it (day-ui.js hitPad, which caps the
+   reach at half the real gap so no two can ever overlap). It carries the
+   gesture, so the press and drag states land HERE and are mapped through to
+   the visible chip by the rules above and below. */
+.day-chip-hit {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  background: transparent;
+  cursor: grab;
+  touch-action: none; /* this element owns its own drag gesture (§16 Phase 5) */
+  user-select: none;
+}
+
+/* §5.1/§9 — a chore placed during a school block. The block is behind it
+   (it has no completion lifecycle; the chore is what a tap is for), so the
+   chore is indented to let the block's frame read continuously down both
+   sides: nested inside that sitting, not dropped on top of it. */
+.day-chip-hit.day-chip-in-block {
+  left: 22px;
+  right: 12px;
+}
+
 .day-chip {
   position: absolute;
   left: 4px;
@@ -948,7 +973,8 @@ button {
 
 /* A held chip, before the long-press threshold decides whether it opens
    the duration sheet — opacity only, no animated box-shadow (§11.2). */
-.day-chip.pressing {
+.day-chip.pressing,
+.day-chip-hit.pressing > .day-chip {
   opacity: 0.55;
 }
 
@@ -1123,10 +1149,13 @@ button {
    never a refusal (§3.6, §9). Anchored to .wall-content, which is already
    position:relative, so it floats above the scrolling day view. ---------- */
 
+/* Hosted on <body> by toast.js (not inside a view's render target, which
+   gets rebuilt wholesale on every poll), so it positions against the
+   viewport rather than a container. */
 .wall-toast {
-  position: absolute;
+  position: fixed;
   left: 50%;
-  bottom: 1rem;
+  bottom: 1.5rem;
   transform: translate(-50%, 12px);
   opacity: 0;
   background: var(--panel-2);
@@ -1543,36 +1572,6 @@ button {
   font-size: 1.1rem;
   color: var(--text-dim);
   margin: 1rem 0;
-}
-
-/* ---- completion toast — "Talia got there first!", the refresh notice, and
-   Undo's confirmation. Same visual language as .wall-toast (day-ui.js) but
-   its own class: this file's overlay sits above day-ui.js's render target,
-   so a toast anchored to the SAME host has to be its own element too. ---- */
-
-.complete-toast {
-  position: fixed;
-  left: 50%;
-  bottom: 2rem;
-  transform: translate(-50%, 12px);
-  opacity: 0;
-  background: var(--panel-2);
-  color: var(--text);
-  padding: 0.7rem 1.3rem;
-  border-radius: 12px;
-  font-size: 1.05rem;
-  font-weight: 600;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
-  transition: opacity 200ms ease, transform 200ms ease;
-  pointer-events: none;
-  z-index: 12;
-  max-width: 80%;
-  text-align: center;
-}
-
-.complete-toast.visible {
-  opacity: 1;
-  transform: translate(-50%, 0);
 }
 
 /* ---- week view (§16 Phase 8) — seven day-rows, Sunday-first. Rows rather

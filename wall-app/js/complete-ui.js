@@ -18,7 +18,6 @@
   "use strict";
 
   var STEP_MS = 5 * 60 * 1000; // §8.3 — 5-minute steps, not the grid's 15
-  var TOAST_MS = 3000; // §6.3 — "cheerful, three seconds"
 
   function el(html) {
     var t = document.createElement("template");
@@ -227,17 +226,12 @@
     return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) + ", " + clock;
   }
 
-  function showEphemeralMessage(hostEl, text, kind) {
-    var existing = hostEl.querySelector(".complete-toast");
-    if (existing) existing.remove();
-    var toast = el('<div class="complete-toast' + (kind ? " " + kind : "") + '"></div>');
-    toast.textContent = text;
-    hostEl.appendChild(toast);
-    requestAnimationFrame(function () { toast.classList.add("visible"); });
-    setTimeout(function () {
-      toast.classList.remove("visible");
-      setTimeout(function () { if (toast.parentNode) toast.remove(); }, 250);
-    }, TOAST_MS);
+  // Through toast.js, like every other transient message the wall shows —
+  // one lifetime rule (8 seconds or the next tap), one host that no
+  // re-render can reach. §6.3's "cheerful, three seconds" is superseded by
+  // Ray in-session, 2026-08-21.
+  function showEphemeralMessage(text, kind) {
+    g.Toast.show(text, { kind: kind });
   }
 
   function setBusy(busy) {
@@ -264,7 +258,7 @@
 
   function submitComplete() {
     if (!current || current.busy || futureBoundBad(current.value)) return;
-    var row = current.row, child = current.child, value = current.value, hostEl = current.hostEl;
+    var row = current.row, child = current.child, value = current.value;
     setBusy(true);
     showError("");
     refreshRow(row.id).then(function (fresh) {
@@ -272,19 +266,19 @@
       if (!fresh || fresh.status !== "pending") {
         setBusy(false);
         close();
-        showEphemeralMessage(hostEl, "That chore already changed — refreshed.");
+        showEphemeralMessage("That chore already changed — refreshed.");
         return;
       }
       var write = isSharedClaim(fresh) ? completeClaim : completeOrdinary;
       write(child.id, fresh, value).then(function (result) {
         if (result.claimedElsewhere) {
-          // §6.3 — cheerful, three seconds, then the row re-renders as
+          // §6.3 — cheerful, then the row re-renders as
           // claimed. The claim route's losing answer carries no winner's
           // name (`{ claimed: false }` alone), so this stays generic rather
           // than guessing one.
           setBusy(false);
           close();
-          showEphemeralMessage(hostEl, "Someone else got there first!");
+          showEphemeralMessage("Someone else got there first!");
           g.Poll.pollNow();
           return;
         }
@@ -311,7 +305,7 @@
 
   function submitUndo() {
     if (!current || current.busy) return;
-    var row = current.row, child = current.child, hostEl = current.hostEl;
+    var row = current.row, child = current.child;
     setBusy(true);
     showError("");
     var undo = isSharedClaim(row) ? undoClaim : undoOrdinary;
@@ -324,7 +318,7 @@
       g.Poll.pollNow().then(function () {
         setBusy(false);
         close();
-        showEphemeralMessage(hostEl, "Undone.");
+        showEphemeralMessage("Undone.");
       });
     }).catch(function () {
       setBusy(false);
@@ -400,7 +394,14 @@
     hostEl.appendChild(overlay);
     current = { row: row, child: child, value: Date.now(), hostEl: hostEl, overlayEl: overlay, busy: false };
 
-    overlay.addEventListener("click", function (ev) {
+    // `pointerdown`, NOT `click`: the tap that OPENS a sheet dispatches its
+    // click after the overlay is already in the DOM, so a click listener
+    // here closed the sheet in the same gesture that opened it — unless the
+    // tap happened to land where the card ended up. That is what made a
+    // chip feel like it had a "sweet spot": the sheet was opening every
+    // time and dismissing itself before it could be seen. A pointerdown
+    // that began before this overlay existed can never reach it.
+    overlay.addEventListener("pointerdown", function (ev) {
       if (ev.target === overlay) close(); // backdrop tap cancels, same as the duration sheet
     });
 

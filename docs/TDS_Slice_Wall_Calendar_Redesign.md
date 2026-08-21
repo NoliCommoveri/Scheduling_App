@@ -1793,6 +1793,18 @@ Nothing in this slice is now waiting on an answer.
 
 ## 20. Revision log
 
+### 2026-08-21 (second pass) — one popup policy, and a chip you can actually hit
+
+Both from Ray, after the first pass shipped to the tablet.
+
+| # | Changed | Section |
+|---|---|---|
+| 1 | **Popups lasted under a second.** Not a duration bug: `showToast` parented the toast inside day-ui.js's render target, and the poll that a write itself kicks off rebuilds that subtree wholesale (`root.innerHTML = ""`) — so the Undo a move offered was torn out about a second after it appeared, which is the same window in which the reader was still reading the message. New `wall-app/js/toast.js` owns the wall's one popup policy: **8 seconds, or until the next tap anywhere outside it**, hosted on `<body>` where nothing in either view's render cycle can reach it. A tap inside the toast is not a dismissal, so its Undo still works. day-ui.js's `showToast` and complete-ui.js's `showEphemeralMessage` are both thin wrappers over it now, and `.complete-toast` is gone. This supersedes §6.3's "cheerful, three seconds" in `TDS_Slice_Wall_Display_App.md` and day-ui.js's own 2.2s/4.5s pair. | §11.2, Wall Display §6.3 |
+| 2 | **The real cause of "the chip has a sweet spot": every sheet was dismissing itself on the tap that opened it.** A tap dispatches its `click` *after* the tap handler has already put the overlay in the DOM, and each sheet closed on a backdrop `click` — so the sheet opened on every tap and then closed itself unless the tap happened to land where the card ended up, which is why the live-looking area moved around the chip. Measured on a real 10" viewport with real touch events: 3 of 4 tap positions across one chip opened and instantly closed the completion sheet. All five sheets (completion, duration, block span, membership, overflow) now dismiss on **`pointerdown`** instead: a press that began before the overlay existed can never reach it, and a genuine later press outside the card still closes it. | §8.1, §8.5 |
+| 3 | **A chore chip is now tappable well past its drawn box.** A one-row chip is 30px at the default zoom and a fingertip is wider than that. Each chip is wrapped in a transparent `.day-chip-hit` that reaches into the empty grid above and below it — capped at **half the real gap** to whatever is next in the column, so no two targets can ever overlap and no tap can be stolen by the wrong chore. The gesture moves to the wrapper; the chip inside is still drawn at exactly its duration, so nothing about §4.3's `ceil(duration / 15)` rule changes on screen. At the default zoom an isolated one-row chore goes from a 30px target to ~58px. | §4.3, §8.1 |
+| 4 | **School blocks now paint behind chore chips**, where before they were appended last and quietly covered every chip inside their span — so a chore placed during school hours could not be ticked off at all, and the tap opened the block's membership picker instead. A block has no completion lifecycle (§8.1); the chore inside it is the thing a tap is for. | §5.1, §8.1 |
+| 5 | **A chore placed during a school block is indented**, so the block's frame reads continuously down both sides of it and the chore reads as being inside that sitting rather than dropped on top of one. Chore-on-chore overlap is unchanged — §9's side-by-side lanes still handle that. | §5.1, §9 |
+
 ### 2026-08-21 — grid density, a zoom, and touch gesture tolerances (post-Phase 8, from use)
 
 Three changes from the wall running on the real device — a 10" landscape tablet, full-screen as a
