@@ -359,7 +359,18 @@ button {
    day-ui.js (getComputedStyle) so the JS and the CSS can never drift apart. */
 
 :root {
-  --row-h: 18px;
+  /* A 15-minute row, in pixels. The DEFAULT only: day-ui.js's zoom
+     (ZOOM_STEPS) overwrites this property on the root element from the
+     tablet's stored setting, and reads it back with getComputedStyle — so
+     this stays the one place the height is stated, and nothing drifts.
+
+     32px rather than the 18px this shipped with. At 18px a one-row chore
+     chip drew 16px of box for a 0.9rem title, so the text sat hard against
+     the chip's edges, and a 10" wall tablet showed close to seven hours at
+     once — far more day than anyone standing in a kitchen needs to read.
+     At 32px an hour is 128px and the grid opens up; the zoom covers the
+     rest, in both directions. */
+  --row-h: 32px;
   --gutter-w: 56px;
 }
 
@@ -463,6 +474,44 @@ button {
   background: var(--accent);
   color: #1a1408;
   border-color: var(--accent);
+}
+
+/* The grid's zoom (day-ui.js setZoom) — pushed to the far end of the mode
+   bar so it reads as a property of the view rather than a fourth mode.
+   Big flat targets, no slider: a wall gets a button pressed in passing
+   (§11.2). The label between them says how much of the day currently
+   fits, which is the thing a reader actually chose. */
+.day-zoom {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.day-zoom-btn {
+  min-width: 44px;
+  min-height: 44px;
+  border-radius: 10px;
+  border: 2px solid var(--panel-2);
+  background: transparent;
+  color: var(--text);
+  font-size: 1.3rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.day-zoom-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.day-zoom-label {
+  min-width: 3.2rem;
+  text-align: center;
+  font-size: 0.9rem;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
 }
 
 /* Block-collapsed rows need a wider label column than the grid's thin
@@ -775,7 +824,7 @@ button {
   right: 0.5rem;
   text-align: right;
   transform: translateY(-0.6em);
-  font-size: 0.8rem;
+  font-size: 0.9rem;
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
 }
@@ -796,7 +845,7 @@ button {
   background: var(--panel);
   border-left: 4px solid var(--accent);
   border-radius: 8px;
-  padding: 0 0.5rem;
+  padding: 0 0.6rem;
   overflow: hidden;
   cursor: grab;
   touch-action: none; /* this element owns its own drag gesture (§16 Phase 5) */
@@ -833,7 +882,7 @@ button {
 
 .day-chip.day-chip-narrow .chip-title {
   flex: 1 1 100%;
-  font-size: 0.8rem;
+  font-size: 0.9rem;
   white-space: normal;
   /* Clamped at exactly two lines with an ellipsis past that, rather than
      left to wrap however many words a narrow column forces — a long title
@@ -867,7 +916,7 @@ button {
 
 .chip-time {
   flex: 0 0 auto;
-  font-size: 0.75rem;
+  font-size: 0.85rem;
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
 }
@@ -875,7 +924,7 @@ button {
 .chip-title {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 0.9rem;
+  font-size: 1.02rem;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
@@ -888,7 +937,7 @@ button {
    is the same line. */
 .chip-duration {
   flex: 0 0 auto;
-  font-size: 0.75rem;
+  font-size: 0.85rem;
   font-style: italic;
   color: var(--text-dim);
 }
@@ -927,7 +976,7 @@ button {
 
 .chip-done-time {
   flex: 0 0 auto;
-  font-size: 0.75rem;
+  font-size: 0.85rem;
   color: var(--text-dim);
 }
 
@@ -955,7 +1004,7 @@ button {
   background: rgba(94, 201, 198, 0.1);
   border: 1px solid var(--school-accent);
   border-radius: 8px;
-  padding: 0.3rem 0.5rem;
+  padding: 0.35rem 0.6rem;
   overflow: hidden;
   cursor: grab;
   touch-action: none;
@@ -971,7 +1020,7 @@ button {
 }
 
 .school-block-label {
-  font-size: 0.9rem;
+  font-size: 1.05rem;
   font-weight: 700;
   color: var(--school-accent);
   white-space: nowrap;
@@ -989,9 +1038,9 @@ button {
   display: flex;
   align-items: baseline;
   gap: 0.4rem;
-  font-size: 0.8rem;
+  font-size: 0.95rem;
   color: var(--text-dim);
-  padding: 0.05rem 0;
+  padding: 0.1rem 0;
 }
 
 .school-block-course-done .school-block-course-name {
@@ -1012,7 +1061,7 @@ button {
 }
 
 .school-block-empty {
-  font-size: 0.8rem;
+  font-size: 0.95rem;
   color: var(--text-dim);
   font-style: italic;
   margin-top: 0.2rem;

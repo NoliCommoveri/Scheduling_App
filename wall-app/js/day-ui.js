@@ -90,7 +90,48 @@
 
   function rowHeightPx() {
     var v = getComputedStyle(document.documentElement).getPropertyValue("--row-h");
-    return parseFloat(v) || 18;
+    return parseFloat(v) || DEFAULT_ROW_H;
+  }
+
+  // ---- zoom (§4.3's 15-minute row, in pixels) --------------------------------
+  // A row is always 15 minutes of MEANING; how many PIXELS that is, is a
+  // property of the glass it is drawn on. A 10" wall tablet wants far fewer
+  // hours on screen at once than a desktop browser does, and there is no
+  // one right density to hard-code. So --row-h stays the single place the
+  // height is stated (CSS declares the default, day-ui.js reads it back —
+  // the no-drift property the CSS comment describes), and the zoom simply
+  // sets it on the root element before layout.
+  //
+  // Stored per tablet in wall settings, never on the server: this is about
+  // the device's screen, not about the household. Steps rather than a
+  // slider — a wall gets a fat button pressed by a child walking past, not
+  // a drag handle (§11.2).
+  var ZOOM_STEPS = [18, 24, 32, 40, 52];
+  var DEFAULT_ROW_H = 32;
+  // Set by setZoom so the render it triggers can keep the same CLOCK TIME
+  // under the reader's eye: scrollTop is in pixels, and every pixel just
+  // changed what it means.
+  var zoomScrollScale = null;
+  // Last render's visible grid height, for the zoom readout (see
+  // hoursOnScreenLabel).
+  var lastScrollHeightPx = 0;
+
+  function storedRowH() {
+    var v = Number(g.Store.getSettings().dayRowH);
+    return ZOOM_STEPS.indexOf(v) >= 0 ? v : DEFAULT_ROW_H;
+  }
+
+  function applyRowH() {
+    document.documentElement.style.setProperty("--row-h", storedRowH() + "px");
+  }
+
+  function setZoom(step) {
+    var cur = storedRowH();
+    var next = ZOOM_STEPS[ZOOM_STEPS.indexOf(cur) + step];
+    if (next == null) return;
+    zoomScrollScale = next / cur;
+    g.Store.setSettings({ dayRowH: next });
+    if (currentRoot && current.state) render(currentRoot, current.state, current.date, current.opts);
   }
 
   function parsePayload(raw) {
@@ -140,15 +181,47 @@
 
   function buildModeBar(mode, setMode) {
     var isGrid = mode === "grid";
+    // Blocks mode draws no time grid at all (§4.4), so it has nothing to
+    // zoom — the control is hidden there rather than shown doing nothing.
+    var hasGrid = mode !== "blocks";
+    var rowH = storedRowH();
+    var zoom = hasGrid
+      ? '<div class="day-zoom">' +
+          '<button class="day-zoom-btn" data-zoom="-1" aria-label="Show more hours"' +
+            (rowH === ZOOM_STEPS[0] ? " disabled" : "") + ">&minus;</button>" +
+          '<span class="day-zoom-label">' + hoursOnScreenLabel(rowH) + "</span>" +
+          '<button class="day-zoom-btn" data-zoom="1" aria-label="Show fewer, larger hours"' +
+            (rowH === ZOOM_STEPS[ZOOM_STEPS.length - 1] ? " disabled" : "") + ">+</button>" +
+        "</div>"
+      : "";
     var bar = el(
       '<div class="day-mode-bar">' +
         '<button class="day-mode-btn' + (isGrid ? " active" : "") + '" data-mode="grid">Full day</button>' +
         '<button class="day-mode-btn' + (!isGrid ? " active" : "") + '" data-mode="blocks">Blocks</button>' +
+        zoom +
       "</div>"
     );
     bar.querySelector('[data-mode="grid"]').addEventListener("click", function () { setMode("grid"); });
     bar.querySelector('[data-mode="blocks"]').addEventListener("click", function () { setMode("blocks"); });
+    bar.querySelectorAll(".day-zoom-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () { setZoom(Number(btn.dataset.zoom)); });
+    });
     return bar;
+  }
+
+  // The zoom's own readout, in the unit the reader actually cares about:
+  // not "32px", but roughly how much of the day fits on this screen at
+  // this step. Measured against the scroll container when there is one,
+  // so a tablet and a desktop each get their own honest number.
+  function hoursOnScreenLabel(rowH) {
+    // Measured off the PREVIOUS render's scroll container (render() clears
+    // the root before it builds this bar, so there is nothing to measure by
+    // the time we get here). The first render of a page load has no
+    // measurement yet and falls back to a sane tablet-ish height; every
+    // render after it is this device's real number.
+    var px = lastScrollHeightPx || 420;
+    var hours = (px / rowH) * (ROW_MIN / 60);
+    return (hours < 3 ? hours.toFixed(1) : String(Math.round(hours))) + "h";
   }
 
   // ---- placement writes (§16 Phase 5): drag-and-drop, tap-to-place,
@@ -1138,7 +1211,7 @@
   // stacking on top of one another; a third (or later) collapses into a
   // "+N" tile the same footprint as a chip, tapped to see the rest.
   var MAX_VISIBLE_OVERLAP = 2;
-  var NARROW_CHIP_MIN_H = 60; // px — room for the time on its own line plus a wrapped two-line title
+  var NARROW_CHIP_MIN_H = 72; // px — room for the time on its own line plus a wrapped two-line title
 
   // Chains overlapping chips the way a calendar packs columns: sorted by
   // start, a chip joins the running group as long as it starts before the
@@ -1520,8 +1593,13 @@
     var fmt = settings.timeFormat || "24h";
     var today = state.today;
 
+    // Before anything measures a row: every top/height below comes from
+    // rowHeightPx(), which reads this back off the root element.
+    applyRowH();
+
     var oldScroll = root.querySelector(".day-scroll");
     var prevScrollTop = oldScroll ? oldScroll.scrollTop : null;
+    if (oldScroll && oldScroll.clientHeight) lastScrollHeightPx = oldScroll.clientHeight;
     var isNewDate = date !== lastRenderedDate;
     var isNewMode = dayMode !== lastRenderedMode;
     lastRenderedDate = date;
@@ -1610,7 +1688,10 @@
 
     var resetScroll = isNewDate || isNewMode;
     if (!resetScroll && prevScrollTop != null) {
-      scroll.scrollTop = prevScrollTop;
+      // A zoom changed what a pixel means, so the old scrollTop is scaled
+      // rather than reused: the reader stays at the same time of day
+      // instead of being thrown hours down the grid.
+      scroll.scrollTop = zoomScrollScale ? Math.round(prevScrollTop * zoomScrollScale) : prevScrollTop;
     } else if (result.scrollToNowIfToday && date === today && result.body) {
       requestAnimationFrame(function () {
         var nowLine = result.body.querySelector(".day-now-line");
@@ -1618,6 +1699,9 @@
         scroll.scrollTop = Math.max(0, target - scroll.clientHeight / 3);
       });
     }
+
+    zoomScrollScale = null;
+    if (scroll.clientHeight) lastScrollHeightPx = scroll.clientHeight;
 
     staleTimer = setInterval(function () {
       var stamp = scroll.querySelector(".day-stale-stamp");
