@@ -1438,7 +1438,7 @@ wall-app/
     ├── app.js             boot, view routing, rollover timer, interaction->poll
     ├── store.js           localStorage: token, settings, pendingEarns  (wall.pins retired)
     ├── api.js             + slots, events and school-block calls (§5.5)
-    ├── poll.js            10-minute cadence, day map, since-merge, month cache
+    ├── poll.js            10-minute cadence, day map, since-merge
     ├── setup.js           first-run wizard: admin PIN, pair the display        (unchanged)
     ├── nav-ui.js          hamburger, sidebar, date stepper, Today
     ├── events-core.js     PURE — union, dedupe, span labels                    (unchanged)
@@ -1451,12 +1451,19 @@ wall-app/
     ├── sound.js           WebAudio: the two tones, the unlock gesture, quiet hours
     ├── day-ui.js          the grid, columns, school blocks + membership picker,
     │                             now-line, tray, drag
-    ├── week-ui.js         seven-day columns
-    ├── month-ui.js        month grid of events
+    ├── week-ui.js         seven day-ROWS (superseded §6's columns in-session, 2026-08-15)
+    ├── month-core.js      PURE — the six-by-seven Sunday-first grid, its 42-day
+    │                             fetch window, and the "+N more" search (§7.1)
+    ├── month-ui.js        month grid of events; the one view that fetches for itself
     ├── complete-ui.js     the completion sheet: time stepper, undo, claim
     ├── pin-core.js        PURE — admin PIN only                     (child PINs removed)
     └── settings-ui.js     admin PIN, re-pair, dim hours, failed earns, reload
 ```
+
+`poll.js` was sketched above with a "month cache"; it never grew one. The month window is 42 days
+against a poll window of 14 (§7.2's whole reason for existing), and it is read by one view that is
+usually not on screen — so `month-ui.js` owns that fetch, riding `Poll`'s heartbeat for freshness
+rather than running a clock of its own. `poll.js` is untouched by Phase 8.
 
 Deleted: `ambient-ui.js` and `completed-core.js` — the ambient board and the Done Today selection
 are both superseded (§1.2). `child-ui.js` and `session-core.js` are **never created**; they were the
@@ -1589,8 +1596,11 @@ No phase exceeds the `CLAUDE.md` §V.A 2–3 hour ceiling. Each ends with a §VI
 | **6 — Completion** | The completion sheet (who by column, when by stepper), the earn entry, `pendingEarns`, Undo both paths, the claim path and "got there first" — **sending the sheet's time on both paths**, which Phase 1a made possible — and done-in-place styling. ✅ Landed. Also closes a gap found on review: `store.js`'s dead `wall.pins` key (documented as retired since §0.4 but never actually removed) is deleted, and `wall.failedEarns` is added for §6.2's `rejected` outcome, surfaced in Settings. A `waived` chip (a status §8 never named) opens a read-only sheet rather than either of the two the TDS defines, so the wall can never un-waive a chore through the completion route. | ~2.5 h |
 | **6b — Sound** | `remind-core.js` and `sound.js`: the two synthesized tones, the start-time chime and its §11.5 pre-chime poll, the audio unlock and its indicator, quiet hours, the per-child toggle, and Settings' Test sound. ✅ Landed. The pre-chime poll is implemented as a cheap local 5-second no-network tick that only spends an actual `pollNow()` in the one minute a placed chore is scheduled to start, rather than a scheduled-ahead `setTimeout` at the exact instant — functionally the same "poll immediately before the chime" guarantee §11.5 asks for, at less machinery. `wall.childPrefs` is introduced now for the sound toggle, shaped so §11.4's colour picker (Phase 8) can add a field to the same per-child record rather than a second store key. | ~1.5 h |
 | **7 — School blocks** | Migration 0011 (`wall_school_blocks`, `wall_school_block_courses`) + registry; the "+ School" create affordance; drag-to-move and long-press-to-resize reusing Phase 5/5b's mechanics; the membership picker sheet (§5.2); `school-core.js`'s per-course rollup and the block collapse-on-complete (§5.3); tests. **Rescoped 2026-08-15 (§20) — the tray's course entries from the original §3.4 text are gone; nothing in this phase now touches the unscheduled tray.** ✅ Landed 2026-08-15. `attachGesture` (day-ui.js) was generalized to take `onDrop`/`onTrayDrop` callbacks instead of hardcoding chore-specific writes, so a block's drag reuses the same pointer machinery without a second gesture recognizer; a block has no tray drop at all (removal goes through its own sheet, §5.4). The tray row is now always rendered (previously hidden when nothing was unplaced) so "+ School" always has somewhere to live. §18.1a's `CLAUDE.md` amendment shipped in the same commit — see `CLAUDE.md` v2.4. | ~3 h |
-| **8 — Week & month** | Sunday-first seven-day columns; the month grid on `/api/wall/events`; the §11.4 colour picker in Settings, with colours carried across all three views. | ~2.5 h |
+| **8 — Week & month** | Sunday-first seven-day columns; the month grid on `/api/wall/events`; the §11.4 colour picker in Settings, with colours carried across all three views. **Week ✅ landed 2026-08-15**, as seven day-ROWS with a Chores/School token each rather than this row's columns — superseded in-session, see `week-ui.js`'s header. **Month ✅ landed 2026-08-21**: new `month-core.js` (pure) and `month-ui.js`, six Sunday-first week-rows of seven cells, events only, `+N more`, a day-cell tap into that day's day view via `nav-ui.js`'s new `goTo`. Three things differ from §7.1 as written, all found by measuring rather than reasoning — see §20's 2026-08-21 (third pass) entry: the per-cell event count is **measured, not a constant**; a multi-day event's span label sits **inline** rather than on a second line; and `month-ui.js` **fetches for itself** rather than through `Poll`. **The §11.4 colour picker is NOT built and is the one piece of this phase still open** — both views it was justified by stopped showing per-child chips, so it currently has nothing to colour. Raised for Ray rather than decided; §11.4 is unamended until he rules. | ~2.5 h |
 | **9 — Polish & shakedown** | The §11 look pass, remaining tests, `CACHE_NAME` bump, and the on-device shakedown (wall slice §10.3). | ~2 h |
+
+Phase 8's two halves are separately deployable too, which is how they shipped — the week view in
+August 15's build, the month grid six days later, with the app fully usable in between.
 
 Phases 3, 6 and 8 are each independently deployable and individually useful. The app is a working
 read-only day calendar from the end of Phase 4, which is a reasonable place to hang the tablet and
@@ -1792,6 +1802,41 @@ Nothing in this slice is now waiting on an answer.
 ---
 
 ## 20. Revision log
+
+### 2026-08-21 (third pass) — the month grid, and three things §7 got wrong by reasoning
+
+Phase 8's remaining half. `wall-app/` only — **no migration, no route, no credential, no column, and
+so no `CLAUDE.md` amendment**: `GET /api/wall/events` shipped in Phase 1a and §I.A's Wall Data Flow
+cell has listed it since v2.3. The month grid writes nothing at all.
+
+Built as §7 describes: six Sunday-first week-rows of seven day-cells, events only, each cell showing
+its date and its events with `payload.time` where set, a multi-day event on every day it touches with
+its `Day 2 of 4` label, `+N more` where a cell overflows, and a day-cell tap into that day's day
+view. `nav-ui.js` gains `goTo(view, date)` for that last one — `setView` and `setDate` each guard on
+their own field, so calling both would have spent two renders and two polls on one tap.
+
+Three departures, each from measuring the thing rather than reasoning about it:
+
+| # | §7 as written | What shipped, and why |
+|---|---|---|
+| 1 | A cell shows its events and a `+2 more` when it overflows — implying a fixed number of visible events. | **How many fit is measured per render, not fixed.** A constant was written first (three) and then measured on real viewports: a cell is a sixth of the screen's height — 108px at 1280×800, 76px at 1024×600 — and an event's own height depends on whether it carries a span label. Three fitted the first and clipped the second **mid-line**, which reads as broken rather than as abbreviated. `month-ui.js`'s `fitGrid` now lays the grid out once, reads every height back in a single pass, and `MonthCore.largestFit` searches that arithmetic for the most each cell can draw. Batching matters: the obvious cell-by-cell "set state, measure, repeat" forces a full page layout per question and cost **~200ms** per render on a month carrying six events a day; write-read-write over the whole grid costs **~40ms** for the same month. |
+| 2 | "its span label (`Day 2 of 4`) from `events-core.js:72`" — which the first build put on its own line under the title. | **The span rides the title's line instead.** On its own line a spanned event was taller than a small cell's entire event area, so at 1024×600 the middle days of a visit drew `+3 more` **and nothing else** — a cell that announces events while showing none of them is worse than one that truncates. One line each guarantees at least one real event in every cell. The cost is a harder-truncated title at that width; the untruncated text is one tap away in both directions (the `+N more` sheet, or the day view). |
+| 3 | §7.2 defines the route; nothing said who calls it. | **`month-ui.js` fetches for itself**, rather than `poll.js` doing it (which is what §13's file table assumed, listing a "month cache" on `poll.js` that never existed). The month window is 42 days against a poll window of 14, and it is read by a view that is usually not on screen. It rides `Poll`'s heartbeat for freshness — a refetch when the drawn window changes, and when the poll's `lastSuccessAt` advances — so it needs no clock of its own and spends nothing while another view is up. One measured wrinkle: every §10.1 interaction fires *both* a state-change render and a poll, about a tenth of a second apart, which made each one spend two identical queries; a five-second floor under the heartbeat rule collapses that burst to one without touching the ten-minute cadence or a deliberate press of Refresh. |
+
+Two smaller notes. `+N more` opens a **read-only sheet** with that day's full list (dismissing on
+`pointerdown`, per this file's second-pass entry) rather than jumping to the day view — the
+affordance exists to answer "what are the other two" without losing the month, and carries its own
+"Open day" for when that was what was wanted. And the grid never scrolls, at either viewport: a
+month you have to scroll defeats §7.1's "seeing a whole month of events at once".
+
+**Still open from Phase 8: §11.4's child colour picker.** It is not built, and it is not simply
+unfinished — the two views it exists for both stopped showing per-child chips while it was waiting.
+§11.4's rationale is "the colour is the thing the eye uses to find a kid in week and month view", but
+the week view now collapses a day's chores to one household token and answers "who" with a kid
+picker (2026-08-15, `week-ui.js`), and the month view is events-only, where the household-wide feed
+of §7.2 has already deduped `child_id` away and no per-child attribution survives to colour. The one
+place a colour could still land is the day view — where §8.2 says the column position already
+answers "who". Put to Ray rather than decided either way; §11.4 stands unamended until he rules.
 
 ### 2026-08-21 (second pass) — one popup policy, and a chip you can actually hit
 

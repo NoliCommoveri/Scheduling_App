@@ -4,8 +4,15 @@
 // inside nav-ui.js's persistent shell; Phase 3 replaces that board with
 // `day-ui.js`'s real day view, for any rendered date, not just today. Phase 8
 // adds `week-ui.js`'s real week view (rows, not the TDS's original columns —
-// superseded in-session, see week-ui.js's own header). Month still shows a
-// placeholder.
+// superseded in-session, see week-ui.js's own header) and then
+// `month-ui.js`'s month grid (§7), which completes the three views the nav
+// has offered since Phase 2 — there is no placeholder branch left.
+//
+// `month-ui.js` is the one view that fetches for itself (§7.2: 42 days of
+// events, against a poll window that is a fortnight), so it is handed the
+// same `lastPollState` as the others purely for `today` and the
+// `lastSuccessAt` heartbeat it refetches on. Its day-cell tap goes through
+// `navCtrl.goTo` — view and date in one move, so one tap costs one poll.
 //
 // Phase 6 wires the completion sheet: `onChipTap` opens `CompleteUi`
 // against `root` — the outer shell element, ONE LEVEL ABOVE
@@ -63,6 +70,7 @@
     g.Poll.stop();
     g.DayUi.stop();
     g.WeekUi.stop();
+    g.MonthUi.stop();
     g.CompleteUi.close();
     stopRemindLoop();
     if (navCtrl) { navCtrl.destroy(); navCtrl = null; }
@@ -143,6 +151,7 @@
     function showPlaceholder(text) {
       g.DayUi.stop();
       g.WeekUi.stop();
+      g.MonthUi.stop();
       navCtrl.contentEl.innerHTML = "";
       var ph = document.createElement("div");
       ph.className = "wall-placeholder";
@@ -168,6 +177,7 @@
 
       if (navState.view === "day") {
         g.WeekUi.stop();
+        g.MonthUi.stop();
         g.DayUi.render(navCtrl.contentEl, lastPollState, navState.date, {
           onChipTap: function (row, child) {
             g.CompleteUi.open(root, row, child);
@@ -178,12 +188,18 @@
 
       if (navState.view === "week") {
         g.DayUi.stop();
+        g.MonthUi.stop();
         g.WeekUi.render(navCtrl.contentEl, lastPollState, navState.date, {});
         return;
       }
 
-      var label = navState.view.charAt(0).toUpperCase() + navState.view.slice(1);
-      showPlaceholder(label + " view arrives in a later build phase.");
+      // `NavUi.VIEWS` is exactly these three, so month is the last branch
+      // rather than a default with a placeholder behind it.
+      g.DayUi.stop();
+      g.WeekUi.stop();
+      g.MonthUi.render(navCtrl.contentEl, lastPollState, navState.date, {
+        onDayTap: function (date) { navCtrl.goTo("day", date); },
+      });
     }
 
     pollUnsub = g.Poll.onUpdate(function (state) {
@@ -242,6 +258,7 @@
       // day/today, even if the sidebar had wandered to another view or date.
       g.CompleteUi.close(); // a sheet held open across midnight names a stale row
       g.WeekUi.stop(); // same reason — the week detail sheet names a stale date
+      g.MonthUi.stop(); // and the month's "+N more" sheet, likewise
       if (navCtrl) navCtrl.resetToToday();
       firedChimeKeys = Object.create(null); // a new day's fire keys start clean, per remind-core.js's date-scoped key
       lastCheckedMin = null;

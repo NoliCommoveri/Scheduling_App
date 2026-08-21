@@ -8,9 +8,11 @@
 // Phase 2 scope: the shell and its navigation state (view + rendered date).
 // It does not render Day/Week/Month content itself — it hands the caller a
 // `contentEl` to render into and reports state changes via `onStateChange`.
-// Only Day view has real content behind it until Phase 3 (day) and Phase 8
-// (week/month); the caller is responsible for showing a placeholder for the
-// rest, this file only owns navigation.
+// Phase 3 (day), then Phase 8 (week, then month) filled in the content
+// behind each of the three; this file still only owns navigation. Phase 8's
+// month grid adds `goTo(view, date)` to the returned controller — a day-cell
+// tap changes view and date in one move (§7.1), which neither `setView` nor
+// `setDate` can express on its own.
 //
 // §16 Phase 6b adds the §11.5.1 "tap to enable sound" indicator to the
 // topbar. This file already owns the one shell-wide "a tap happened
@@ -319,6 +321,20 @@
     clockTimer = setInterval(updateLiveBits, 15000);
     renderLabel();
 
+    // §7.1 — the month grid's "tapping a day opens that day's day view", the
+    // one navigation that moves view AND date together. `setView` and
+    // `setDate` each guard on their own field and fire independently, so
+    // calling them in sequence would spend two state changes and two polls
+    // on one tap.
+    function goTo(view, iso) {
+      if (state.view === view && state.date === iso) { closeSidebar(); return; }
+      state.view = view;
+      state.date = iso;
+      closeSidebar();
+      fireStateChange();
+      fireRefresh();
+    }
+
     // §4.1 — always day/today on boot, after rollover, and after the sidebar
     // is dismissed without a choice (the dismiss paths above already close
     // it without touching view/date, so only rollover needs this call).
@@ -338,6 +354,7 @@
     return {
       contentEl: contentEl,
       getState: function () { return { view: state.view, date: state.date }; },
+      goTo: goTo,
       resetToToday: resetToToday,
       destroy: destroy,
     };
