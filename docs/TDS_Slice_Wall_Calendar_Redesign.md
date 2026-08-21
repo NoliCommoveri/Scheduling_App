@@ -428,6 +428,29 @@ tray, since that is precisely the information a block hint carries. `child_block
 override where present, mirroring `planner-core.js:55` — the wall reads it and, as ever, never
 writes it.
 
+#### 3.4.1 Each tray item shows the block it came from (2026-08-21, from use)
+
+A tray listing bare titles is ambiguous the moment a chore has **more than one occurrence a day**
+(Shared Chores §2.4): three occurrences of one chore, each with its own `blockHint` and often no
+label of its own, all read `Dishes`, and the person placing them has no way to tell which one is the
+morning one. The instance's own `blockHint` is the fact that distinguishes them, and it was the one
+thing the tray dropped — block mode, which puts an unplaced chore inside its hint's row, has always
+shown it.
+
+So each item in the full-day grid's tray reads **`Dishes · Evening`** — the title, plus a quiet
+pill carrying `effectiveBlockHint(row)`'s label (`child_block_hint`, then `block_hint`, then
+`morning`, exactly as the paragraph above resolves it). The tray is ordered by block,
+morning → night, and within a block by the parent's `sort_order`, unchanged. The drag ghost and the
+tap-to-place toast name the same string the chip does, so an armed instance is identifiable while
+it is in the air.
+
+**Not shown in a single expanded block's tray** (§4.4): every item there is that block's by
+definition, and the header two rows up already says which block it is.
+
+This changes nothing about placement itself. The badge is a label on a hint that was already on the
+row and already read by both apps; **nothing is derived from it, and nothing is written** — the
+rejected alternative above (turning `block_hint` into a time) stays rejected.
+
 ### 3.5 Duration: the column already exists, and chores should be able to set it
 
 ```
@@ -1826,6 +1849,24 @@ Nothing in this slice is now waiting on an answer.
 ---
 
 ## 20. Revision log
+
+### 2026-08-21 (fourth pass) — the tray says which block each chore came from
+
+From Ray, after the third pass shipped: several chores have more than one occurrence a day and the
+occurrences share a title, so the day view's unscheduled tray listed the same word three times with
+nothing to say which occurrence was which — and a placement is a *standing* default (§3.3), so
+guessing wrong is a mistake that carries forward to every future day.
+
+`wall-app/` only — **no migration, no route, no credential, no column, and so no `CLAUDE.md`
+amendment.** The tray shows a hint the row already carried and both apps already read; the wall
+writes nothing new, and `block_hint` / `child_block_hint` stay read-only to it as §3.4 has always
+said.
+
+| # | Changed | Section |
+|---|---|---|
+| 1 | **Each grid-tray item carries a block badge** — `Dishes · Evening`, from `ChoresCore.effectiveBlockHint`. The drag ghost and the tap-to-place toast use the same string, so an armed instance stays identifiable mid-gesture. Suppressed in a single expanded block's tray, where every item is that block's already. | §3.4.1 |
+| 2 | **The tray is ordered morning → night**, with the parent's `sort_order` preserved within each block (`ChoresCore.compareBlockHint` compares the block only, and the sort is stable). | §3.4.1 |
+| 3 | **`ChoresCore.blockLabel`** is now the one place a canonical block's display name is produced — block mode's collapsed row header and the expanded-block header both read it instead of capitalizing inline. | §4.4 |
 
 ### 2026-08-21 (third pass) — the month grid, and three things §7 got wrong by reasoning
 

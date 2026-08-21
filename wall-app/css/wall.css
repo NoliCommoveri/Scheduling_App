@@ -585,12 +585,43 @@ button {
 }
 
 .day-tray-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
   padding: 0.2rem 0.4rem;
   border-radius: 6px;
   touch-action: none; /* this element owns its own drag gesture (§16 Phase 5) */
   user-select: none;
   cursor: grab;
   transition: opacity 150ms ease, color 150ms ease;
+}
+
+.day-tray-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* §3.4 — the block a tray chip came from. Several occurrences of one chore
+   in a day share a title (Shared Chores §2.4), and the badge is what says
+   which is which before either is dropped. Quiet by default: it is a
+   disambiguator, not the chip's name. Shown only in the full-day grid's
+   tray — a single expanded block's tray is all one block already. */
+.day-tray-block {
+  flex: 0 0 auto;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  letter-spacing: 0.03em;
+}
+
+.day-tray-list li.selected .day-tray-block {
+  background: rgba(247, 181, 56, 0.22);
+  color: var(--accent);
 }
 
 /* §16 Phase 5 — tap-to-place: armed by a tap, waiting for a tap on the grid */

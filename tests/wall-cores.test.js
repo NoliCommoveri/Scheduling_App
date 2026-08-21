@@ -193,6 +193,35 @@ test('effectiveBlockHint mirrors planner-core.js:54-56: child_block_hint wins, t
   assert.equal(ChoresCore.effectiveBlockHint({ child_block_hint: 'bogus', block_hint: 'night' }), 'night'); // an invalid hint is not canonical
 });
 
+test('blockLabel/blockHintLabel give the tray badge its text, falling back the way the hint does', () => {
+  assert.equal(ChoresCore.blockLabel('morning'), 'Morning');
+  assert.equal(ChoresCore.blockLabel('night'), 'Night');
+  assert.equal(ChoresCore.blockLabel('bogus'), 'Morning'); // same fallback effectiveBlockHint takes
+  assert.equal(ChoresCore.blockHintLabel({ block_hint: 'evening' }), 'Evening');
+  assert.equal(ChoresCore.blockHintLabel({ child_block_hint: 'afternoon', block_hint: 'evening' }), 'Afternoon');
+  assert.equal(ChoresCore.blockHintLabel({}), 'Morning');
+});
+
+test('compareBlockHint orders the tray morning -> night and leaves sort_order alone within a block', () => {
+  // Three occurrences of one chore (Shared Chores §2.4), same title, one per
+  // block — the case the badge exists for.
+  const rows = [
+    { id: 'c', title: 'Dishes', block_hint: 'evening', instance_key: 'i3' },
+    { id: 'a', title: 'Dishes', block_hint: 'morning', instance_key: 'i1' },
+    { id: 'b', title: 'Dishes', block_hint: 'afternoon', instance_key: 'i2' },
+  ];
+  assert.deepEqual(rows.slice().sort(ChoresCore.compareBlockHint).map((r) => r.id), ['a', 'b', 'c']);
+
+  // Same block: the incoming order (handlePlan's `ORDER BY date, sort_order`)
+  // survives, because the comparator returns 0 and the sort is stable.
+  const sameBlock = [
+    { id: 'x', block_hint: 'morning' },
+    { id: 'y', child_block_hint: 'morning', block_hint: 'night' },
+    { id: 'z' },
+  ];
+  assert.deepEqual(sameBlock.slice().sort(ChoresCore.compareBlockHint).map((r) => r.id), ['x', 'y', 'z']);
+});
+
 test('blockFromStartMin classifies every boundary hour in the §4.4 table, including the night wrap', () => {
   assert.equal(ChoresCore.blockFromStartMin(5 * 60 + 59), 'night');   // 05:59
   assert.equal(ChoresCore.blockFromStartMin(6 * 60), 'morning');       // 06:00

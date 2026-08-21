@@ -680,7 +680,11 @@
     currentRoot.appendChild(overlay);
   }
 
-  function tryToggleSelection(row, child) {
+  // `label` is what the tray chip reads (title, plus the block badge when
+  // the grid tray is showing one) — the toast has to name the same thing
+  // the finger just touched, or arming one of three same-titled instances
+  // gives no clue which one is armed.
+  function tryToggleSelection(row, child, label) {
     if (selectedForPlacement && selectedForPlacement.row.id === row.id) {
       selectedForPlacement = null;
       rerenderNow();
@@ -688,7 +692,7 @@
     }
     selectedForPlacement = { row: row, child: child };
     rerenderNow();
-    showToast("Tap a time to place “" + row.title + "” — tap it again to cancel.", "placing", true);
+    showToast("Tap a time to place “" + (label || row.title) + "” — tap it again to cancel.", "placing", true);
   }
 
   // A tap anywhere in the grid body while a tray item is armed places it
@@ -858,11 +862,23 @@
   // narrow. Block mode's collapsed view doesn't need this: there, an
   // unplaced chore renders inline in its block row instead (§3.4).
 
-  function buildTrayItem(row, child) {
+  // `showBlockHint` is true for the full-day grid's tray and false for a
+  // single expanded block's, where every item in the tray is by definition
+  // this block's and the header above it says so already.
+  function buildTrayItem(row, child, showBlockHint) {
     var li = el("<li></li>");
-    li.textContent = row.title;
+    var hint = g.ChoresCore.blockHintLabel(row);
+    var label = showBlockHint ? row.title + " · " + hint : row.title;
+    var titleEl = el('<span class="day-tray-title"></span>');
+    titleEl.textContent = row.title;
+    li.appendChild(titleEl);
+    if (showBlockHint) {
+      var badge = el('<span class="day-tray-block"></span>');
+      badge.textContent = hint;
+      li.appendChild(badge);
+    }
     if (selectedForPlacement && selectedForPlacement.row.id === row.id) li.classList.add("selected");
-    attachGesture(li, row.title, function () { tryToggleSelection(row, child); }, null,
+    attachGesture(li, label, function () { tryToggleSelection(row, child, label); }, null,
       function (startMin) { commitPlacement(row, startMin); },
       function () {
         // Dragged from the tray back onto the tray itself — already
@@ -876,7 +892,7 @@
   // shows even when nothing is unscheduled (§16 Phase 7 widens the tray row
   // from "hidden unless something's unplaced" to "always visible" for
   // exactly this reason).
-  function buildTrayCell(entry) {
+  function buildTrayCell(entry, showBlockHint) {
     var n = entry.unplaced.length;
     var cell = el('<div class="day-tray-cell"></div>');
     var addBtn = el('<button class="day-tray-add-school" type="button">+ School</button>');
@@ -885,16 +901,22 @@
     if (!n) return cell;
     var toggle = el('<button class="day-tray-toggle">Not scheduled &middot; ' + n + "</button>");
     var list = el('<ul class="day-tray-list"></ul>');
-    entry.unplaced.forEach(function (row) { list.appendChild(buildTrayItem(row, entry.child)); });
+    // Sorted by block, not by `sort_order` alone, so the badges below run
+    // morning -> night down the list instead of interleaving. The sort is
+    // on a copy: `entry.unplaced` is layout output, and the placed chips
+    // beside it still read in the parent's order.
+    entry.unplaced.slice().sort(g.ChoresCore.compareBlockHint).forEach(function (row) {
+      list.appendChild(buildTrayItem(row, entry.child, showBlockHint));
+    });
     toggle.addEventListener("click", function () { cell.classList.toggle("expanded"); });
     cell.appendChild(toggle);
     cell.appendChild(list);
     return cell;
   }
 
-  function buildTrayRow(perChild) {
+  function buildTrayRow(perChild, showBlockHint) {
     var wrap = el('<div class="day-tray-row"><div class="day-gutter-spacer"></div></div>');
-    perChild.forEach(function (entry) { wrap.appendChild(buildTrayCell(entry)); });
+    perChild.forEach(function (entry) { wrap.appendChild(buildTrayCell(entry, showBlockHint)); });
     return wrap;
   }
 
@@ -1631,7 +1653,7 @@
   function buildGridContent(scroll, state, date, opts, fmt) {
     var perChild = layoutPerChildGrid(state, date);
 
-    scroll.appendChild(buildTrayRow(perChild));
+    scroll.appendChild(buildTrayRow(perChild, true));
 
     var earlyStrip = buildStrip("early", perChild, fmt);
     if (earlyStrip) scroll.appendChild(earlyStrip);
@@ -1697,7 +1719,7 @@
   }
 
   function buildBlockRow(blockName, perChildBuckets, opts, expandBlock) {
-    var label = blockName.charAt(0).toUpperCase() + blockName.slice(1);
+    var label = g.ChoresCore.blockLabel(blockName);
     var row = el('<div class="day-block-row"></div>');
     var headerCell = el('<div class="day-block-label"><button class="day-block-toggle"></button></div>');
     row.appendChild(headerCell);
@@ -1739,7 +1761,7 @@
   // ---- block mode, expanded — one block's own 15-minute grid (§4.4) ----------
 
   function buildSingleBlockHeader(blockName, collapseBlock) {
-    var label = blockName.charAt(0).toUpperCase() + blockName.slice(1);
+    var label = g.ChoresCore.blockLabel(blockName);
     var header = el(
       '<div class="day-block-expanded-header">' +
         '<button class="day-block-back">&#8249; Blocks</button>' +
@@ -1779,7 +1801,7 @@
     var perChild = layoutPerChildForBlock(state, date, blockName);
 
     scroll.appendChild(buildSingleBlockHeader(blockName, collapseBlock));
-    scroll.appendChild(buildTrayRow(perChild));
+    scroll.appendChild(buildTrayRow(perChild, false));
 
     var body = buildGridBody(perChild, hours.start, hours.end, { fmt: fmt, onChipTap: opts.onChipTap });
     attachGridTapToPlace(body, hours.start, hours.end);

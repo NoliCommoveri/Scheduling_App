@@ -105,7 +105,7 @@
 // `goTo(view, date)` so a day-cell tap moves view and date in one poll;
 // app.js drops its last placeholder branch; wall.css gains the grid, the
 // in-cell event lines and the overflow sheet.
-const CACHE_NAME = "wall-display-shell-v15";
+const CACHE_NAME = "wall-display-shell-v16";
 
 const APP_SHELL = [
   "./",
