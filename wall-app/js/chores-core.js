@@ -82,6 +82,36 @@
     return canonicalBlock(row.child_block_hint) || canonicalBlock(row.block_hint) || "morning";
   }
 
+  // §3.4 — the display label for one of the four canonical blocks
+  // ("morning" -> "Morning"). Lives here rather than inline in day-ui.js
+  // because three call sites need the same string: block mode's collapsed
+  // row header, the expanded single-block header, and the unscheduled
+  // tray's per-chip block badge.
+  function blockLabel(block) {
+    var b = canonicalBlock(block) || "morning";
+    return b.charAt(0).toUpperCase() + b.slice(1);
+  }
+
+  // §3.4 — an unplaced chore's hint, as the tray shows it. A chore record
+  // can carry several occurrences a day (Shared Chores §2.4), each with its
+  // own blockHint and often no label of its own, so a tray listing bare
+  // titles shows "Dishes / Dishes / Dishes" with nothing to say which one is
+  // the morning one. Block mode never had this problem — an unplaced chore
+  // renders inside its hint's block row there (§3.4's last paragraph) — so
+  // this is the grid tray borrowing the same fact rather than a new one.
+  function blockHintLabel(row) {
+    return blockLabel(effectiveBlockHint(row));
+  }
+
+  // Tray order: by block in the day's own order (morning -> night), never
+  // alphabetically. Deliberately compares nothing else, so a stable sort
+  // leaves rows within one block in the order they arrived — which is the
+  // parent's `sort_order` (handlePlan orders by it), the intent this must
+  // not quietly discard.
+  function compareBlockHint(a, b) {
+    return CANON_BLOCKS.indexOf(effectiveBlockHint(a)) - CANON_BLOCKS.indexOf(effectiveBlockHint(b));
+  }
+
   // Which of the four blocks a real clock minute-of-day falls in (§4.4's
   // table). Not a planner-core mirror — the child app has no clock-time
   // concept to mirror here; this is new to the wall.
@@ -153,6 +183,9 @@
     choresForChild: choresForChild,
     difficultyStars: difficultyStars,
     effectiveBlockHint: effectiveBlockHint,
+    blockLabel: blockLabel,
+    blockHintLabel: blockHintLabel,
+    compareBlockHint: compareBlockHint,
     blockFromStartMin: blockFromStartMin,
     blockForChip: blockForChip,
     blockVirtualMin: blockVirtualMin,
