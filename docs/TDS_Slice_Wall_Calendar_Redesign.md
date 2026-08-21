@@ -1224,6 +1224,19 @@ the wall's own times obey the setting and events show what the parent typed.
 
 ### 11.4 Child colours — picked in Settings
 
+> **DEFERRED, not built — Ray, 2026-08-21.** The decision below stands on its own terms; what
+> changed is that both views it was written to serve stopped showing per-child chips before it was
+> built. The week view collapses a day's chores to one household token and answers "who" with a kid
+> picker (2026-08-15, `week-ui.js`); the month view is events-only, and §7.2's household feed has
+> already deduped `child_id` away, so no per-child attribution survives there to colour. That leaves
+> nothing for a colour to attach to except the day view, where §8.2 says the column position already
+> answers "who" — so a picker would be twenty seconds of setup buying nothing visible. See §17.11.
+>
+> The block below is kept **as written, not rewritten**, because its reasoning is what a future
+> session needs if week or month ever regains per-child chips: the argument against roster-derived
+> colour, the argument for a fixed palette, and the argument for `localStorage` are all unaffected by
+> the deferral. `store.js` keeps the `colour` field reserved on `wall.childPrefs` for that case.
+
 ```
 [DECISION] Colour is chosen per child, not derived from roster order
 Decided: each child's colour is picked in Settings behind the admin PIN, from a
@@ -1596,7 +1609,7 @@ No phase exceeds the `CLAUDE.md` §V.A 2–3 hour ceiling. Each ends with a §VI
 | **6 — Completion** | The completion sheet (who by column, when by stepper), the earn entry, `pendingEarns`, Undo both paths, the claim path and "got there first" — **sending the sheet's time on both paths**, which Phase 1a made possible — and done-in-place styling. ✅ Landed. Also closes a gap found on review: `store.js`'s dead `wall.pins` key (documented as retired since §0.4 but never actually removed) is deleted, and `wall.failedEarns` is added for §6.2's `rejected` outcome, surfaced in Settings. A `waived` chip (a status §8 never named) opens a read-only sheet rather than either of the two the TDS defines, so the wall can never un-waive a chore through the completion route. | ~2.5 h |
 | **6b — Sound** | `remind-core.js` and `sound.js`: the two synthesized tones, the start-time chime and its §11.5 pre-chime poll, the audio unlock and its indicator, quiet hours, the per-child toggle, and Settings' Test sound. ✅ Landed. The pre-chime poll is implemented as a cheap local 5-second no-network tick that only spends an actual `pollNow()` in the one minute a placed chore is scheduled to start, rather than a scheduled-ahead `setTimeout` at the exact instant — functionally the same "poll immediately before the chime" guarantee §11.5 asks for, at less machinery. `wall.childPrefs` is introduced now for the sound toggle, shaped so §11.4's colour picker (Phase 8) can add a field to the same per-child record rather than a second store key. | ~1.5 h |
 | **7 — School blocks** | Migration 0011 (`wall_school_blocks`, `wall_school_block_courses`) + registry; the "+ School" create affordance; drag-to-move and long-press-to-resize reusing Phase 5/5b's mechanics; the membership picker sheet (§5.2); `school-core.js`'s per-course rollup and the block collapse-on-complete (§5.3); tests. **Rescoped 2026-08-15 (§20) — the tray's course entries from the original §3.4 text are gone; nothing in this phase now touches the unscheduled tray.** ✅ Landed 2026-08-15. `attachGesture` (day-ui.js) was generalized to take `onDrop`/`onTrayDrop` callbacks instead of hardcoding chore-specific writes, so a block's drag reuses the same pointer machinery without a second gesture recognizer; a block has no tray drop at all (removal goes through its own sheet, §5.4). The tray row is now always rendered (previously hidden when nothing was unplaced) so "+ School" always has somewhere to live. §18.1a's `CLAUDE.md` amendment shipped in the same commit — see `CLAUDE.md` v2.4. | ~3 h |
-| **8 — Week & month** | Sunday-first seven-day columns; the month grid on `/api/wall/events`; the §11.4 colour picker in Settings, with colours carried across all three views. **Week ✅ landed 2026-08-15**, as seven day-ROWS with a Chores/School token each rather than this row's columns — superseded in-session, see `week-ui.js`'s header. **Month ✅ landed 2026-08-21**: new `month-core.js` (pure) and `month-ui.js`, six Sunday-first week-rows of seven cells, events only, `+N more`, a day-cell tap into that day's day view via `nav-ui.js`'s new `goTo`. Three things differ from §7.1 as written, all found by measuring rather than reasoning — see §20's 2026-08-21 (third pass) entry: the per-cell event count is **measured, not a constant**; a multi-day event's span label sits **inline** rather than on a second line; and `month-ui.js` **fetches for itself** rather than through `Poll`. **The §11.4 colour picker is NOT built and is the one piece of this phase still open** — both views it was justified by stopped showing per-child chips, so it currently has nothing to colour. Raised for Ray rather than decided; §11.4 is unamended until he rules. | ~2.5 h |
+| **8 — Week & month** | Sunday-first seven-day columns; the month grid on `/api/wall/events`; the §11.4 colour picker in Settings, with colours carried across all three views. **Week ✅ landed 2026-08-15**, as seven day-ROWS with a Chores/School token each rather than this row's columns — superseded in-session, see `week-ui.js`'s header. **Month ✅ landed 2026-08-21**: new `month-core.js` (pure) and `month-ui.js`, six Sunday-first week-rows of seven cells, events only, `+N more`, a day-cell tap into that day's day view via `nav-ui.js`'s new `goTo`. Three things differ from §7.1 as written, all found by measuring rather than reasoning — see §20's 2026-08-21 (third pass) entry: the per-cell event count is **measured, not a constant**; a multi-day event's span label sits **inline** rather than on a second line; and `month-ui.js` **fetches for itself** rather than through `Poll`. **The §11.4 colour picker is NOT built — deferred by Ray, 2026-08-21** (§17.11): both views it was justified by stopped showing per-child chips before it was built, so it would colour nothing. Phase 8 is closed with that item deferred rather than outstanding. | ~2.5 h |
 | **9 — Polish & shakedown** | The §11 look pass, remaining tests, `CACHE_NAME` bump, and the on-device shakedown (wall slice §10.3). | ~2 h |
 
 Phase 8's two halves are separately deployable too, which is how they shipped — the week view in
@@ -1651,6 +1664,17 @@ that is `TDS_Slice_Alexa_Voice_Bridge.md`'s job.
 **17.9 Also not built.** Placement of events or activities; recurring-event authoring; a second wall
 tablet; drag-to-resize a chip's duration (duration comes from the assignment or the 15-minute
 default); any reporting surface; streaks from the wall (wall slice §15.3, unchanged).
+
+**17.11 §11.4's child colour picker.** Deferred by Ray, 2026-08-21, at the end of Phase 8, and the
+one item in this section that was *designed and signed off* before being deferred rather than
+declined up front. §11.4 justifies colour as "the thing the eye uses to find a kid in week and month
+view"; between that sign-off (2026-08-14) and the build, the week view was redesigned to one
+household token per kind with a kid picker behind it (2026-08-15) and the month view shipped
+events-only on a feed that deduped `child_id` server-side (§7.2). Both consumers went away, so the
+picker would colour nothing. Not repealed: the field is reserved on `wall.childPrefs`, §11.4's
+reasoning is preserved intact, and this becomes a small piece of work again the moment either view
+carries per-child chips. Do not build it *in order to* have somewhere to use it — that is the
+inversion this entry exists to prevent.
 
 **17.10 A "not a real child" flag on `children`.** Raised by Ray, 2026-08-14, for the `Parents`
 pseudo-child (§2.2). **Not built, and not needed for what prompted it** — a shared chore spans only
@@ -1829,14 +1853,23 @@ affordance exists to answer "what are the other two" without losing the month, a
 "Open day" for when that was what was wanted. And the grid never scrolls, at either viewport: a
 month you have to scroll defeats §7.1's "seeing a whole month of events at once".
 
-**Still open from Phase 8: §11.4's child colour picker.** It is not built, and it is not simply
-unfinished — the two views it exists for both stopped showing per-child chips while it was waiting.
-§11.4's rationale is "the colour is the thing the eye uses to find a kid in week and month view", but
-the week view now collapses a day's chores to one household token and answers "who" with a kid
-picker (2026-08-15, `week-ui.js`), and the month view is events-only, where the household-wide feed
-of §7.2 has already deduped `child_id` away and no per-child attribution survives to colour. The one
-place a colour could still land is the day view — where §8.2 says the column position already
-answers "who". Put to Ray rather than decided either way; §11.4 stands unamended until he rules.
+**Phase 8's last item, §11.4's child colour picker, is deferred rather than built** — Ray, in
+session, 2026-08-21, after the position was put to him. It is not simply unfinished: the two views it
+exists for both stopped showing per-child chips while it was waiting. §11.4's rationale is "the
+colour is the thing the eye uses to find a kid in week and month view", but the week view now
+collapses a day's chores to one household token and answers "who" with a kid picker (2026-08-15,
+`week-ui.js`), and the month view is events-only, where §7.2's household-wide feed has already
+deduped `child_id` away and no per-child attribution survives to colour. The one place a colour could
+still land is the day view — where §8.2 says the column position already answers "who" — so a picker
+would be twenty seconds of setup buying nothing visible.
+
+Recorded as **deferred, not repealed** (§17.11): §11.4's reasoning is kept intact rather than
+rewritten, and `store.js` keeps the `colour` field reserved on `wall.childPrefs`, so this is small
+work again the moment either view carries per-child chips. The trap named in §17.11 is the obvious
+one — do not build per-child chips *in order to* have somewhere to put the colours.
+
+**Phase 8 is therefore closed, and with it the Wall Calendar Redesign's build phasing apart from
+Phase 9 (§11's look pass, remaining tests, the on-device shakedown).**
 
 ### 2026-08-21 (second pass) — one popup policy, and a chip you can actually hit
 
