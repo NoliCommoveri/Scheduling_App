@@ -1148,6 +1148,30 @@ button {
   transform: translate(-50%, 0);
 }
 
+/* A toast carrying an Undo is something to answer, so it takes pointer
+   events (the plain one deliberately does not — it must never eat a tap
+   aimed at the grid behind it) and lays its action out beside the text. */
+.wall-toast.with-action {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  text-align: left;
+}
+
+.wall-toast-action {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 0 1.1rem;
+  border-radius: 10px;
+  border: 2px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  font-size: 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
 .wall-toast.warning {
   background: #4a2a28;
   color: #ffd7d2;

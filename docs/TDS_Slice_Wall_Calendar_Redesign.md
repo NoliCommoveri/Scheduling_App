@@ -1793,6 +1793,26 @@ Nothing in this slice is now waiting on an answer.
 
 ## 20. Revision log
 
+### 2026-08-21 — grid density, a zoom, and touch gesture tolerances (post-Phase 8, from use)
+
+Three changes from the wall running on the real device — a 10" landscape tablet, full-screen as a
+PWA — none of which touch the schema, the API, a credential, or any column-ownership rule. All are
+`wall-app/` only.
+
+| # | Changed | Section |
+|---|---|---|
+| 1 | **The 15-minute row got taller: 18px → 32px.** §4.3's rule is unchanged — a row is 15 minutes and a chip is `ceil(duration / 15)` rows — but at 18px an hour was 72px, the tablet showed close to seven hours at once, and a one-row chore chip drew 16px of box for a 0.9rem title. Chip and school-block text scaled with it. | §4.3 |
+| 2 | **A zoom, new affordance.** Two buttons at the right of the mode bar step the row through 18/24/32/40/52px (≈7h to ≈2.5h on screen), with a readout of how much of the day currently fits, measured off the real scroll height. Stored per tablet as `wall.settings.dayRowH` in `localStorage`, never on the server: it describes a piece of glass, not the household, and the wall has no per-device server settings. `--row-h` stays the single place the height is stated — CSS declares the default, `day-ui.js` sets it from the setting and reads it back with `getComputedStyle`. Hidden in block mode, which draws no grid. | §4.3, §4.4 |
+| 3 | **Touch gesture tolerances, and Undo on a move.** The original single 8px drag threshold was a mouse tolerance applied to fingers: a tap on the wall routinely travels 15–30px between touchdown and lift, so trying to tick a chore off moved it instead — the destructive gesture produced by the safe one, with no undo. A touch pointer now gets: a drag slop of `max(44px, row + 8px)` (at least one row taller than the grid's own snap, since a drag shorter than one row cannot express anything a tap doesn't); a 140ms arming delay, before which no drag can begin at all; and a 40px tap radius, so a wobbly tap still ticks the chore off. A drag released back in the slot it started in writes nothing. A move that does happen now offers **Undo** in its toast — back to the minute it came from, or back to the tray if that is where it came from. A mouse keeps the old 8px behaviour exactly. | §3.6, §8.1, §16 Phase 5 |
+
+Row 3 changes no gesture *assignment*: tap still opens the completion sheet, long-press still opens
+the duration sheet (§3.5.2), drag still moves. Only the tolerances that decide which of the three a
+given touch is, plus the recovery when that decision goes the wrong way. If tapping a one-row chip
+still reads as fiddly in use, the next lever is a gap-aware hit area — a chip's touch target
+extended into whatever empty grid sits above and below it — which was deliberately **not** built
+here, since it can only be done safely by measuring each chip's neighbours, and the taller row plus
+the zoom may well have settled it.
+
 ### 2026-08-15 — §5 rewritten, before Phase 7 code
 
 Before Phase 7 started, review found the 2026-08-14 §5 model didn't match how the family actually

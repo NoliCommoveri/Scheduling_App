@@ -74,7 +74,38 @@
   var GRID_START_MIN = 6 * 60; // 06:00 (§4.3)
   var GRID_END_MIN = 23 * 60; // 23:00
   var ROW_MIN = 15;
-  var DRAG_THRESHOLD_PX = 8; // below this, a pointer-down+up is a TAP, not a drag
+  // ---- gesture tolerances ---------------------------------------------------
+  // A mouse pointer is precise and a fingertip is not. The wall is a tablet
+  // on a kitchen wall, tapped in passing by children with the flat of a
+  // finger: a tap there routinely travels 15-30px between touchdown and
+  // lift, which the original single 8px threshold read as a DRAG — so
+  // trying to tick a chore off moved it instead, silently and with no undo.
+  // That is the worst possible failure for this app: a destructive action
+  // produced by the gesture meant for the safe one.
+  //
+  // So a touch pointer gets three separate tolerances, and a mouse keeps
+  // the old behaviour exactly:
+  //   * it must travel further before anything counts as a drag,
+  //   * it cannot start a drag AT ALL in the first DRAG_ARM_MS — a press
+  //     and lift inside that window is a tap however far the finger rolled,
+  //   * and a tap stays a tap out to TOUCH_TAP_ROLL_PX, well past the drag
+  //     slop, so a wobbly tap still ticks the chore off rather than doing
+  //     nothing. Past that, an early lift is read as a swipe and does
+  //     nothing at all — never a move the child didn't ask for.
+  var DRAG_THRESHOLD_PX = 8; // mouse/pen: below this, a pointer-down+up is a TAP, not a drag
+  var TOUCH_DRAG_SLOP_PX = 44; // finger: floor for how far it must travel before a drag is possible
+  var TOUCH_TAP_ROLL_PX = 40; // finger: how far a tap may roll and still be a tap
+  var DRAG_ARM_MS = 140; // finger: no drag may begin before this — a quick tap can never move anything
+
+  // The slop a finger has to beat, which is deliberately at least a row
+  // taller than the grid's snap: the drop snaps to a 15-minute row, so a
+  // drag shorter than one row cannot express anything a tap doesn't
+  // already say, and reading one as a move is all cost and no meaning.
+  // Scales with the zoom for the same reason — a row is 18px at one end of
+  // ZOOM_STEPS and 52px at the other.
+  function touchDragSlopPx() {
+    return Math.max(TOUCH_DRAG_SLOP_PX, rowHeightPx() + 8);
+  }
   var LONG_PRESS_MS = 550; // held this long with no movement opens the duration sheet (§16 Phase 5b)
   var MAX_ADJUST_MIN = 8 * 60; // stepper ceiling; the Worker enforces no max besides "positive multiple of 15"
 
@@ -112,7 +143,7 @@
   // under the reader's eye: scrollTop is in pixels, and every pixel just
   // changed what it means.
   var zoomScrollScale = null;
-  // Last render's visible grid height, for the zoom readout (see
+  // Last render's visible grid band, in px, for the zoom readout (see
   // hoursOnScreenLabel).
   var lastScrollHeightPx = 0;
 
@@ -214,14 +245,15 @@
   // this step. Measured against the scroll container when there is one,
   // so a tablet and a desktop each get their own honest number.
   function hoursOnScreenLabel(rowH) {
-    // Measured off the PREVIOUS render's scroll container (render() clears
-    // the root before it builds this bar, so there is nothing to measure by
-    // the time we get here). The first render of a page load has no
-    // measurement yet and falls back to a sane tablet-ish height; every
-    // render after it is this device's real number.
+    // Measured off the last render's grid band (render() clears the root
+    // before it builds this bar, so there is nothing to measure by the
+    // time we get here — render() rewrites the label once there is). The
+    // first paint of a page load falls back to a sane tablet-ish height.
     var px = lastScrollHeightPx || 420;
     var hours = (px / rowH) * (ROW_MIN / 60);
-    return (hours < 3 ? hours.toFixed(1) : String(Math.round(hours))) + "h";
+    // Halves below three hours, whole hours above — a readout, not a
+    // measurement, and "3.0h" reads worse than "3h" for the same number.
+    return (hours < 3 ? String(Math.round(hours * 2) / 2) : String(Math.round(hours))) + "h";
   }
 
   // ---- placement writes (§16 Phase 5): drag-and-drop, tap-to-place,
@@ -254,21 +286,36 @@
     return snapped;
   }
 
-  function showToast(message, kind, sticky) {
+  // `action` is an optional { label, run } — the Undo a move offers (§3.6:
+  // a placement is never refused, so the recovery from a wrong one has to
+  // be immediate and in reach). A toast carrying one takes pointer events
+  // and stays up longer, since it is now something to answer rather than
+  // something to read.
+  function showToast(message, kind, sticky, action) {
     var root = currentRoot;
     if (!root) return;
     var existing = root.querySelector(".wall-toast");
     if (existing) existing.remove();
     if (message == null) return;
-    var toast = el('<div class="wall-toast' + (kind ? " " + kind : "") + '"></div>');
-    toast.textContent = message;
+    var toast = el('<div class="wall-toast' + (kind ? " " + kind : "") + (action ? " with-action" : "") + '">' +
+      '<span class="wall-toast-text"></span></div>');
+    toast.querySelector(".wall-toast-text").textContent = message;
+    if (action) {
+      var btn = el('<button class="wall-toast-action" type="button"></button>');
+      btn.textContent = action.label;
+      btn.addEventListener("click", function () {
+        toast.remove();
+        action.run();
+      });
+      toast.appendChild(btn);
+    }
     root.appendChild(toast);
     requestAnimationFrame(function () { toast.classList.add("visible"); });
     if (!sticky) {
       setTimeout(function () {
         toast.classList.remove("visible");
         setTimeout(function () { if (toast.parentNode) toast.remove(); }, 250);
-      }, kind === "warning" ? 4500 : 2200);
+      }, action ? 7000 : kind === "warning" ? 4500 : 2200);
     }
   }
 
@@ -422,6 +469,7 @@
     var slotsIdx = g.SlotsCore.indexSlots(current.state.slots);
     var existingSlot = g.SlotsCore.placementFor(slotsIdx, row);
     var durationOverride = existingSlot ? existingSlot.duration_min : null; // preserved, never guessed (§3.5.1)
+    var wasAt = existingSlot ? existingSlot.start_min : null; // null = it was in the tray
     var chip = g.SlotsCore.resolveChip(slotsIdx, g.SlotsCore.indexDays(current.state.slotDays), row, current.date);
     var collision = findCollisionForDrop(row, startMin, chip.durationMin);
     var fmt = (g.Store.getSettings().timeFormat) || "24h";
@@ -435,7 +483,10 @@
           g.TimeCore.formatMinutes(collision.chip.startMin, fmt), "warning");
         flashCollision(row.id, collision.row.id);
       } else {
-        showToast(row.title + " moved to " + g.TimeCore.formatMinutes(startMin, fmt));
+        showToast(row.title + " moved to " + g.TimeCore.formatMinutes(startMin, fmt), null, false, {
+          label: "Undo",
+          run: function () { revertPlacement(row, wasAt, durationOverride, fmt); },
+        });
       }
       g.Poll.pollNow();
     }).catch(function () {
@@ -443,14 +494,52 @@
     });
   }
 
+  // Undo for a move: back to the minute it came from, or back to the tray
+  // if that is where it came from. Deliberately NOT a call to
+  // commitPlacement/unplace — those would offer their own Undo, and an
+  // undo that offers to undo itself is a loop, not a safety net.
+  function revertPlacement(row, wasAt, durationOverride, fmt) {
+    var childId = g.SlotsCore.placementChildId(row);
+    var subjectKey = g.SlotsCore.subjectKeyOf(row);
+    var instanceKey = g.SlotsCore.instanceKeyOf(row);
+    var done = function () {
+      rerenderNow();
+      showToast(
+        wasAt == null
+          ? row.title + " back in Not scheduled"
+          : row.title + " back at " + g.TimeCore.formatMinutes(wasAt, fmt));
+      g.Poll.pollNow();
+    };
+    var failed = function () { showToast("Couldn't undo — try again.", "warning"); };
+    if (wasAt == null) {
+      g.WallApi.deleteSlot(childId, "chore", subjectKey, instanceKey).then(function () {
+        applyOptimisticUnplace(childId, subjectKey, instanceKey);
+        done();
+      }).catch(failed);
+      return;
+    }
+    g.WallApi.putSlot(childId, "chore", subjectKey, instanceKey, wasAt, durationOverride).then(function () {
+      applyOptimisticSlot(childId, subjectKey, instanceKey, wasAt, durationOverride);
+      done();
+    }).catch(failed);
+  }
+
   function unplace(row) {
     var childId = g.SlotsCore.placementChildId(row);
     var subjectKey = g.SlotsCore.subjectKeyOf(row);
     var instanceKey = g.SlotsCore.instanceKeyOf(row);
+    var slotsIdx = g.SlotsCore.indexSlots(current.state.slots);
+    var existingSlot = g.SlotsCore.placementFor(slotsIdx, row);
+    var wasAt = existingSlot ? existingSlot.start_min : null;
+    var durationOverride = existingSlot ? existingSlot.duration_min : null;
+    var fmt = (g.Store.getSettings().timeFormat) || "24h";
     g.WallApi.deleteSlot(childId, "chore", subjectKey, instanceKey).then(function () {
       applyOptimisticUnplace(childId, subjectKey, instanceKey);
       rerenderNow();
-      showToast(row.title + " moved to Not scheduled");
+      showToast(row.title + " moved to Not scheduled", null, false, wasAt == null ? null : {
+        label: "Undo",
+        run: function () { revertPlacement(row, wasAt, durationOverride, fmt); },
+      });
       g.Poll.pollNow();
     }).catch(function () {
       showToast("Couldn't move “" + row.title + "” — try again.", "warning");
@@ -645,14 +734,20 @@
   // `title` is a plain string (not a row/block object) so this stays generic
   // over whatever the caller is dragging — a chore row and a school block
   // carry the title in different places.
-  function attachGesture(itemEl, title, onTap, onLongPress, onDrop, onTrayDrop) {
+  function attachGesture(itemEl, title, onTap, onLongPress, onDrop, onTrayDrop, originMin) {
     itemEl.addEventListener("pointerdown", function (ev) {
       if (ev.button != null && ev.button !== 0) return;
       var startX = ev.clientX, startY = ev.clientY;
+      var lastX = startX, lastY = startY;
       var pointerId = ev.pointerId;
+      // A finger, or something precise? Pen counts as precise: it has a tip.
+      var touch = ev.pointerType === "touch";
+      var dragSlop = touch ? touchDragSlopPx() : DRAG_THRESHOLD_PX;
+      var tapRoll = touch ? TOUCH_TAP_ROLL_PX : DRAG_THRESHOLD_PX;
       var moved = false;
       var ghost = null;
       var longPressTimer = null;
+      var armTimer = null; // while this is pending, no drag may begin (touch only)
       var bodyEl = currentRoot.querySelector(".day-grid-body");
       var trayRowEl = currentRoot.querySelector(".day-tray-row");
 
@@ -661,26 +756,48 @@
         itemEl.classList.remove("pressing");
       }
 
-      function onMove(mv) {
-        var dx = mv.clientX - startX, dy = mv.clientY - startY;
-        if (!moved) {
-          if (Math.sqrt(dx * dx + dy * dy) < DRAG_THRESHOLD_PX) return;
-          clearLongPress();
-          moved = true;
-          ghost = buildGhost(title);
-          currentRoot.appendChild(ghost);
-          itemEl.classList.add("drag-source");
-          if (bodyEl) bodyEl.classList.add("drop-armed");
-        }
-        positionGhost(ghost, mv.clientX, mv.clientY);
-        var overBody = pointInRect(mv.clientX, mv.clientY, bodyEl && bodyEl.getBoundingClientRect());
-        var overTray = pointInRect(mv.clientX, mv.clientY, trayRowEl && trayRowEl.getBoundingClientRect());
+      function distanceFromStart(x, y) {
+        var dx = x - startX, dy = y - startY;
+        return Math.sqrt(dx * dx + dy * dy);
+      }
+
+      function beginDrag(x, y) {
+        clearLongPress();
+        moved = true;
+        ghost = buildGhost(title);
+        currentRoot.appendChild(ghost);
+        itemEl.classList.add("drag-source");
+        if (bodyEl) bodyEl.classList.add("drop-armed");
+        trackDrag(x, y);
+      }
+
+      function trackDrag(x, y) {
+        positionGhost(ghost, x, y);
+        var overBody = pointInRect(x, y, bodyEl && bodyEl.getBoundingClientRect());
+        var overTray = pointInRect(x, y, trayRowEl && trayRowEl.getBoundingClientRect());
         if (bodyEl) bodyEl.classList.toggle("drop-hover", overBody);
         if (trayRowEl) trayRowEl.classList.toggle("drop-hover", overTray && !overBody);
       }
 
+      function onMove(mv) {
+        lastX = mv.clientX;
+        lastY = mv.clientY;
+        if (!moved) {
+          if (distanceFromStart(lastX, lastY) < dragSlop) return;
+          // Past the slop but still inside the arm delay: hold the gesture
+          // open rather than committing to a drag. If the finger is still
+          // down when armTimer fires, it starts dragging from wherever it
+          // has got to; if it lifts first, onUp decides tap or nothing.
+          if (armTimer) return;
+          beginDrag(lastX, lastY);
+          return;
+        }
+        trackDrag(lastX, lastY);
+      }
+
       function cleanup() {
         clearLongPress();
+        if (armTimer) { clearTimeout(armTimer); armTimer = null; }
         document.removeEventListener("pointermove", onMove);
         document.removeEventListener("pointerup", onUp);
         document.removeEventListener("pointercancel", onUp);
@@ -690,15 +807,19 @@
       }
 
       function onUp(up) {
+        var wasDragging = moved;
         cleanup();
-        if (!moved) {
-          itemEl.classList.remove("drag-source");
-          if (ghost) ghost.remove();
-          if (onTap) onTap();
-          return;
-        }
         itemEl.classList.remove("drag-source");
         if (ghost) ghost.remove();
+
+        if (!wasDragging) {
+          // Never armed a drag. A tap out to `tapRoll`; past that the
+          // finger was travelling with intent but lifted too early to have
+          // meant a move, so nothing happens — the one thing this must not
+          // do is guess at a placement nobody asked for (§3.6).
+          if (onTap && distanceFromStart(up.clientX, up.clientY) <= tapRoll) onTap();
+          return;
+        }
 
         var overTray = trayRowEl && pointInRect(up.clientX, up.clientY, trayRowEl.getBoundingClientRect());
         var overBody = !overTray && bodyEl && pointInRect(up.clientX, up.clientY, bodyEl.getBoundingClientRect());
@@ -710,7 +831,12 @@
         if (!overBody || !current.range) return; // dropped nowhere valid — cancel, nothing written (§3.6)
 
         var virtual = startMinFromPointer(up.clientY, bodyEl, current.range.start, current.range.end);
-        if (onDrop) onDrop(virtual % 1440);
+        var startMin = virtual % 1440;
+        // Landed back in the slot it started in: a drag that changed
+        // nothing writes nothing, rather than reporting a "move" to the
+        // time the thing was already at.
+        if (originMin != null && startMin === originMin) return;
+        if (onDrop) onDrop(startMin);
       }
 
       ev.preventDefault();
@@ -718,6 +844,13 @@
       document.addEventListener("pointermove", onMove);
       document.addEventListener("pointerup", onUp);
       document.addEventListener("pointercancel", onUp);
+
+      if (touch) {
+        armTimer = setTimeout(function () {
+          armTimer = null;
+          if (!moved && distanceFromStart(lastX, lastY) >= dragSlop) beginDrag(lastX, lastY);
+        }, DRAG_ARM_MS);
+      }
 
       if (onLongPress) {
         itemEl.classList.add("pressing");
@@ -819,17 +952,23 @@
   // `current.state.schoolBlocks` (blocksForChild filters, it doesn't clone),
   // so mutating it in place is enough to keep the render in sync —
   // the same optimistic-update shape applyOptimisticSlot uses for chores.
-  function moveSchoolBlock(block, startMin) {
+  function moveSchoolBlock(block, startMin, isUndo) {
     var durationMin = block.end_min - block.start_min;
+    var wasAt = block.start_min;
     var fmt = (g.Store.getSettings().timeFormat) || "24h";
     g.WallApi.putSchoolBlock(block.id, { startMin: startMin }).then(function () {
       block.start_min = startMin;
       block.end_min = startMin + durationMin;
       rerenderNow();
-      showToast(blockLabel(block) + " moved to " + g.TimeCore.formatMinutes(startMin, fmt));
+      showToast(
+        blockLabel(block) + (isUndo ? " back at " : " moved to ") + g.TimeCore.formatMinutes(startMin, fmt),
+        null, false, isUndo ? null : {
+          label: "Undo",
+          run: function () { moveSchoolBlock(block, wasAt, true); },
+        });
       g.Poll.pollNow();
     }).catch(function () {
-      showToast("Couldn't move “" + blockLabel(block) + "” — try again.", "warning");
+      showToast((isUndo ? "Couldn't undo — " : "Couldn't move “" + blockLabel(block) + "” — ") + "try again.", "warning");
     });
   }
 
@@ -1300,7 +1439,7 @@
           commitPlacement(placed.row, startMin);
         }, function () {
           unplace(placed.row);
-        });
+        }, placed.chip.startMin);
         col.appendChild(chip);
       });
       if (overflowCount > 0) col.appendChild(buildOverflowTile(group, rangeStart, rh, slots, entry, opts));
@@ -1320,7 +1459,7 @@
         showBlockSheet(be.block);
       }, function (startMin) {
         moveSchoolBlock(be.block, startMin);
-      }, null);
+      }, null, be.block.start_min);
       col.appendChild(chip);
     });
     return col;
@@ -1599,7 +1738,6 @@
 
     var oldScroll = root.querySelector(".day-scroll");
     var prevScrollTop = oldScroll ? oldScroll.scrollTop : null;
-    if (oldScroll && oldScroll.clientHeight) lastScrollHeightPx = oldScroll.clientHeight;
     var isNewDate = date !== lastRenderedDate;
     var isNewMode = dayMode !== lastRenderedMode;
     lastRenderedDate = date;
@@ -1701,7 +1839,16 @@
     }
 
     zoomScrollScale = null;
-    if (scroll.clientHeight) lastScrollHeightPx = scroll.clientHeight;
+
+    // The zoom's readout, measured now that the grid is in the document:
+    // the band of GRID visible at rest, not the whole scroll container —
+    // the header, mode bar, events band and tray all sit above the body
+    // and are not day. Measured after the bar was built, so the label is
+    // rewritten in place rather than left on its first-paint estimate.
+    if (result.body) lastScrollHeightPx = Math.max(120, scroll.clientHeight - result.body.offsetTop);
+    else if (scroll.clientHeight) lastScrollHeightPx = scroll.clientHeight;
+    var zoomLabel = scroll.querySelector(".day-zoom-label");
+    if (zoomLabel) zoomLabel.textContent = hoursOnScreenLabel(rh);
 
     staleTimer = setInterval(function () {
       var stamp = scroll.querySelector(".day-stale-stamp");
