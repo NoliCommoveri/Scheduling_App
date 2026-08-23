@@ -55,10 +55,17 @@
     setTimeout(function () { if (toast.parentNode) toast.remove(); }, FADE_MS);
   }
 
-  // `opts`: { kind, action: { label, run }, sticky }.
+  // `opts`: { kind, action: { label, run }, actions: [...], sticky }.
   //   kind    — 'warning' | 'placing' | undefined, styled in wall.css.
   //   action  — an Undo (or similar) button inside the toast; tapping it runs
   //             `run` instead of merely dismissing.
+  //   actions — Placement Scopes §7.2: SEVERAL such buttons, because a move
+  //             now offers the two scopes it did not write alongside Undo
+  //             ("moved to 4:00 PM — every day · [Only today] [Only Fridays]
+  //             [Undo]"). `action` is the one-button spelling of the same
+  //             thing and still works; `complete-ui.js` and every existing
+  //             day-ui caller pass it. At most three fit the tablet's width
+  //             (wall.css), which is also §11.8's whole budget.
   //   sticky  — no auto-hide. The next tap still takes it away: a sticky
   //             toast is an instruction ("tap a time to place this"), and the
   //             tap that follows it is the answer.
@@ -67,19 +74,20 @@
     clear();
     if (message == null) return null;
 
+    var actions = (opts.actions || []).concat(opts.action ? [opts.action] : []);
     var toast = el('<div class="wall-toast' + (opts.kind ? " " + opts.kind : "") +
-      (opts.action ? " with-action" : "") + '"><span class="wall-toast-text"></span></div>');
+      (actions.length ? " with-action" : "") + '"><span class="wall-toast-text"></span></div>');
     toast.querySelector(".wall-toast-text").textContent = message;
 
-    if (opts.action) {
+    actions.forEach(function (action) {
       var btn = el('<button class="wall-toast-action" type="button"></button>');
-      btn.textContent = opts.action.label;
+      btn.textContent = action.label;
       btn.addEventListener("click", function () {
         clear();
-        opts.action.run();
+        action.run();
       });
       toast.appendChild(btn);
-    }
+    });
 
     document.body.appendChild(toast);
     currentEl = toast;

@@ -67,10 +67,29 @@
     return new Date(+p[0], +p[1] - 1, +p[2]).getDay();
   }
 
+  // Placement Scopes §6.1 — a weekday NUMBER's name, for the sheet's
+  // "Every Friday" button and the toast's "Only Fridays". Sunday-first, to
+  // match `weekdayOf` above and §6's week.
+  //
+  // Not `toLocaleDateString`, which is what nav-ui.js and week-ui.js use for
+  // a DATE's name: those have a Date in hand and want the locale's own
+  // wording, and this has only the number 5 and wants a plural ("Fridays")
+  // that no Intl option produces. A seven-entry table is the honest way to
+  // get one, and it is here rather than in day-ui.js because §6.2's block
+  // sheet (Phase 5) draws the same seven names down its own column.
+  var WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+  function weekdayName(weekday, plural) {
+    var name = WEEKDAY_NAMES[weekday];
+    if (name == null) return "";
+    return plural ? name + "s" : name;
+  }
+
   g.TimeCore = {
     formatMinutes: formatMinutes,
     formatDate: formatDate,
     formatDurationMin: formatDurationMin,
     weekdayOf: weekdayOf,
+    weekdayName: weekdayName,
   };
 })(typeof window !== "undefined" ? window : globalThis);

@@ -127,8 +127,16 @@
     });
   }
 
-  // §12 — un-place; the chore returns to the tray. Also clears that
-  // subject's `wall_slot_days` overrides server-side.
+  // §12 — un-place; the chore returns to the tray.
+  //
+  // Placement Scopes §11.6 (Phase 2) — CORRECTED: this no longer clears that
+  // subject's `wall_slot_days` overrides server-side, and it never touched
+  // `wall_slot_weekdays`. Un-placing is standing-scoped: it deletes the
+  // `wall_slots` row and nothing else, so a tray drag on a Friday cannot
+  // destroy a year of deliberate per-weekday times. The override rows left
+  // behind are dormant, not orphaned — §2.1's gate means a chore with no
+  // standing row renders nowhere whatever else it carries. Accepted cost,
+  // recorded: re-placing the chore later restores those times.
   function deleteSlot(childId, subjectKind, subjectKey, instanceKey) {
     return request("/api/wall/slots", {
       method: "DELETE",
@@ -142,10 +150,19 @@
   }
 
   // §3.5.2/§12 — "just this one": upserts a `wall_slot_days` override for
-  // one date. `durationMin` is required (the Worker's handleWallSlotDayPut
-  // rejects `null` — an override that means nothing is a DELETE, not a PUT
-  // that writes null, worker/index.js).
-  function putSlotDay(childId, subjectKind, subjectKey, instanceKey, date, durationMin) {
+  // one date.
+  //
+  // Placement Scopes §4.1/§4.2 (Phase 2) — WIDENED: `startMin` joins
+  // `durationMin`, so a date can move a chore as well as re-time it. Under
+  // §4.1's full-row contract both are sent on every call and either may be
+  // `null` — a field the body omits is written NULL, cleared rather than left
+  // alone — but not both: an override that overrides nothing is a DELETE.
+  // `SlotsCore.overrideWrite` decides that fork, so no caller here has to
+  // remember it.
+  //
+  // Each value must be THAT LEVEL'S OWN (§4.1), never the resolved number the
+  // chip is drawing with.
+  function putSlotDay(childId, subjectKind, subjectKey, instanceKey, date, startMin, durationMin) {
     return request("/api/wall/slots/day", {
       method: "PUT",
       body: {
@@ -154,7 +171,8 @@
         subjectKey: subjectKey,
         instanceKey: instanceKey || "",
         date: date,
-        durationMin: durationMin,
+        startMin: startMin == null ? null : startMin,
+        durationMin: durationMin == null ? null : durationMin,
       },
     });
   }
@@ -170,6 +188,45 @@
         subjectKey: subjectKey,
         instanceKey: instanceKey || "",
         date: date,
+      },
+    });
+  }
+
+  // Placement Scopes §4.2 (Phase 4) — "every Friday": the weekday level,
+  // between the standing row and the per-date one. Same key as a placement
+  // plus the weekday NUMBER (0=Sun..6=Sat), which the caller derives from the
+  // rendered date with `TimeCore.weekdayOf` — the Worker has no timezone to
+  // derive it in and deliberately does not try (worker/index.js).
+  //
+  // Same full-row contract as `putSlotDay` above, same both-null-is-a-DELETE
+  // fork, same "send the level's own value" rule.
+  function putSlotWeekday(childId, subjectKind, subjectKey, instanceKey, weekday, startMin, durationMin) {
+    return request("/api/wall/slots/weekday", {
+      method: "PUT",
+      body: {
+        childId: childId,
+        subjectKind: subjectKind,
+        subjectKey: subjectKey,
+        instanceKey: instanceKey || "",
+        weekday: weekday,
+        startMin: startMin == null ? null : startMin,
+        durationMin: durationMin == null ? null : durationMin,
+      },
+    });
+  }
+
+  // Placement Scopes §4.2 — clears the weekday level; the chip falls to the
+  // standing row. It does NOT take the chore off that weekday: the weekday
+  // level answers only *when*, never *whether* (§2.1, §11.3).
+  function deleteSlotWeekday(childId, subjectKind, subjectKey, instanceKey, weekday) {
+    return request("/api/wall/slots/weekday", {
+      method: "DELETE",
+      body: {
+        childId: childId,
+        subjectKind: subjectKind,
+        subjectKey: subjectKey,
+        instanceKey: instanceKey || "",
+        weekday: weekday,
       },
     });
   }
@@ -291,6 +348,8 @@
     deleteSlot: deleteSlot,
     putSlotDay: putSlotDay,
     deleteSlotDay: deleteSlotDay,
+    putSlotWeekday: putSlotWeekday,
+    deleteSlotWeekday: deleteSlotWeekday,
     postCompletions: postCompletions,
     postRewardEntries: postRewardEntries,
     claim: claim,

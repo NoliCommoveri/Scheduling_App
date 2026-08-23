@@ -11,7 +11,11 @@
 //
 // The actual WRITE (the PUT/DELETE calls, drag/tap-to-place, carry-forward
 // as a consequence of that write) lives in `day-ui.js` and `api.js` — this
-// file only ever reads or evaluates, never calls the network.
+// file only ever reads or evaluates, never calls the network. Placement
+// Scopes §6.1/§4.1 add a small write-SHAPE section (`planScopeWrite`,
+// `levelRow`, `overrideWrite`): which level a gesture writes and what goes in
+// the body. Still pure — deciding the shape of a write is not performing one,
+// and both rules are ones a DOM call site cannot be tested on.
 //
 // No file is shared with the Worker (CLAUDE.md §I.A) — the sentinel and key
 // shape are re-stated here to match `migrations/0010`'s primary key, not
@@ -178,6 +182,62 @@
     );
   }
 
+  // ---- the write side: WHICH level, and WHAT to send it ---------------------
+  // Placement Scopes §6.1/§4.1. Still pure — these decide the shape of a
+  // write without performing one; the PUT/DELETE calls stay in `day-ui.js`
+  // and `api.js`. They live here because both rules are easy to get subtly
+  // wrong at a DOM call site and neither is testable there: §6.1 spends a
+  // paragraph warning that one misreading of its own table un-places a chore
+  // on every day of the year, and §4.1's "send the level's own value" is the
+  // rule test 4b exists for.
+
+  // §6.1's six-row table, as one rule: moving a placement to `toScope` writes
+  // that level and clears the OVERRIDE level it came from, so a chore never
+  // carries two levels saying different things.
+  //
+  // 'standing' is never cleared, and that is the whole point of stating this
+  // here. `wall_slots.start_min` is NOT NULL and the row's PRESENCE is the
+  // placement (§2.1 row 4 — no row means the tray), so reading "clears the
+  // one it came from" literally for standing → weekday would delete the
+  // placement and take the chore off the grid every other day of the year.
+  // Only levels 1 and 2 are overrides, and only an override can be cleared.
+  //
+  // `fromScope` is `resolveChip().scope` — the level actually in force for
+  // the rendered date. Same-to-same (re-timing at the level already winning,
+  // which is every drag under §7.1) clears nothing.
+  function planScopeWrite(fromScope, toScope) {
+    var clear = fromScope !== toScope && (fromScope === "day" || fromScope === "weekday") ? fromScope : null;
+    return { write: toScope, clear: clear };
+  }
+
+  // That level's OWN row — null when the level does not override at all.
+  // `slot` for 'standing' is the placement row itself, which always exists
+  // for a placed chore.
+  function levelRow(level, slot, weekdayOverride, dayOverride) {
+    if (level === "day") return dayOverride || null;
+    if (level === "weekday") return weekdayOverride || null;
+    return slot || null;
+  }
+
+  // §4.1 — the pair to send when writing `level`, and whether that is a PUT
+  // or a DELETE. `startMin`/`durationMin` must already be THAT LEVEL'S OWN
+  // values (`levelRow` above), never the resolved numbers the chip is drawing
+  // with: a chip showing 30 minutes because the parent authored 30 has a
+  // weekday `duration_min` of null, and writing the resolved 30 would freeze
+  // Friday against the parent's later change.
+  //
+  // Both-null is a 400 on the override routes — an override that overrides
+  // nothing is meaningless and DELETE is how a level goes away — so that
+  // translation happens once, here, rather than at each of day-ui's call
+  // sites. 'standing' is always a PUT: its row's presence is the placement,
+  // so a null `startMin` there is a caller bug rather than a clear.
+  function overrideWrite(level, startMin, durationMin) {
+    if (level !== "standing" && startMin == null && durationMin == null) {
+      return { verb: "delete", startMin: null, durationMin: null };
+    }
+    return { verb: "put", startMin: startMin == null ? null : startMin, durationMin: durationMin == null ? null : durationMin };
+  }
+
   // §9 — a chore is a party to a collision only when it is PRIVATE
   // (`claim_group IS NULL`). A shared `claim` chore never triggers the
   // warning and never receives it, on either side.
@@ -267,6 +327,9 @@
     resolveDurationMin: resolveDurationMin,
     resolveStartMin: resolveStartMin,
     isOverridden: isOverridden,
+    planScopeWrite: planScopeWrite,
+    levelRow: levelRow,
+    overrideWrite: overrideWrite,
     isPrivateChore: isPrivateChore,
     rangesOverlap: rangesOverlap,
     findCollision: findCollision,

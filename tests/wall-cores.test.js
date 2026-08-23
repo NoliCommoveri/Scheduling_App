@@ -1067,3 +1067,64 @@ test('§8.10: a member course with nothing that date is not drawn, and cannot ho
   assert.deepEqual(none, []);
   assert.equal(SchoolCore.isCollapsed(none), false);
 });
+
+// ==========================================================================
+// Placement Scopes §8 (Phase 4) — the write side of the chain. §8 assigned
+// Phase 4 only manual check 12, but §6.1's transition table and §4.1's
+// send-your-own-value rule are decision logic, not rendering: they now live
+// in `slots-core.js` beside the resolver, so the bug §6.1 spends a paragraph
+// warning about is prevented by construction rather than by care in a DOM
+// file.
+// ==========================================================================
+
+test('§6.1: moving a placement clears only the OVERRIDE level it came from', () => {
+  // The six rows of §6.1's table, in its own order.
+  assert.deepEqual(SlotsCore.planScopeWrite('standing', 'weekday'), { write: 'weekday', clear: null });
+  assert.deepEqual(SlotsCore.planScopeWrite('standing', 'day'), { write: 'day', clear: null });
+  assert.deepEqual(SlotsCore.planScopeWrite('weekday', 'day'), { write: 'day', clear: 'weekday' });
+  assert.deepEqual(SlotsCore.planScopeWrite('day', 'weekday'), { write: 'weekday', clear: 'day' });
+  assert.deepEqual(SlotsCore.planScopeWrite('weekday', 'standing'), { write: 'standing', clear: 'weekday' });
+  assert.deepEqual(SlotsCore.planScopeWrite('day', 'standing'), { write: 'standing', clear: 'day' });
+});
+
+test('§6.1: standing is NEVER cleared — that clear would un-place the chore', () => {
+  // The misreading §6.1 warns about: `wall_slots.start_min` is NOT NULL and
+  // the row's presence IS the placement, so "clear the level it came from"
+  // taken literally on standing → only-today takes the chore off the grid
+  // every other day of the year.
+  ['weekday', 'day', 'standing'].forEach((to) => {
+    assert.notEqual(SlotsCore.planScopeWrite('standing', to).clear, 'standing');
+  });
+  // And a re-time at the level already in force — every drag, under §7.1 —
+  // clears nothing at all.
+  ['standing', 'weekday', 'day'].forEach((level) => {
+    assert.deepEqual(SlotsCore.planScopeWrite(level, level), { write: level, clear: null });
+  });
+});
+
+test('§4.1: a write carries the level\'s own row, and both-null is a DELETE', () => {
+  const slot = { start_min: 480, duration_min: null };
+  const weekday = { weekday: 5, start_min: 420, duration_min: null };
+  assert.equal(SlotsCore.levelRow('standing', slot, weekday, null), slot);
+  assert.equal(SlotsCore.levelRow('weekday', slot, weekday, null), weekday);
+  assert.equal(SlotsCore.levelRow('day', slot, weekday, null), null, 'no date row — null, not the one below');
+
+  // The pair the override routes 400 on, resolved here instead: an override
+  // that overrides nothing is a DELETE, which is how a level goes away.
+  assert.deepEqual(SlotsCore.overrideWrite('weekday', null, null), { verb: 'delete', startMin: null, durationMin: null });
+  assert.deepEqual(SlotsCore.overrideWrite('day', null, null), { verb: 'delete', startMin: null, durationMin: null });
+  assert.deepEqual(SlotsCore.overrideWrite('weekday', 420, null), { verb: 'put', startMin: 420, durationMin: null });
+  assert.deepEqual(SlotsCore.overrideWrite('day', null, 45), { verb: 'put', startMin: null, durationMin: 45 });
+
+  // Standing is always a PUT — its row's presence is the placement, so a
+  // null duration there is "no override", never "delete the placement".
+  assert.deepEqual(SlotsCore.overrideWrite('standing', 480, null), { verb: 'put', startMin: 480, durationMin: null });
+});
+
+test('§6.1: weekdayName gives the sheet its button and the toast its plural', () => {
+  assert.equal(TimeCore.weekdayName(5), 'Friday');
+  assert.equal(TimeCore.weekdayName(5, true), 'Fridays');
+  assert.equal(TimeCore.weekdayName(0), 'Sunday', 'Sunday-first, like weekdayOf');
+  assert.equal(TimeCore.weekdayName(6, true), 'Saturdays');
+  assert.equal(TimeCore.weekdayName(7), '', 'out of range names nothing rather than "undefineds"');
+});

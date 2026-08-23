@@ -67,6 +67,28 @@
 // (removal goes through the sheet, §5.4's "long-press sheet → remove"). The
 // "+ School" affordance lives in the tray header (`buildTrayCell`), which is
 // therefore now always rendered rather than hidden when nothing's unplaced.
+//
+// TDS_Slice_Wall_Placement_Scopes.md Phase 3 made every read resolve through
+// three scopes (this occurrence / this weekday / standing); Phase 4 makes the
+// WRITES do the same, and it is the whole of this file's share of that slice.
+// Three things change and one deliberately does not:
+//   * §7.1 — a drag writes the level ALREADY IN FORCE for the rendered date
+//     (`resolveChip().scope`), not the standing row unconditionally. You move
+//     what you see. A family that has never touched the scope controls sees
+//     no difference: every chip resolves at 'standing'.
+//   * §7.2 — the move toast names the scope in words and offers the two
+//     levels it did not write, so "actually, Fridays only" is two taps on the
+//     gesture already being made.
+//   * §6.1 — the duration sheet becomes an ADJUST sheet: a start stepper
+//     above the duration one, and three scope buttons in place of the old
+//     "Just this one / This and future" fork.
+//   * §11.6 — un-placing stays standing-scoped and is no longer destructive.
+//     A tray drag deletes the placement and leaves both override levels
+//     dormant beneath it (§2.1's gate), so it cannot take a year of
+//     per-weekday times with it.
+// Which level a gesture writes (`planScopeWrite`) and what may go in the body
+// (`overrideWrite`) are decided in `slots-core.js`, where they can be tested;
+// this file holds the dispatch, the optimistic mirror and the wording.
 
 (function (g) {
   "use strict";
@@ -291,10 +313,13 @@
   // background poll's re-render cannot tear it out from under the reader.
   // `action` is an optional { label, run } — the Undo a move offers (§3.6:
   // a placement is never refused, so recovery from a wrong one has to be
-  // immediate and in reach).
+  // immediate and in reach) — or, Placement Scopes §7.2, an ARRAY of them:
+  // a move now offers the two scopes it did not write beside Undo.
   function showToast(message, kind, sticky, action) {
     if (message == null) return g.Toast.clear();
-    g.Toast.show(message, { kind: kind, sticky: sticky, action: action });
+    var opts = { kind: kind, sticky: sticky };
+    if (Array.isArray(action)) opts.actions = action; else opts.action = action;
+    g.Toast.show(message, opts);
   }
 
   function rerenderNow() {
@@ -433,45 +458,132 @@
     }
   }
 
+  // Placement Scopes §11.6 — the override levels are NOT swept, matching what
+  // `DELETE /api/wall/slots` now does server-side. This used to drop
+  // `slotDays` locally, which was already a divergence the next poll undid;
+  // it matters more now that un-placing deliberately leaves both override
+  // levels dormant beneath the missing placement (§2.1's gate), because
+  // re-placing the chore is supposed to bring its weekday and date times
+  // back with it.
   function applyOptimisticUnplace(childId, subjectKey, instanceKey) {
     current.state.slots = (current.state.slots || []).filter(function (s) {
       return !(s.child_id === childId && s.subject_kind === "chore" && s.subject_key === subjectKey &&
         (s.instance_key || "") === instanceKey);
     });
-    current.state.slotDays = (current.state.slotDays || []).filter(function (d) {
-      return !(d.child_id === childId && d.subject_kind === "chore" && d.subject_key === subjectKey &&
-        (d.instance_key || "") === instanceKey);
-    });
   }
 
-  // §16 Phase 5b — the `wall_slot_days` half of an optimistic write:
-  // upsert-in-place, mirroring `applyOptimisticSlot`'s shape for `wall_slots`.
-  function applyOptimisticDayOverride(childId, subjectKey, instanceKey, date, durationMin) {
-    var days = current.state.slotDays || (current.state.slotDays = []);
-    var found = null;
-    for (var i = 0; i < days.length; i++) {
-      var d = days[i];
-      if (d.child_id === childId && d.subject_kind === "chore" && d.subject_key === subjectKey &&
-          (d.instance_key || "") === instanceKey && d.date === date) {
-        found = d;
-        break;
+  // ---- writing a level (Placement Scopes §4.1, §4.2, §6.1) -----------------
+  // Three levels, three routes, one shape. Which level a gesture writes is
+  // `SlotsCore.planScopeWrite`'s answer and what goes in the body is
+  // `SlotsCore.overrideValuesFor`'s; this half is the dispatch and the
+  // optimistic mirror, which is all that is left once those two are pure.
+
+  function slotIdent(row) {
+    return {
+      childId: g.SlotsCore.placementChildId(row),
+      subjectKey: g.SlotsCore.subjectKeyOf(row),
+      instanceKey: g.SlotsCore.instanceKeyOf(row),
+    };
+  }
+
+  // The three rows a chore has on the rendered date, freshly re-derived.
+  // Always re-read rather than closed over: a background poll may have landed
+  // between a gesture and the write it triggers.
+  function levelRowsFor(row, date) {
+    var slotsIdx = g.SlotsCore.indexSlots(current.state.slots);
+    var wdIdx = g.SlotsCore.indexWeekdays(current.state.slotWeekdays);
+    var daysIdx = g.SlotsCore.indexDays(current.state.slotDays);
+    var weekday = g.TimeCore.weekdayOf(date);
+    return {
+      weekday: weekday,
+      slot: g.SlotsCore.placementFor(slotsIdx, row),
+      weekdayRow: g.SlotsCore.weekdayOverrideFor(wdIdx, row, weekday),
+      dayRow: g.SlotsCore.dayOverrideFor(daysIdx, row, date),
+      chip: g.SlotsCore.resolveChip(slotsIdx, wdIdx, daysIdx, row, date),
+    };
+  }
+
+  // One level's write. `startMin`/`durationMin` are THAT LEVEL'S OWN values
+  // (§4.1) — never the resolved numbers the chip is drawing with — and a pair
+  // of nulls on an override level is a DELETE, which is how a level goes away.
+  function writeLevel(row, level, startMin, durationMin, date, weekday) {
+    var id = slotIdent(row);
+    var w = g.SlotsCore.overrideWrite(level, startMin, durationMin);
+    if (level === "standing") {
+      return g.WallApi.putSlot(id.childId, "chore", id.subjectKey, id.instanceKey, w.startMin, w.durationMin);
+    }
+    if (level === "weekday") {
+      return w.verb === "delete"
+        ? g.WallApi.deleteSlotWeekday(id.childId, "chore", id.subjectKey, id.instanceKey, weekday)
+        : g.WallApi.putSlotWeekday(id.childId, "chore", id.subjectKey, id.instanceKey, weekday, w.startMin, w.durationMin);
+    }
+    return w.verb === "delete"
+      ? g.WallApi.deleteSlotDay(id.childId, "chore", id.subjectKey, id.instanceKey, date)
+      : g.WallApi.putSlotDay(id.childId, "chore", id.subjectKey, id.instanceKey, date, w.startMin, w.durationMin);
+  }
+
+  // Clearing an OVERRIDE level is the both-null write. Never called with
+  // 'standing': `planScopeWrite` cannot return it, because deleting the
+  // standing row is not a clear — it un-places the chore on every day of the
+  // year (§6.1).
+  function clearLevel(row, level, date, weekday) {
+    return writeLevel(row, level, null, null, date, weekday);
+  }
+
+  // §16 Phase 5b — the optimistic mirror of `writeLevel`, so the re-render a
+  // successful write kicks off draws the new placement without waiting for
+  // the poll. Keyed exactly like the Worker's own ON CONFLICT clauses.
+  function applyOptimisticLevel(row, level, startMin, durationMin, date, weekday) {
+    var id = slotIdent(row);
+    var w = g.SlotsCore.overrideWrite(level, startMin, durationMin);
+    if (level === "standing") {
+      applyOptimisticSlot(id.childId, id.subjectKey, id.instanceKey, w.startMin, w.durationMin);
+      return;
+    }
+    var listKey = level === "weekday" ? "slotWeekdays" : "slotDays";
+    var list = current.state[listKey] || (current.state[listKey] = []);
+    var matches = function (r) {
+      return r.child_id === id.childId && r.subject_kind === "chore" && r.subject_key === id.subjectKey &&
+        (r.instance_key || "") === id.instanceKey &&
+        (level === "weekday" ? r.weekday === weekday : r.date === date);
+    };
+    if (w.verb === "delete") {
+      current.state[listKey] = list.filter(function (r) { return !matches(r); });
+      return;
+    }
+    for (var i = 0; i < list.length; i++) {
+      if (matches(list[i])) {
+        list[i].start_min = w.startMin;
+        list[i].duration_min = w.durationMin;
+        return;
       }
     }
-    if (found) {
-      found.duration_min = durationMin;
-    } else {
-      days.push({
-        child_id: childId, subject_kind: "chore", subject_key: subjectKey,
-        instance_key: instanceKey, date: date, duration_min: durationMin,
-      });
-    }
+    var fresh = {
+      child_id: id.childId, subject_kind: "chore", subject_key: id.subjectKey,
+      instance_key: id.instanceKey, start_min: w.startMin, duration_min: w.durationMin,
+    };
+    if (level === "weekday") fresh.weekday = weekday; else fresh.date = date;
+    list.push(fresh);
   }
 
-  function applyOptimisticDayOverrideClear(childId, subjectKey, instanceKey, date) {
-    current.state.slotDays = (current.state.slotDays || []).filter(function (d) {
-      return !(d.child_id === childId && d.subject_kind === "chore" && d.subject_key === subjectKey &&
-        (d.instance_key || "") === instanceKey && d.date === date);
-    });
+  function applyOptimisticClear(row, level, date, weekday) {
+    applyOptimisticLevel(row, level, null, null, date, weekday);
+  }
+
+  // How a scope reads to the family, in the two places it is said out loud:
+  // the toast's tail ("moved to 4:00 PM — every Friday") and the sheet's own
+  // buttons. `weekday` is the rendered date's, so the button standing at the
+  // tablet on a Friday says Friday (§6.1).
+  function scopeWord(level, weekday) {
+    if (level === "day") return "just today";
+    if (level === "weekday") return "every " + g.TimeCore.weekdayName(weekday);
+    return "every day";
+  }
+
+  function scopeButtonLabel(level, weekday) {
+    if (level === "day") return "Only today";
+    if (level === "weekday") return "Only " + g.TimeCore.weekdayName(weekday, true);
+    return "Every day";
   }
 
   function flashCollision(rowId, otherRowId) {
@@ -484,23 +596,34 @@
   }
 
   // The one place both drag-drop and tap-to-place end up: a candidate
-  // startMin, already converted to real clock minutes. §3.3 — this writes
-  // the STANDING placement, so it (and every future date the chore recurs
-  // on) carries forward from here; there is no "just today" in v1.
+  // startMin, already converted to real clock minutes.
+  //
+  // Placement Scopes §7.1 — YOU MOVE WHAT YOU SEE. This used to write the
+  // standing placement unconditionally; it now writes the level that put the
+  // chip where the finger found it, which is `resolveChip().scope`. A chore
+  // dragged out of the tray has no level yet, so its first placement is
+  // still the standing one — §2.1's gate means it could not be anything
+  // else, since an override cannot place a chore. A family that has never
+  // touched the scope controls therefore sees no change at all: every chip
+  // resolves at 'standing' and every drag writes `wall_slots.start_min`.
+  //
+  // The duration column is the level's OWN value, verbatim (§4.1) — never
+  // the resolved number the chip is drawing with. A drag is a move, not a
+  // re-timing, so it must not freeze a chip against the parent's
+  // `expected_duration_min` (test 4b) nor overwrite a duration override
+  // sitting at the level it happens to be writing.
   function commitPlacement(row, startMin) {
-    var childId = g.SlotsCore.placementChildId(row);
-    var subjectKey = g.SlotsCore.subjectKeyOf(row);
-    var instanceKey = g.SlotsCore.instanceKeyOf(row);
-    var slotsIdx = g.SlotsCore.indexSlots(current.state.slots);
-    var existingSlot = g.SlotsCore.placementFor(slotsIdx, row);
-    var durationOverride = existingSlot ? existingSlot.duration_min : null; // preserved, never guessed (§3.5.1)
-    var wasAt = existingSlot ? existingSlot.start_min : null; // null = it was in the tray
-    var chip = g.SlotsCore.resolveChip(slotsIdx, g.SlotsCore.indexWeekdays(current.state.slotWeekdays), g.SlotsCore.indexDays(current.state.slotDays), row, current.date);
-    var collision = findCollisionForDrop(row, startMin, chip.durationMin);
+    var date = current.date;
+    var rows = levelRowsFor(row, date);
+    var level = rows.chip.scope || "standing";
+    var own = g.SlotsCore.levelRow(level, rows.slot, rows.weekdayRow, rows.dayRow);
+    var wasAt = own ? own.start_min : null; // that level's own start — null = it was in the tray
+    var ownDuration = own ? own.duration_min : null; // preserved, never guessed (§3.5.1/§4.1)
+    var collision = findCollisionForDrop(row, startMin, rows.chip.durationMin);
     var fmt = (g.Store.getSettings().timeFormat) || "24h";
 
-    g.WallApi.putSlot(childId, "chore", subjectKey, instanceKey, startMin, durationOverride).then(function () {
-      applyOptimisticSlot(childId, subjectKey, instanceKey, startMin, durationOverride);
+    writeLevel(row, level, startMin, ownDuration, date, rows.weekday).then(function () {
+      applyOptimisticLevel(row, level, startMin, ownDuration, date, rows.weekday);
       rerenderNow();
       if (collision) {
         showToast(
@@ -508,10 +631,10 @@
           g.TimeCore.formatMinutes(collision.chip.startMin, fmt), "warning");
         flashCollision(row.id, collision.row.id);
       } else {
-        showToast(row.title + " moved to " + g.TimeCore.formatMinutes(startMin, fmt), null, false, {
-          label: "Undo",
-          run: function () { revertPlacement(row, wasAt, durationOverride, fmt); },
-        });
+        showToast(
+          row.title + " moved to " + g.TimeCore.formatMinutes(startMin, fmt) +
+            " — " + scopeWord(level, rows.weekday), null, false,
+          moveActions(row, level, startMin, wasAt, ownDuration, date, rows.weekday, fmt));
       }
       g.Poll.pollNow();
     }).catch(function () {
@@ -519,14 +642,89 @@
     });
   }
 
-  // Undo for a move: back to the minute it came from, or back to the tray
-  // if that is where it came from. Deliberately NOT a call to
-  // commitPlacement/unplace — those would offer their own Undo, and an
-  // undo that offers to undo itself is a loop, not a safety net.
-  function revertPlacement(row, wasAt, durationOverride, fmt) {
-    var childId = g.SlotsCore.placementChildId(row);
-    var subjectKey = g.SlotsCore.subjectKeyOf(row);
-    var instanceKey = g.SlotsCore.instanceKeyOf(row);
+  // §7.2 — the toast is where scope becomes visible: the move that just
+  // happened, plus the two levels it did NOT write, plus Undo.
+  //
+  // The scope buttons appear only when the drag re-timed an EXISTING
+  // placement. A chore coming from the tray (`wasAt == null`) gets Undo
+  // alone, because §2.1's gate makes "placed on Fridays only" unreachable by
+  // design (§11.7): re-homing that first placement onto an override level
+  // would write a dormant row and leave the chore in the tray, which is the
+  // gesture visibly failing to do what it looked like it did.
+  function moveActions(row, level, startMin, wasAt, wasDuration, date, weekday, fmt) {
+    var undo = { label: "Undo", run: function () { revertPlacement(row, level, wasAt, wasDuration, date, weekday, fmt); } };
+    if (wasAt == null) return undo;
+    var others = ["day", "weekday", "standing"].filter(function (l) { return l !== level; });
+    return others.map(function (target) {
+      return {
+        label: scopeButtonLabel(target, weekday),
+        run: function () { rehomeMove(row, level, target, startMin, wasAt, wasDuration, date, weekday, fmt); },
+      };
+    }).concat([undo]);
+  }
+
+  // §7.2 — "actually, Fridays only": undo the drag at the level it landed on,
+  // then write the same time at the level the family asked for. Two taps
+  // total, on the gesture they were already making.
+  //
+  // "Undo it at the level it landed on" is §6.1's table, not a plain restore,
+  // and the difference is the whole gesture on one of the six paths. Dragging
+  // a chip whose time comes from its Friday row and then tapping "Every day"
+  // must CLEAR that Friday row: restoring it would leave Friday overriding
+  // the standing time the family just asked for, so the chip would sit
+  // exactly where it was and the button would appear to do nothing — §7.1's
+  // worst failure, arriving through the affordance meant to prevent it. Going
+  // the other way (standing → an override) clears nothing, so there the
+  // standing row is restored to what it held.
+  //
+  // The undo half goes FIRST, deliberately. Both writes are online-required
+  // with no outbox (§1), so either can fail alone. This order fails visibly —
+  // the chip sits where it started and the toast says so. The other fails
+  // invisibly: the new, more specific level lands and looks right on THIS
+  // date while the level underneath keeps a time nobody chose for every other
+  // one. Nothing re-renders between the two, so there is no flicker.
+  function rehomeMove(row, fromLevel, toLevel, startMin, wasAt, wasDuration, date, weekday, fmt) {
+    var plan = g.SlotsCore.planScopeWrite(fromLevel, toLevel);
+    var undoDrag = plan.clear
+      ? clearLevel(row, plan.clear, date, weekday).then(function () {
+          applyOptimisticClear(row, plan.clear, date, weekday);
+        })
+      : writeLevel(row, fromLevel, wasAt, wasDuration, date, weekday).then(function () {
+          applyOptimisticLevel(row, fromLevel, wasAt, wasDuration, date, weekday);
+        });
+
+    undoDrag.then(function () {
+      // The TARGET level's own duration, read after the undo — never the
+      // source level's, and never the resolved one (§4.1).
+      var rows = levelRowsFor(row, date);
+      var own = g.SlotsCore.levelRow(toLevel, rows.slot, rows.weekdayRow, rows.dayRow);
+      var ownDuration = own ? own.duration_min : null;
+      return writeLevel(row, toLevel, startMin, ownDuration, date, weekday).then(function () {
+        applyOptimisticLevel(row, toLevel, startMin, ownDuration, date, weekday);
+        rerenderNow();
+        showToast(row.title + " moved to " + g.TimeCore.formatMinutes(startMin, fmt) +
+          " — " + scopeWord(toLevel, weekday));
+        g.Poll.pollNow();
+      });
+    }).catch(function () {
+      rerenderNow();
+      showToast("Couldn't change when that applies — try again.", "warning");
+      g.Poll.pollNow();
+    });
+  }
+
+  // Undo for a move: back to the minute it came from, at the LEVEL it came
+  // from, or back to the tray if that is where it came from. Deliberately
+  // NOT a call to commitPlacement/unplace — those would offer their own Undo,
+  // and an undo that offers to undo itself is a loop, not a safety net.
+  //
+  // Placement Scopes §7.1 — `level` is what the move wrote, and `wasAt` is
+  // that level's own start before it. On an override level, `wasAt` is never
+  // null (the level was in force, which is why the drag chose it), so the
+  // tray branch below stays what it always was: the standing row, and the
+  // chore going back where it came from.
+  function revertPlacement(row, level, wasAt, wasDuration, date, weekday, fmt) {
+    var id = slotIdent(row);
     var done = function () {
       rerenderNow();
       showToast(
@@ -537,33 +735,38 @@
     };
     var failed = function () { showToast("Couldn't undo — try again.", "warning"); };
     if (wasAt == null) {
-      g.WallApi.deleteSlot(childId, "chore", subjectKey, instanceKey).then(function () {
-        applyOptimisticUnplace(childId, subjectKey, instanceKey);
+      g.WallApi.deleteSlot(id.childId, "chore", id.subjectKey, id.instanceKey).then(function () {
+        applyOptimisticUnplace(id.childId, id.subjectKey, id.instanceKey);
         done();
       }).catch(failed);
       return;
     }
-    g.WallApi.putSlot(childId, "chore", subjectKey, instanceKey, wasAt, durationOverride).then(function () {
-      applyOptimisticSlot(childId, subjectKey, instanceKey, wasAt, durationOverride);
+    writeLevel(row, level, wasAt, wasDuration, date, weekday).then(function () {
+      applyOptimisticLevel(row, level, wasAt, wasDuration, date, weekday);
       done();
     }).catch(failed);
   }
 
+  // Placement Scopes §11.6 — un-placing stays STANDING-SCOPED whatever level
+  // is in force on the rendered date, and it is no longer destructive: the
+  // route deletes the `wall_slots` row and nothing else, so a tray drag on a
+  // Friday cannot take a year of per-weekday times with it. Undo therefore
+  // restores the standing row alone, which is now the whole of what was lost
+  // — before this slice the same Undo was offered over a server-side sweep
+  // it could not put back.
   function unplace(row) {
-    var childId = g.SlotsCore.placementChildId(row);
-    var subjectKey = g.SlotsCore.subjectKeyOf(row);
-    var instanceKey = g.SlotsCore.instanceKeyOf(row);
-    var slotsIdx = g.SlotsCore.indexSlots(current.state.slots);
-    var existingSlot = g.SlotsCore.placementFor(slotsIdx, row);
-    var wasAt = existingSlot ? existingSlot.start_min : null;
-    var durationOverride = existingSlot ? existingSlot.duration_min : null;
+    var date = current.date;
+    var id = slotIdent(row);
+    var rows = levelRowsFor(row, date);
+    var wasAt = rows.slot ? rows.slot.start_min : null;
+    var wasDuration = rows.slot ? rows.slot.duration_min : null;
     var fmt = (g.Store.getSettings().timeFormat) || "24h";
-    g.WallApi.deleteSlot(childId, "chore", subjectKey, instanceKey).then(function () {
-      applyOptimisticUnplace(childId, subjectKey, instanceKey);
+    g.WallApi.deleteSlot(id.childId, "chore", id.subjectKey, id.instanceKey).then(function () {
+      applyOptimisticUnplace(id.childId, id.subjectKey, id.instanceKey);
       rerenderNow();
       showToast(row.title + " moved to Not scheduled", null, false, wasAt == null ? null : {
         label: "Undo",
-        run: function () { revertPlacement(row, wasAt, durationOverride, fmt); },
+        run: function () { revertPlacement(row, "standing", wasAt, wasDuration, date, rows.weekday, fmt); },
       });
       g.Poll.pollNow();
     }).catch(function () {
@@ -571,144 +774,221 @@
     });
   }
 
-  // ---- duration-adjust sheet (§16 Phase 5b, §3.5.2) -------------------------
+  // ---- the adjust sheet (§16 Phase 5b §3.5.2; Placement Scopes §6.1) -------
   // Opened by a long-press on a placed chip (attachGesture's onLongPress).
-  // `sheetState` holds only `{row, value}` — everything else (the current
-  // placement, whether it's overridden, the assigned-time label) is
-  // re-derived fresh from `current.state` on every build, so a background
-  // poll landing while the sheet is open never shows it stale data.
+  // It began life as a duration editor and is now a PLACEMENT editor: a start
+  // stepper above the duration one, and the two-button "this one / this and
+  // future" fork replaced by three scope buttons, one per level of §2.1's
+  // chain. "This and future" is gone as a label — it was always "standing",
+  // and with three scopes on screen it would be the only one of the three
+  // describing time rather than recurrence.
+  //
+  // `sheetState` holds `{row, startMin, durationMin, durationTouched}` —
+  // everything else (the three rows, which level is in force, the
+  // assigned-time label) is re-derived fresh from `current.state` on every
+  // build, so a background poll landing while the sheet is open never shows
+  // it stale data. `durationTouched` is load-bearing rather than cosmetic:
+  // see `submitPlacement`.
+  //
+  // The CSS classes stay `.duration-sheet-*`. Three other modals in this app
+  // reuse them verbatim (wall.css), so the names are the shared modal's, not
+  // this sheet's subject.
 
-  function showDurationSheet(row) {
-    var slotsIdx = g.SlotsCore.indexSlots(current.state.slots);
-    var daysIdx = g.SlotsCore.indexDays(current.state.slotDays);
-    var wdIdx = g.SlotsCore.indexWeekdays(current.state.slotWeekdays);
-    var chip = g.SlotsCore.resolveChip(slotsIdx, wdIdx, daysIdx, row, current.date);
-    if (chip.startMin == null) return; // not placed — the sheet has nothing to adjust
-    sheetState = { row: row, value: chip.durationMin };
+  function showAdjustSheet(row) {
+    var rows = levelRowsFor(row, current.date);
+    if (rows.chip.startMin == null) return; // not placed — the sheet has nothing to adjust
+    sheetState = { row: row, startMin: rows.chip.startMin, durationMin: rows.chip.durationMin, durationTouched: false };
     rerenderNow();
   }
 
-  function closeDurationSheet() {
+  function closeAdjustSheet() {
     sheetState = null;
     rerenderNow();
   }
 
-  // "This and future" keeps the chore's current start time — a duration
-  // adjustment is never a move — and preserves the collision warning the
-  // same drop/drag path gives (§9): growing a chip can newly overlap a
-  // neighbour just as moving one can.
-  function submitDurationOverride(row, value, scope) {
-    var childId = g.SlotsCore.placementChildId(row);
-    var subjectKey = g.SlotsCore.subjectKeyOf(row);
-    var instanceKey = g.SlotsCore.instanceKeyOf(row);
-    var slot = g.SlotsCore.placementFor(g.SlotsCore.indexSlots(current.state.slots), row);
+  // §6.1 — the three scope buttons. `toLevel` is the level the family tapped;
+  // the placement moves there and the OVERRIDE level it came from is cleared,
+  // so a chore never carries two levels saying different things.
+  // `planScopeWrite` is what guarantees the standing row is never the thing
+  // cleared — deleting it would un-place the chore on every day of the year,
+  // which is the misreading §6.1 spends a paragraph on.
+  //
+  // What each column carries (§4.1):
+  //   startMin     — the time on the stepper, always. The scope button IS the
+  //                  act of pinning that time at that scope, so writing the
+  //                  level's own (often absent) value would make the button
+  //                  do nothing.
+  //   durationMin  — the number on the stepper only if the family MOVED it;
+  //                  otherwise the target level's own value, verbatim. This
+  //                  is test 4b: a chip drawn at 30 minutes because the
+  //                  parent authored 30 must write null, or the override is
+  //                  frozen against the parent's later change and the §3.5.1
+  //                  marker lights on a chip nobody re-timed.
+  //
+  // A duration adjustment is never a move, so the collision warning the
+  // drag/drop path gives is preserved here too (§9): growing a chip can newly
+  // overlap a neighbour just as moving one can.
+  function submitPlacement(row, toLevel) {
+    var s = sheetState;
     var date = current.date;
+    var rows = levelRowsFor(row, date);
+    var startMin = s.startMin;
+    var durationTouched = s.durationTouched;
+    var shownDuration = s.durationMin;
     var fmt = (g.Store.getSettings().timeFormat) || "24h";
     sheetState = null;
     rerenderNow();
-    if (!slot) return; // un-placed from under us while the sheet was open
+    if (!rows.slot) return; // un-placed from under us while the sheet was open
 
-    var startMin = slot.start_min;
-    var write = scope === "day"
-      ? g.WallApi.putSlotDay(childId, "chore", subjectKey, instanceKey, date, value)
-      : g.WallApi.putSlot(childId, "chore", subjectKey, instanceKey, startMin, value);
+    var plan = g.SlotsCore.planScopeWrite(rows.chip.scope || "standing", toLevel);
+    var own = g.SlotsCore.levelRow(toLevel, rows.slot, rows.weekdayRow, rows.dayRow);
+    var durationMin = durationTouched ? shownDuration : (own ? own.duration_min : null);
 
-    write.then(function () {
-      if (scope === "day") applyOptimisticDayOverride(childId, subjectKey, instanceKey, date, value);
-      else applyOptimisticSlot(childId, subjectKey, instanceKey, startMin, value);
-      rerenderNow();
-      var collision = findCollisionForDrop(row, startMin, value);
-      if (collision) {
-        showToast(
-          row.title + " overlaps " + collision.row.title + " at " +
-          g.TimeCore.formatMinutes(collision.chip.startMin, fmt), "warning");
-        flashCollision(row.id, collision.row.id);
-      } else {
-        showToast(row.title + " now " + g.TimeCore.formatDurationMin(value) +
-          (scope === "day" ? " today" : " going forward"));
-      }
-      g.Poll.pollNow();
+    // The clear goes first, for the same reason §7.2's re-homing reverts
+    // first: two online-required writes with no outbox behind them, and the
+    // half-done state that reads as deliberate is the one where the new,
+    // more specific level landed over a stale one underneath it.
+    var clear = plan.clear
+      ? clearLevel(row, plan.clear, date, rows.weekday).then(function () {
+          applyOptimisticClear(row, plan.clear, date, rows.weekday);
+        })
+      : Promise.resolve();
+
+    clear.then(function () {
+      return writeLevel(row, toLevel, startMin, durationMin, date, rows.weekday).then(function () {
+        applyOptimisticLevel(row, toLevel, startMin, durationMin, date, rows.weekday);
+        rerenderNow();
+        var chip = levelRowsFor(row, date).chip;
+        var collision = findCollisionForDrop(row, chip.startMin, chip.durationMin);
+        if (collision) {
+          showToast(
+            row.title + " overlaps " + collision.row.title + " at " +
+            g.TimeCore.formatMinutes(collision.chip.startMin, fmt), "warning");
+          flashCollision(row.id, collision.row.id);
+        } else {
+          showToast(row.title + " — " + g.TimeCore.formatMinutes(chip.startMin, fmt) + ", " +
+            g.TimeCore.formatDurationMin(chip.durationMin) + ", " + scopeWord(toLevel, rows.weekday));
+        }
+        g.Poll.pollNow();
+      });
     }).catch(function () {
-      showToast("Couldn't change “" + row.title + "”'s duration — try again.", "warning");
+      showToast("Couldn't adjust “" + row.title + "” — try again.", "warning");
+      g.Poll.pollNow();
     });
   }
 
-  // "Use the assigned time" returns the chip to row 3/4 of the §3.5.1 chain
-  // unconditionally — both a day override and a standing one may be in
-  // force at once (someone set "this and future", then "just this one" on
-  // top of it), and leaving either behind would silently disagree with what
-  // the button just promised. Both calls are made regardless of which
-  // override actually exists; deleting/clearing one that was never set is
-  // a no-op, not an error.
+  // "Use the assigned time" returns the chip to row 4/5 of the §3.5.1 chain
+  // unconditionally — ALL THREE levels may carry a duration override at once,
+  // and leaving any of them behind would silently disagree with what the
+  // button just promised.
+  //
+  // Placement Scopes §4.1 — and it clears the duration column only. On an
+  // override level that also carries a start override, that is a PUT keeping
+  // its own `start_min` with a null duration, NOT a DELETE: the button says
+  // "the assigned TIME", meaning how long the thing takes, and throwing away
+  // Friday's start time on the way would be a second edit nobody asked for.
+  // Where a level carries no start override either, the pair is null/null and
+  // `overrideWrite` turns it into the DELETE it actually is — and a DELETE of
+  // a level that was never set is a no-op, not an error, which is why all
+  // three are called regardless of what exists.
   function submitDurationClear(row) {
-    var childId = g.SlotsCore.placementChildId(row);
-    var subjectKey = g.SlotsCore.subjectKeyOf(row);
-    var instanceKey = g.SlotsCore.instanceKeyOf(row);
-    var slot = g.SlotsCore.placementFor(g.SlotsCore.indexSlots(current.state.slots), row);
     var date = current.date;
+    var rows = levelRowsFor(row, date);
     sheetState = null;
     rerenderNow();
-    if (!slot) return;
-    var startMin = slot.start_min;
+    if (!rows.slot) return;
 
-    Promise.all([
-      g.WallApi.deleteSlotDay(childId, "chore", subjectKey, instanceKey, date),
-      g.WallApi.putSlot(childId, "chore", subjectKey, instanceKey, startMin, null),
-    ]).then(function () {
-      applyOptimisticDayOverrideClear(childId, subjectKey, instanceKey, date);
-      applyOptimisticSlot(childId, subjectKey, instanceKey, startMin, null);
+    var levels = [
+      { level: "standing", startMin: rows.slot.start_min },
+      { level: "weekday", startMin: rows.weekdayRow ? rows.weekdayRow.start_min : null },
+      { level: "day", startMin: rows.dayRow ? rows.dayRow.start_min : null },
+    ];
+    Promise.all(levels.map(function (l) {
+      return writeLevel(row, l.level, l.startMin, null, date, rows.weekday);
+    })).then(function () {
+      levels.forEach(function (l) {
+        applyOptimisticLevel(row, l.level, l.startMin, null, date, rows.weekday);
+      });
       rerenderNow();
       showToast(row.title + " back to the assigned time");
       g.Poll.pollNow();
     }).catch(function () {
       showToast("Couldn't reset “" + row.title + "”'s duration — try again.", "warning");
+      g.Poll.pollNow();
     });
   }
 
-  function buildDurationSheet() {
+  function buildAdjustSheet() {
     var s = sheetState;
     var row = s.row;
-    var slotsIdx = g.SlotsCore.indexSlots(current.state.slots);
-    var daysIdx = g.SlotsCore.indexDays(current.state.slotDays);
-    var wdIdx = g.SlotsCore.indexWeekdays(current.state.slotWeekdays);
-    var slot = g.SlotsCore.placementFor(slotsIdx, row);
-    if (!slot) { sheetState = null; return; } // un-placed from under us while open — drop silently
-    var dayOverride = g.SlotsCore.dayOverrideFor(daysIdx, row, current.date);
+    var rows = levelRowsFor(row, current.date);
+    if (!rows.slot) { sheetState = null; return; } // un-placed from under us while open — drop silently
     // Placement Scopes §2.1 — three override levels now, so the marker asks
     // all three. Passing only the date row here would light the "Use the
     // assigned time" reset for a chip whose duration comes from a weekday row
     // and leave it dark for one that has only a weekday override.
-    var weekdayOverride = g.SlotsCore.weekdayOverrideFor(wdIdx, row, g.TimeCore.weekdayOf(current.date));
-    var overridden = g.SlotsCore.isOverridden(slot, weekdayOverride, dayOverride);
+    var overridden = g.SlotsCore.isOverridden(rows.slot, rows.weekdayRow, rows.dayRow);
     var assigned = g.SlotsCore.assignedDurationMin(row);
+    var inForce = rows.chip.scope || "standing";
+    var fmt = (g.Store.getSettings().timeFormat) || "24h";
+
+    var scopeBtns = ["day", "weekday", "standing"].map(function (level) {
+      // The level in force is the only one NOT ghosted — accent fill is this
+      // app's mark for a chosen option, and §6.1 asks for the current level
+      // to be marked.
+      return '<button class="btn dur-scope' + (level === inForce ? "" : " ghost") +
+        '" data-level="' + level + '" type="button"></button>';
+    }).join("");
 
     var overlay = el(
       '<div class="duration-sheet-overlay">' +
         '<div class="duration-sheet-card">' +
-          "<h2>Adjust duration</h2>" +
+          "<h2>Adjust</h2>" +
           '<div class="duration-sheet-title"></div>' +
           '<div class="duration-sheet-stepper">' +
+            '<span class="duration-sheet-label">Starts</span>' +
+            '<button class="btn ghost start-step" data-step="-15" type="button">&minus;</button>' +
+            '<div class="duration-sheet-value" id="startValue"></div>' +
+            '<button class="btn ghost start-step" data-step="15" type="button">+</button>' +
+          "</div>" +
+          '<div class="duration-sheet-stepper">' +
+            '<span class="duration-sheet-label">Takes</span>' +
             '<button class="btn ghost dur-step" data-step="-15" type="button">&minus;</button>' +
-            '<div class="duration-sheet-value"></div>' +
+            '<div class="duration-sheet-value" id="durValue"></div>' +
             '<button class="btn ghost dur-step" data-step="15" type="button">+</button>' +
           "</div>" +
           (overridden ? '<button class="btn ghost duration-sheet-reset" id="durUseAssigned"></button>' : "") +
+          '<div class="duration-sheet-scopes">' + scopeBtns + "</div>" +
           '<div class="duration-sheet-actions">' +
-            '<button class="btn" id="durFuture">This and future</button>' +
-            '<button class="btn ghost" id="durJustThis">Just this one</button>' +
             '<button class="btn ghost" id="durCancel">Cancel</button>' +
           "</div>" +
         "</div>" +
       "</div>"
     );
     overlay.querySelector(".duration-sheet-title").textContent = row.title;
-    overlay.querySelector(".duration-sheet-value").textContent = g.TimeCore.formatDurationMin(s.value);
+    overlay.querySelector("#startValue").textContent = g.TimeCore.formatMinutes(s.startMin, fmt);
+    overlay.querySelector("#durValue").textContent = g.TimeCore.formatDurationMin(s.durationMin);
+    overlay.querySelectorAll(".dur-scope").forEach(function (btn) {
+      btn.textContent = scopeButtonLabel(btn.dataset.level, rows.weekday);
+    });
     var resetBtn = overlay.querySelector("#durUseAssigned");
     if (resetBtn) resetBtn.textContent = "Use the assigned time (" + g.TimeCore.formatDurationMin(assigned) + ")";
 
+    // The start stepper stays on the 15-minute grid and inside the day, which
+    // is what `isValidStartMin` accepts (0-1425). The chip may still be
+    // clamped at render if the composed pair runs past midnight (§2.1) —
+    // that check belongs to the resolver, not to a stepper that can only see
+    // one of the two numbers.
+    overlay.querySelectorAll(".start-step").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        s.startMin = Math.max(0, Math.min(1440 - ROW_MIN, s.startMin + Number(btn.dataset.step)));
+        rerenderNow();
+      });
+    });
     overlay.querySelectorAll(".dur-step").forEach(function (btn) {
       btn.addEventListener("click", function () {
-        s.value = Math.max(ROW_MIN, Math.min(MAX_ADJUST_MIN, s.value + Number(btn.dataset.step)));
+        s.durationMin = Math.max(ROW_MIN, Math.min(MAX_ADJUST_MIN, s.durationMin + Number(btn.dataset.step)));
+        s.durationTouched = true;
         rerenderNow();
       });
     });
@@ -720,15 +1000,12 @@
     // time and dismissing itself before it could be seen. A pointerdown
     // that began before this overlay existed can never reach it.
     overlay.addEventListener("pointerdown", function (ev) {
-      if (ev.target === overlay) closeDurationSheet(); // backdrop tap cancels
+      if (ev.target === overlay) closeAdjustSheet(); // backdrop tap cancels
     });
-    overlay.querySelector("#durCancel").addEventListener("click", closeDurationSheet);
+    overlay.querySelector("#durCancel").addEventListener("click", closeAdjustSheet);
     if (resetBtn) resetBtn.addEventListener("click", function () { submitDurationClear(row); });
-    overlay.querySelector("#durJustThis").addEventListener("click", function () {
-      submitDurationOverride(row, s.value, "day");
-    });
-    overlay.querySelector("#durFuture").addEventListener("click", function () {
-      submitDurationOverride(row, s.value, "standing");
+    overlay.querySelectorAll(".dur-scope").forEach(function (btn) {
+      btn.addEventListener("click", function () { submitPlacement(row, btn.dataset.level); });
     });
 
     currentRoot.appendChild(overlay);
@@ -1642,7 +1919,7 @@
         attachGesture(hit, placed.row.title, function () {
           if (opts.onChipTap) opts.onChipTap(placed.row, entry.child);
         }, function () {
-          showDurationSheet(placed.row);
+          showAdjustSheet(placed.row);
         }, function (startMin) {
           commitPlacement(placed.row, startMin);
         }, function () {
@@ -1901,7 +2178,7 @@
   var lastRenderedDate = null;
   var lastRenderedMode = null;
   var selectedForPlacement = null; // tap-to-place: {row, child} armed by a tray tap, or null
-  var sheetState = null; // duration-adjust sheet: {row, value} while open, or null (§16 Phase 5b)
+  var sheetState = null; // adjust sheet: {row, startMin, durationMin, durationTouched} while open, or null (§16 Phase 5b; Placement Scopes §6.1)
   var blockSheetState = null; // school block span/label sheet: {block, value, label} while open, or null (§16 Phase 7)
   var membershipSheetState = null; // school block membership picker: {block} while open, or null (§16 Phase 7)
   var overflowSheetState = null; // same-slot overflow list: {items, child, opts} while open, or null (§9 display correction)
@@ -1990,7 +2267,7 @@
     // background poll's re-render (every 10 min, or right after any write)
     // rebuilds `root` from scratch, and without this the sheet would
     // silently vanish mid-adjustment (§16 Phase 5b).
-    if (sheetState) buildDurationSheet();
+    if (sheetState) buildAdjustSheet();
     if (blockSheetState) buildBlockSheet();
     if (membershipSheetState) buildMembershipSheet();
     if (overflowSheetState) buildOverflowSheet();

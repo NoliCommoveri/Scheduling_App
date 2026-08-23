@@ -121,7 +121,17 @@
 // This worker is cache-first for the shell, so without it the tablet keeps
 // serving the old scripts and Phase 3 changes nothing a family can see —
 // which is the one thing the Phase 2+3 break is supposed to deliver.
-const CACHE_NAME = "wall-display-shell-v17";
+// v18: Placement Scopes Phase 4 — the chore UI. `day-ui.js`'s duration sheet
+// becomes a PLACEMENT sheet (a start stepper above the duration one, three
+// scope buttons in place of the two-button fork), a drag writes the level
+// already in force rather than always the standing row (§7.1), and the move
+// toast carries the two scopes it did not write (§7.2). `api.js` gains the
+// weekday level's PUT/DELETE and `putSlotDay` gains `startMin`; `toast.js`
+// takes several action buttons; `time-core.js` gains `weekdayName`;
+// `slots-core.js` gains the write-shape helpers (`planScopeWrite`,
+// `levelRow`, `overrideWrite`); wall.css gains the second stepper's label,
+// the scope row and the toast's wrapping.
+const CACHE_NAME = "wall-display-shell-v18";
 
 const APP_SHELL = [
   "./",
