@@ -99,7 +99,11 @@
   // after every placement write anyway (day-ui.js).
   function getSlots() {
     return request("/api/wall/slots").then(function (res) {
-      return { slots: res.slots || [], days: res.days || [] };
+      // Placement Scopes §4.2 — `slotWeekdays` joins them, unbounded by the
+      // window like `slots` (a weekday row carries no date). Defaulted to []
+      // so a wall running against a Worker that predates Phase 2 renders the
+      // standing placements it already understands rather than throwing.
+      return { slots: res.slots || [], days: res.days || [], slotWeekdays: res.slotWeekdays || [] };
     });
   }
 
@@ -223,7 +227,17 @@
   // is nothing here for a window to bound.
   function getSchoolBlocks() {
     return request("/api/wall/school-blocks").then(function (res) {
-      return { blocks: res.blocks || [], blockCourses: res.blockCourses || [] };
+      // Placement Scopes §4.2 — `blockWeekdays` is the block's SCHEDULE, so
+      // it is not optional decoration: with it absent every block renders on
+      // no day (§2.2). The `|| []` below is the honest reading of a Worker
+      // that predates Phase 2, and the migrations are applied before the code
+      // that uses them (DEPLOY.md) precisely so that window is not entered.
+      return {
+        blocks: res.blocks || [],
+        blockCourses: res.blockCourses || [],
+        blockWeekdays: res.blockWeekdays || [],
+        blockDates: res.blockDates || [],
+      };
     });
   }
 

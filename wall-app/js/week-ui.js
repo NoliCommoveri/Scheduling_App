@@ -47,15 +47,14 @@
 
   // ---- the week's seven dates, Sunday-first --------------------------------
 
-  function dayOfWeek(iso) {
-    var parts = iso.split("-").map(Number);
-    return new Date(parts[0], parts[1] - 1, parts[2]).getDay();
-  }
-
+  // Placement Scopes §2.3 — the local `dayOfWeek` these three lines used to
+  // hold now lives in TimeCore.weekdayOf, the one implementation (nav-ui.js
+  // had the same copy). Same answer, same Sunday-first numbering; tested now.
+  //
   // Reuses Poll.addDays rather than re-deriving date math, same reason
   // nav-ui.js does.
   function weekDates(iso) {
-    var sunday = g.Poll.addDays(iso, -dayOfWeek(iso));
+    var sunday = g.Poll.addDays(iso, -g.TimeCore.weekdayOf(iso));
     var out = [];
     for (var i = 0; i < 7; i++) out.push(g.Poll.addDays(sunday, i));
     return out;
@@ -145,10 +144,11 @@
   function buildChoresBody(state, date, child) {
     var slotsIdx = g.SlotsCore.indexSlots(state.slots);
     var daysIdx = g.SlotsCore.indexDays(state.slotDays);
+    var wdIdx = g.SlotsCore.indexWeekdays(state.slotWeekdays);
     var chores = g.ChoresCore.choresForChild(state.rows, child.id, date, state.today);
     var buckets = { morning: [], afternoon: [], evening: [], night: [] };
     chores.forEach(function (row) {
-      var chip = g.SlotsCore.resolveChip(slotsIdx, daysIdx, row, date);
+      var chip = g.SlotsCore.resolveChip(slotsIdx, wdIdx, daysIdx, row, date);
       buckets[g.ChoresCore.blockForChip(row, chip)].push({ row: row, chip: chip });
     });
 

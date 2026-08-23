@@ -44,5 +44,33 @@
     return h + "h " + m + "m";
   }
 
-  g.TimeCore = { formatMinutes: formatMinutes, formatDate: formatDate, formatDurationMin: formatDurationMin };
+  // Placement Scopes §2.3 — a "YYYY-MM-DD" date's LOCAL day of week,
+  // 0 = Sunday .. 6 = Saturday, matching §6's Sunday-first week and the month
+  // grid's column order.
+  //
+  // Parse the COMPONENTS, never the string. `new Date("2026-08-23")` parses as
+  // UTC midnight, which is the previous day in every timezone west of
+  // Greenwich — so `.getDay()` on it answers Saturday for a Sunday in this
+  // household, and every weekday override would land one day off for exactly
+  // the people who never see it fail in a test run under UTC. §8's test 1
+  // pins that under TZ=America/Chicago.
+  //
+  // This is now the ONLY implementation. nav-ui.js and week-ui.js each had
+  // their own copy of these three lines (both correct, neither tested) and
+  // both now call this. `month-core.parseIso` builds Date objects for date
+  // arithmetic rather than weekday numbers, so it stays as it is — but §8's
+  // test 1 checks it against the same trap. Three places used to decide this
+  // number when it was cosmetic ("which column"); it is load-bearing now
+  // ("does school happen"), so it is decided once.
+  function weekdayOf(date) {
+    var p = String(date).split("-");
+    return new Date(+p[0], +p[1] - 1, +p[2]).getDay();
+  }
+
+  g.TimeCore = {
+    formatMinutes: formatMinutes,
+    formatDate: formatDate,
+    formatDurationMin: formatDurationMin,
+    weekdayOf: weekdayOf,
+  };
 })(typeof window !== "undefined" ? window : globalThis);

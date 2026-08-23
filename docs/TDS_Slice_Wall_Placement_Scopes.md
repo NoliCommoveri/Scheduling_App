@@ -609,6 +609,8 @@ inline:
 
 ### 5.1 `slots-core.js` — the chain becomes real
 
+**BUILT 2026-08-23 (Phase 3).**
+
 `resolveChip(slotsIndex, daysIndex, row, date)` gains a weekdays index and a resolved weekday:
 
 ```js
@@ -628,6 +630,17 @@ the question "which level am I looking at?" is answered once, in the pure layer,
 carries a duration override, unchanged in spirit.
 
 ### 5.2 `school-core.js` — placement joins the rollups
+
+**BUILT 2026-08-23 (Phase 3).** One addition beyond the four functions below:
+`resolvePlacement(weekdaysIndex, datesIndex, block, date, weekday)` returns
+`{occurs, startMin, endMin, spanScope}` in one call. `blockOccursOn` and `resolveBlockSpan` read
+the *same two rows*, and a caller that fetches them twice can be given a span from one date and an
+occurrence from another if the indexes are rebuilt in between. One call, one pair of rows.
+
+The block side's `scope` vocabulary is `'date' | 'weekday' | 'block'`, deliberately not §5.1's
+`'day' | 'weekday' | 'standing'`: a block's base level is the block row itself rather than a
+placement row, and §2.2.1 calls the exception level "the date row". Two tables, two vocabularies,
+each named after what it actually is.
 
 The file gains a placement section beside its existing completion rollups, with a comment saying so:
 
@@ -655,6 +668,14 @@ and lands lower down the grid than it needed to. Harmless when it happens, invis
 and cheap to get right while the function is being renamed anyway.
 
 ### 5.3 The member-course fix rides along
+
+**BUILT 2026-08-23 (Phase 3), not Phase 5.** §9 listed the fix under Phase 5 while listing its test
+(§8, test 10) under Phase 3, and a test without its implementation is not a test. Phase 3 is the
+right half: the filter lives in the pure layer as `SchoolCore.renderableRollups`, which is the only
+way test 10 can assert it "at the core boundary" as §8 asks, since the renderer is not pure. It has
+a second consequence §8 names and this section did not: `blockEntry` computes `collapsed` from the
+renderable rollups, so a block whose only unfinished member has nothing that date now collapses,
+where a phantom `checked: null` member used to hold it open.
 
 Independent of the scopes work, and a spec violation today: `schoolBlockChipHtml` renders an `<li>`
 for every member course including those with `total === 0`, while §5.2 says a course whose
@@ -919,10 +940,10 @@ document** (his instruction, 2026-08-23: design first, code next session).
 |---|---|---|
 | **1** | Migrations 0015–0018 + registry; validation helpers + tests 7, 7a, 8, the migration-shape tests, and `tests/migrations-apply.test.js`. Apply on an empty DB and on a copy of live data. **BUILT 2026-08-23.** | ~1 h |
 | **2** | Worker: the six new routes, the **four** widened ones (§4.2), §3.4's delete cleanup, route tests. Answer §11.6 first. **BUILT 2026-08-23**, with §11.6 and §11.7 answered by Ray first. | ~2 h |
-| **3** | Pure layer: `time-core.weekdayOf`, `slots-core` chain + `scope`, `school-core` placement, `blocksForChildOn`, tests 1–6 (incl. 5a) and 10. | ~1.5 h |
+| **3** | Pure layer: `time-core.weekdayOf`, `slots-core` chain + `scope`, `school-core` placement, `blocksForChildOn`, tests 1–6 (incl. 5a) and 10. **BUILT 2026-08-23**, plus the `CACHE_NAME` bump moved here from Phase 6 and §9's predicted create-block flicker closed. | ~1.5 h |
 | **4** | Chore UI: §6.1's sheet, §7.1's drag rule, §7.2's toast. | ~1.5 h |
 | **5** | Block UI: §6.2's sheet including the Today group, §6.3's add-for-today sheet, §6.4's creation default, §5.3's member fix. | ~2 h |
-| **6** | `CACHE_NAME` bump, §8's manual checks on the tablet, doc reconciliation: `CLAUDE.md` §I.A/§III.E/§VII amended from "authorized, unbuilt" to shipped, redesign slice §3.3/§5.4/§17.1 pointers, this file's status line. | ~1 h |
+| **6** | ~~`CACHE_NAME` bump~~ (done in Phase 3 — see below), §8's manual checks on the tablet, doc reconciliation: `CLAUDE.md` §I.A/§III.E/§VII amended from "authorized, unbuilt" to shipped, redesign slice §3.3/§5.4/§17.1 pointers, this file's status line. | ~1 h |
 
 **~9 hours.** Corrected 2026-08-23 during the Phase 1 build — the first draft of this paragraph
 got the visible phase wrong in one direction and missed a real hazard in the other.
@@ -946,10 +967,22 @@ correctly scheduled block anyway. Phase 2 must therefore land with Phase 3, and 
 work is not optional groundwork — it is the thing that keeps Phase 3 safe to ship.
 
 **So the natural break is after Phase 3, with Phase 2 in it** — Phases 1–3 together still change no
-behaviour a family can see except the one they asked for: blocks stop appearing on Saturdays. One
-loose end at that break, which Phase 5 ties off: `createSchoolBlock`'s optimistic append to
-`current.state.schoolBlocks` does not add the weekday rows the render now needs, so a newly created
-block flickers out until the next poll returns. Cosmetic, and only on the create path.
+behaviour a family can see except the one they asked for: blocks stop appearing on Saturdays.
+
+**Two corrections from the Phase 3 build, both about that break actually working.**
+
+- **The `CACHE_NAME` bump belongs to Phase 3, not Phase 6.** `wall-app/sw.js` is cache-first for the
+  shell (`caches.match(canonical).then(cached => cached || fetch(...))`, and its own line 8 says
+  "bump `CACHE_NAME` on any shell file change"). Without the bump the tablet keeps serving the old
+  scripts, so a Phase 2+3 release changes nothing a family can see — which is the single thing this
+  break exists to deliver. Bumped to `wall-display-shell-v17` in the Phase 3 commit; Phase 6's row
+  keeps the manual checks and the doc reconciliation.
+- **The loose end this paragraph predicted is closed, in Phase 3 rather than Phase 5.**
+  `createSchoolBlock`'s optimistic append writes no weekday rows, so `blocksForChildOn` filters the
+  new block straight back out and it flickers away until the next poll returns. It cost four lines
+  here because **Phase 2's `POST /api/wall/school-blocks` already answers with the weekday list it
+  applied** — including the Mon–Fri default when the body named none — so the client appends what
+  the server actually stored rather than guessing.
 
 **§11.6 must be answered before Phase 2 starts.** It decides whether
 `DELETE /api/wall/slots` keeps one meaning or grows a scope, which is a route signature Phase 2
@@ -1106,6 +1139,7 @@ deliberate omission that a future reporting need would reverse with one `ALTER`.
 
 | Date | Change |
 |---|---|
+| 2026-08-23 (Phase 3 build) | **The pure layer, and §0.1's bug is gone.** `TimeCore.weekdayOf` (§2.3) is now the one place a date becomes a day-of-week — `nav-ui.js`'s and `week-ui.js`'s identical copies both call it, and §8's test 1 springs the trap under `TZ=America/Chicago` rather than describing it (the suite's own default is UTC, so the assertion that a string-parsed `2026-08-23` reads Saturday only passes because the TZ change takes effect). `slots-core.js` gains `indexWeekdays`, `weekdayOverrideFor`, `resolveStartMin` and a five-row duration chain, and `resolveChip` gains the weekday index, `scope`, and §2.1's clamp; `school-core.js` gains a placement section (`blockOccursOn`, `resolveBlockSpan`, `scheduledWeekdays`, `dateExceptionFor`, plus `resolvePlacement` and `renderableRollups`); `day-ui.js`'s `blocksForChild` becomes `blocksForChildOn` at all four call sites and every block render reads the RESOLVED span off the block entry; `api.js`/`poll.js` carry the three new arrays. §8's tests 1–6 (incl. 4a, 4b, 5a) and 10; 610 green. **Corrections and additions this build made, all recorded above:** **(a)** the `CACHE_NAME` bump moves from Phase 6 to here — `sw.js` is cache-first, so without it a Phase 2+3 release changes nothing a family can see, which is the one thing that break exists to deliver (`wall-display-shell-v17`); **(b)** §9's predicted create-block flicker is closed here rather than in Phase 5, in four lines, because Phase 2's POST already answers with the weekday list it applied; **(c)** §5.3's member fix belongs to Phase 3, not Phase 5 — §9 scheduled its test here and its implementation there, and the filter has to be in the pure layer for test 10 to assert it "at the core boundary" at all; it also makes a block collapse where a phantom `checked: null` member used to hold it open; **(d)** `school-core` gains `resolvePlacement` beyond §5.2's four functions, so occurrence and span always come from the same two rows; **(e)** `resolveDurationMin` and `isOverridden` take the weekday row at its CHAIN position, and the shipped tests were updated to pass it explicitly as null — a three-argument call would have delivered the per-day row into the weekday slot and still produced the old answers, leaving the tests passing while asserting something else; **(f)** one shipped defect fixed in passing: `buildDurationSheet` called `isOverridden` with the old arity, which would have left the override marker reading only two of the three levels; **(g)** `nextFreeBlockStart` takes the date-filtered set AND resolved spans, per §5.2. **Not done, and correctly Phase 4/5:** the block WRITE paths (`moveSchoolBlock`, the block sheet) still address `block.start_min` directly. That is §7.1's "write the level that is winning" rule, and there is no live divergence today because nothing yet creates a weekday or date row with a non-null span — `createSchoolBlock`'s Mon–Fri rows are all NULL/NULL, which resolve to the block's own span. |
 | 2026-08-23 (Phase 2 build) | **The Worker API.** Six new routes (`PUT`/`DELETE /api/wall/slots/weekday`, `PUT`/`DELETE /api/wall/school-blocks/:id/weekdays`, `PUT`/`DELETE /api/wall/school-blocks/:id/dates`), four widened (`GET /api/wall/slots` gains `slotWeekdays`; `PUT /api/wall/slots/day` gains `startMin` under §4.1's full-row contract; `GET /api/wall/school-blocks` gains `blockWeekdays` and `blockDates`; `POST /api/wall/school-blocks` takes a `weekdays` list and writes the block with its schedule in one `batch()`, defaulting to Mon–Fri server-side), and §3.4's cleanup on the block side. §8's test 9 plus 22 route tests; 598 tests green. **§11.6 and §11.7 were put to Ray and answered before any of it was written**, per §9's gate. §11.6: un-placing a chore is **standing-scoped and non-destructive** — it deletes the `wall_slots` row and nothing else, having *stopped* sweeping `wall_slot_days` too. Two findings decided it, neither visible from the design alone: **(a)** this item's own recommended "third shape" cannot be built, because `DELETE /api/wall/slots` has exactly one caller in the wall app and the wall is never told a chore was deleted — there is no subject-disappeared event to move the cleanup to, so that option would have left the override levels with no cleanup path at all; **(b)** the sweep already had no honest undo before this slice, since `revertPlacement` restores only the standing row, so every per-day override the shipped sweep destroyed was already unrecoverable behind a button promising otherwise. §11.7 is answered in the same stroke and is what makes (a) safe: §2.1 gains a **gate** — a chore is placed iff a `wall_slots` row exists, and the weekday and date levels are overrides *on* a placement, never sources of one — which is the shipped behaviour of `wall_slot_days` stated rather than a new rule. Accepted cost, recorded because §3.4 first called it a hazard: re-placing a chore restores its weekday and date times. §3.4 is rewritten around the asymmetry (a deleted **block** really is the subject disappearing, so its cleanup ships as designed; a chore is not). Also corrected: `isValidSlotDuration`'s comment claimed `wall_slot_days` never stores null, which §4.1 changes. Two Phase 4/5 loose ends, neither visible today: `applyOptimisticUnplace` (`day-ui.js:389`) still drops `slotDays` locally where the server now keeps them — invisible, since dormant rows render nothing, but it should stop; and the day view must send each level's OWN value on an override write, never the resolved one (§4.1). |
 | 2026-08-23 (Phase 1 build) | **First code.** Migrations `0015_wall_slot_weekdays`, `0016_wall_slot_days_start`, `0017_wall_school_block_scopes`, `0018_wall_school_block_weekday_backfill`, all registered; `isValidWeekday`, `isValidStartMinOverride`, `isValidBlockSpan`, `isValidOccurs`, `isValidBlockDateException` in `worker/validation.js`; §8's tests 7, 7a and 8, migration-shape tests in the repo's existing style, and a new `tests/migrations-apply.test.js` that applies every migration to a real in-memory SQLite database. Six corrections to this document, found by reading it against the shipped code before writing any of it: **(a)** §9 and §3.3a both claimed 0018 makes weekend blocks stop rendering on apply — it does not, nothing reads the new tables until Phase 3's `blocksForChildOn`, so Phase 1 is entirely silent and §0.1's fix lands in Phase 3; **(b)** §9's "Phases 1–3 are shippable on their own" hid a real hazard in the Phase 3 → 5 gap — once the day view filters on `blockOccursOn`, `createSchoolBlock` mints a block with no weekday rows and it renders nowhere, which is what makes §4.2's server-side Mon–Fri default load-bearing and Phase 2 a prerequisite for shipping Phase 3; **(c)** §3.2's comment said "0011 is not edited" where `wall_slot_days` is created in **0010**; **(d)** §4.2 said "six new, two widened" over a table listing **four** widened, which is where Phase 2's estimate came from; **(e)** §5.2 said `blocksForChild` has three call sites — there are four, the missing one being `day-ui.js:933`'s `nextFreeBlockStart`; **(f)** §11.6's heading said Phase 4 where §9 and §12 said Phase 2 — §9 was right. Also recorded: 0018's split from 0017 is not merely prudent, `Online_Revamp` §3.7.1 requires it ("a migration that adds a table and backfills it is two files"); D1 does not enforce the `REFERENCES` clauses on this database, so §3.4's explicit cleanup is the only thing keeping scope rows from orphaning; and `handleWallSlotsGet`'s `SELECT *` means 0016 alone starts returning `start_min` in the `days[]` array with no Worker change. |
 | 2026-08-23 | Written. Prompted by Ray reporting school blocks on weekends (§0.1), then asking for per-weekday times on blocks and chores alike (§0.2) and a "only this occurrence" scope for both (§0.3). Answers captured in-session: existing blocks backfill to **Mon–Fri**; per-day times are **overrides on a default span**, not seven independent spans; **design first, code next session**. Supersedes redesign slice §3.3, §5.4's no-per-day-span note, and §17.1. |

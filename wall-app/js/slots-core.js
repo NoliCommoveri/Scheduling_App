@@ -76,6 +76,12 @@
     return idx;
   }
 
+  // Placement Scopes §2.1 — the weekday level's key: the placement key plus
+  // the weekday, exactly as a day key is the placement key plus the date.
+  function weekdayKey(childId, kind, key, instanceKey, weekday) {
+    return slotKey(childId, kind, key, instanceKey) + NUL + weekday;
+  }
+
   // Same shape for `wall_slot_days` overrides, keyed with the date appended.
   function indexDays(days) {
     var idx = Object.create(null);
@@ -97,6 +103,24 @@
     return daysIndex[key] || null;
   }
 
+  // Placement Scopes §2.1 — `GET /api/wall/slots`'s `slotWeekdays` array,
+  // indexed like `indexDays` with the weekday appended instead of the date.
+  function indexWeekdays(weekdays) {
+    var idx = Object.create(null);
+    (weekdays || []).forEach(function (w) {
+      idx[weekdayKey(w.child_id, w.subject_kind, w.subject_key, w.instance_key, w.weekday)] = w;
+    });
+    return idx;
+  }
+
+  // `weekday` is the NUMBER (0=Sun..6=Sat), already derived from the rendered
+  // date by `TimeCore.weekdayOf`. This file never converts a date itself —
+  // there is one implementation of that conversion and it is not here (§2.3).
+  function weekdayOverrideFor(weekdaysIndex, row, weekday) {
+    var key = weekdayKey(placementChildId(row), subjectKind(row), subjectKeyOf(row), instanceKeyOf(row), weekday);
+    return weekdaysIndex[key] || null;
+  }
+
   // Row 3/4 of §3.5.1's chain with no override applied at all — what the
   // parent authored, or the 15-minute fallback. Exported on its own so the
   // adjust sheet (day-ui.js, §16 Phase 5b) can label "Use the assigned
@@ -105,16 +129,53 @@
     return row.expected_duration_min != null ? row.expected_duration_min : DEFAULT_DURATION_MIN;
   }
 
-  // §3.5.1's four-step chain, resolved per chip per rendered date:
-  // per-day override, standing override, the parent's own estimate, 15 min.
-  function resolveDurationMin(row, slot, dayOverride) {
+  // §3.5.1's chain with Placement Scopes §2.1's weekday row inserted at
+  // position 2 — five steps now, resolved per chip per rendered date:
+  // per-DATE override, per-WEEKDAY override, standing override, the parent's
+  // own estimate, 15 min.
+  //
+  // `weekdayOverride` sits between `dayOverride` and `slot` in the argument
+  // list because that is its position in the chain; a caller that has no
+  // weekday row passes null and gets the four-step answer unchanged.
+  function resolveDurationMin(row, slot, weekdayOverride, dayOverride) {
     if (dayOverride && dayOverride.duration_min != null) return dayOverride.duration_min;
+    if (weekdayOverride && weekdayOverride.duration_min != null) return weekdayOverride.duration_min;
     if (slot && slot.duration_min != null) return slot.duration_min;
     return assignedDurationMin(row);
   }
 
-  function isOverridden(slot, dayOverride) {
-    return !!((dayOverride && dayOverride.duration_min != null) || (slot && slot.duration_min != null));
+  // Placement Scopes §2.1 — the start time resolves on its OWN chain, and
+  // independently of the duration: a Friday row may move a chore without
+  // saying anything about how long it takes.
+  //
+  // Row 3 is a GATE, not merely the last resort (§11.6/§11.7's answers). A
+  // chore is placed if and only if a `wall_slots` row exists for it; the
+  // weekday and date levels are overrides ON a placement and neither can
+  // create one. A `wall_slot_weekdays` row with a start_min and no standing
+  // row under it therefore resolves to UNPLACED — the chore sits in the tray
+  // all week, including on its own weekday. That is deliberate: it is what
+  // makes un-placing a chore safe to leave standing-scoped (the override rows
+  // it leaves behind go dormant rather than orphaned, worker §3.4), and it is
+  // this file's existing behaviour for `wall_slot_days` stated out loud
+  // rather than a new rule.
+  //
+  // `scope` names which level supplied the start time being rendered —
+  // 'day' | 'weekday' | 'standing' | null. §6.1's sheet and §7.1's drag rule
+  // both need to answer "which level am I looking at?", so it is answered
+  // once, here, with tests, rather than re-derived at each gesture.
+  function resolveStartMin(slot, weekdayOverride, dayOverride) {
+    if (!slot) return { startMin: null, scope: null };
+    if (dayOverride && dayOverride.start_min != null) return { startMin: dayOverride.start_min, scope: "day" };
+    if (weekdayOverride && weekdayOverride.start_min != null) return { startMin: weekdayOverride.start_min, scope: "weekday" };
+    return { startMin: slot.start_min, scope: "standing" };
+  }
+
+  function isOverridden(slot, weekdayOverride, dayOverride) {
+    return !!(
+      (dayOverride && dayOverride.duration_min != null) ||
+      (weekdayOverride && weekdayOverride.duration_min != null) ||
+      (slot && slot.duration_min != null)
+    );
   }
 
   // §9 — a chore is a party to a collision only when it is PRIVATE
@@ -154,15 +215,39 @@
   }
 
   // The full read for one row on one rendered date: where it starts (null =
-  // unplaced, belongs in the tray), how tall it is, and whether that height
-  // is the parent's own estimate or a wall override.
-  function resolveChip(slotsIndex, daysIndex, row, date) {
+  // unplaced, belongs in the tray), how tall it is, whether that height is
+  // the parent's own estimate or a wall override, and — Placement Scopes
+  // §5.1 — which level supplied the start time.
+  //
+  // §2.1's CLAMP lives here, and here is the only place it can live. The
+  // start and the duration resolve on independent chains, so no single write
+  // ever sees the composed pair: a weekday row moving the dishes to 23:45
+  // validates fine against its own null duration, and the standing row's 60
+  // minutes then composes a chip ending at 00:45 — outside the grid this is
+  // absolutely positioned in. Each override route validates only what its own
+  // row carries (worker §4.3) and the composition is clamped at render:
+  // `durationMin = min(durationMin, 1440 - startMin)`, with `clamped` set so
+  // a caller can say so rather than silently drawing a shortened chip.
+  //
+  // `handleWallSlotPut`'s own past-midnight check is untouched — a standing
+  // row does carry both numbers, so rejecting the pair there is free.
+  function resolveChip(slotsIndex, weekdaysIndex, daysIndex, row, date) {
     var slot = placementFor(slotsIndex, row);
+    var weekdayOverride = weekdayOverrideFor(weekdaysIndex, row, g.TimeCore.weekdayOf(date));
     var dayOverride = dayOverrideFor(daysIndex, row, date);
+    var start = resolveStartMin(slot, weekdayOverride, dayOverride);
+    var durationMin = resolveDurationMin(row, slot, weekdayOverride, dayOverride);
+    var clamped = false;
+    if (start.startMin != null && start.startMin + durationMin > 1440) {
+      durationMin = 1440 - start.startMin;
+      clamped = true;
+    }
     return {
-      startMin: slot ? slot.start_min : null,
-      durationMin: resolveDurationMin(row, slot, dayOverride),
-      overridden: isOverridden(slot, dayOverride),
+      startMin: start.startMin,
+      durationMin: durationMin,
+      overridden: isOverridden(slot, weekdayOverride, dayOverride),
+      scope: start.scope,
+      clamped: clamped,
     };
   }
 
@@ -174,10 +259,13 @@
     placementChildId: placementChildId,
     indexSlots: indexSlots,
     indexDays: indexDays,
+    indexWeekdays: indexWeekdays,
     placementFor: placementFor,
     dayOverrideFor: dayOverrideFor,
+    weekdayOverrideFor: weekdayOverrideFor,
     assignedDurationMin: assignedDurationMin,
     resolveDurationMin: resolveDurationMin,
+    resolveStartMin: resolveStartMin,
     isOverridden: isOverridden,
     isPrivateChore: isPrivateChore,
     rangesOverlap: rangesOverlap,
