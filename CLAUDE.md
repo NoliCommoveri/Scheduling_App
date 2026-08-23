@@ -66,7 +66,11 @@ stays accurate until those phases land; the session that builds them updates it,
 table list, §III.E's bullet, §IV.B's placement-write check and §VII's row in the same commit.
 What changes: a placement resolves through **three scopes** — this occurrence (date), this weekday,
 and the standing placement — for chores and school blocks alike, and a school block's **weekday list
-becomes its schedule**, which is what stops it rendering on Saturdays. Three tables join the wall's
+becomes its schedule**, which is what stops it rendering on Saturdays. For a block the date scope
+also carries **existence**, so one date can disagree with the weekly rule in either direction — a
+skipped school day, or a backup one on a weekday the block is not scheduled for. A chore's scopes
+stay time-only: its existence is the assignment row's fact, and the wall neither invents nor hides
+one. Three tables join the wall's
 own (`wall_slot_weekdays`, `wall_school_block_weekdays`, `wall_school_block_dates`), one nullable
 `start_min` joins `wall_slot_days`, and six `/api/wall/*` routes are added.
 **Nothing widens on `assignments`**: every new table is an override the wall owns and resolves at

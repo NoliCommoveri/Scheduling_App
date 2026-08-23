@@ -30,8 +30,14 @@ himself fighting the carry-forward on times as well."* That condition is now met
 'only this occurrence' ability."* Duration already has this for chores (§3.5.2's **Just this one**,
 writing `wall_slot_days`); start time does not, and school blocks have neither.
 
+**0.4 — And sometimes the week's rule is simply wrong for one day.** Ray, on Sunday: *"it's a backup
+school day but not regularly scheduled."* On a skip: *"yes a skip would be awesome."* A weekly
+schedule with no per-date exception cannot express either — it can only be edited, which means
+changing next week to fix this week and remembering to change it back.
+
 These are one feature. A placement needs **three scopes**, and both kinds of placeable thing —
-a chore and a school block — need all three.
+a chore and a school block — need all three. For a school block the most specific scope carries
+**existence** as well as time (§2.2.1), which is what makes §0.4's two cases one column.
 
 ```
 [DECISION] One placement mechanism, three scopes, both subjects
@@ -148,17 +154,73 @@ Consequence: this is the one asymmetry between the two subjects. A chore's
   weekday row cannot suppress the chore, because the assignment row already
   decided it exists. Stated in both directions in §2.1 and here, because a
   reader who learns one half and assumes the other will be wrong.
+Consequence: the weekday list is the RULE, and a rule needs an exception for
+  one date in both directions — see §2.2.1. A weekday list alone cannot
+  express "no school today, we're out" or "not normally Sundays, but this
+  Sunday yes."
+Locked for: this slice.
+```
+
+#### 2.2.1 The date row decides that date, in both directions
+
+Ray, 2026-08-23, on whether Sunday should be in the backfill: *"it's a backup school day but not
+regularly scheduled."* And, on a skip: *"yes a skip would be awesome."*
+
+Those are the same feature. A backup day is a skip run backwards — one date that disagrees with the
+weekday rule — and building them as two mechanisms (an exclusion flag here, an ad-hoc addition
+there) would give the wall two ways to answer one question.
+
+```
+[DECISION] A date row states the outcome for that date, overriding the weekday rule entirely
+Decided: `wall_school_block_dates` carries `occurs INTEGER NOT NULL DEFAULT 1`
+  alongside its optional span. The weekday list decides every date that has
+  no row; a date WITH a row is decided by the row:
+    occurs = 1, span set    -> happens, at that span            ("just this once, later")
+    occurs = 1, span NULL   -> happens, at the weekday or default span
+                               ("backup Sunday" — even if Sunday has no weekday row)
+    occurs = 0              -> does not happen                  ("no school today")
+  no row at all             -> the weekday list decides         (the normal case)
+Rationale: Ray's two answers arrived as separate requests and are one
+  mechanism. Modelling them separately costs a second column, a second
+  button, and a reader who has to know which of two tables to look in to
+  answer "is there school on the 14th."
+Rationale: it also makes the Sunday question stop mattering. Sunday stays OUT
+  of the Mon-Fri backfill (§3.3) because it is not regularly scheduled — and
+  a backup Sunday is then one tap on the Sunday itself, not a permanent
+  schedule change that has to be undone next week.
+Consequence: `occurs = 0` with a span set is meaningless and the Worker
+  rejects it (§4.3). A skipped day has no time.
+Consequence: an `occurs = 1` row on an unscheduled weekday is the ONLY way a
+  block appears on a day its weekday list excludes. §2.2's row-0 rule is
+  otherwise absolute, so there is exactly one door and it is this one.
+Consequence: this does NOT apply to chores. A chore exists on a date because
+  it was assigned; the wall cannot conjure one for a Sunday or suppress one
+  on a Friday, and §2.1's tables stay time-only. See §11.3 for the one
+  half of this a chore might still want.
 Locked for: this slice.
 ```
 
 **Span**, resolved per block per rendered date:
 
+**Does it happen at all?**
+
+| # | Source | Outcome |
+|---|---|---|
+| 0 | `wall_school_block_dates` row for this date | **the row decides** — `occurs = 1` yes, `occurs = 0` no (§2.2.1) |
+| 1 | no date row, `wall_school_block_weekdays` row for weekday W exists | yes |
+| 2 | no date row, no weekday row | **no — the block does not render** |
+
+**And if it happens, at what span?**
+
 | # | Source | Meaning |
 |---|---|---|
-| 0 | no `wall_school_block_weekdays` row for weekday W | **the block does not render at all** |
-| 1 | `wall_school_block_dates` for this block **and this date**, span set | "just this one" |
+| 1 | `wall_school_block_dates` for this date, span set | "just this one" |
 | 2 | `wall_school_block_weekdays` for weekday W, span set | "every Friday" |
 | 3 | `wall_school_blocks.start_min` / `end_min` | the block's default span (§5.4) |
+
+Row 2 is skipped when the date is a backup day — there is no weekday row to read — so a backup
+Sunday with no span of its own lands on the block's default span, which is the sensible reading of
+"we're doing Thursday's school on Sunday."
 
 ```
 [DECISION] A block's span resolves as a PAIR, not column by column
@@ -279,10 +341,17 @@ CREATE TABLE IF NOT EXISTS wall_school_block_weekdays (
   PRIMARY KEY (block_id, weekday)
 );
 
+-- §2.2.1 — this table is the exception to the weekday rule, in BOTH
+-- directions. A row here decides its date outright: occurs = 0 is "no school
+-- today" (a field trip, a sick day), occurs = 1 on a weekday the block is not
+-- scheduled for is a backup day (Ray, 2026-08-23: Sunday is "a backup school
+-- day but not regularly scheduled"). A skipped day has no span — the Worker
+-- rejects occurs = 0 with start_min/end_min set.
 CREATE TABLE IF NOT EXISTS wall_school_block_dates (
   block_id      TEXT    NOT NULL REFERENCES wall_school_blocks(id),
   date          TEXT    NOT NULL,          -- YYYY-MM-DD
-  start_min     INTEGER,
+  occurs        INTEGER NOT NULL DEFAULT 1,-- 1 = happens (default), 0 = skipped
+  start_min     INTEGER,                   -- NULL (with end_min) = weekday row, else the block's own
   end_min       INTEGER,
   PRIMARY KEY (block_id, date)
 );
@@ -294,8 +363,11 @@ CREATE TABLE IF NOT EXISTS wall_school_block_dates (
 -- disappear from every day.
 --
 -- Mon-Fri (1..5), chosen by Ray in-session 2026-08-23. Saturday is the
--- family's Sabbath (§6) and Sunday is left off pending his per-block choice —
--- both are one checkbox away in the block sheet (§6.2).
+-- family's Sabbath (§6). Sunday is left off deliberately, not pending a
+-- decision: it is "a backup school day but not regularly scheduled" (Ray,
+-- same session), which is a per-DATE fact, not a weekly one — §2.2.1's
+-- occurs = 1 row is how a backup Sunday happens, one tap on the day itself
+-- rather than a standing schedule change that has to be undone next week.
 --
 -- NULL span on each row = inherit the block's own start_min/end_min, so
 -- nothing MOVES here. The only behaviour change on apply is that weekend
@@ -360,14 +432,17 @@ device token exactly as the existing wall routes do (§III.E's fourth bound).
 | `/api/wall/school-blocks` | GET | — | **Widened**: response gains `blockWeekdays` and `blockDates` beside `blocks` and `blockCourses`. |
 | `/api/wall/school-blocks/:id/weekdays` | PUT | `{weekday, startMin, endMin}` | **NEW.** Creates or updates the weekday row — **this is what schedules the block on that day.** Span both-or-neither (§2.2). |
 | `/api/wall/school-blocks/:id/weekdays` | DELETE | `{weekday}` | **NEW.** Unschedules that weekday. The block stops rendering there. |
-| `/api/wall/school-blocks/:id/dates` | PUT | `{date, startMin, endMin}` | **NEW.** "Just this one" for a block's span. Span both-or-neither. |
-| `/api/wall/school-blocks/:id/dates` | DELETE | `{date}` | **NEW.** Clears the occurrence override. |
+| `/api/wall/school-blocks/:id/dates` | PUT | `{date, occurs, startMin, endMin}` | **NEW.** The date-level exception (§2.2.1): a move, a skip (`occurs: 0`), or a backup day (`occurs: 1` on an unscheduled weekday). Span both-or-neither, and forbidden when `occurs` is 0. |
+| `/api/wall/school-blocks/:id/dates` | DELETE | `{date}` | **NEW.** Clears the exception; the date falls back to the weekday rule. |
 
 `GET /api/wall/school-blocks` stays unwindowed for the reason its comment already gives — blocks
 carry no date — but `blockDates` **does** carry one, and is returned in full rather than filtered
-to the poll's 14-day window. Per-date span overrides are rare by construction (they are the
-"just today" escape hatch), and `MAX_QUERY_ROWS` already caps the response. If that ever stops being
-true, windowing `blockDates` alone is a one-line change and does not alter the resolver.
+to the poll's 14-day window. Date rows are rare by construction (they are the exception to the
+weekly rule, one per unusual day), and `MAX_QUERY_ROWS` already caps the response. **A row is worth
+keeping after its date passes** — it is the record of why last Tuesday looked odd, and the day view
+can be pointed backwards — but they accumulate at maybe a few dozen a school year, which is nothing.
+If that ever stops being true, windowing `blockDates` alone is a one-line change and does not alter
+the resolver.
 
 ### 4.3 Validation (`worker/validation.js`)
 
@@ -377,6 +452,9 @@ true, windowing `blockDates` alone is a one-line change and does not alter the r
   `isValidSlotDuration` already handles a nullable override).
 - `isValidBlockSpan(startMin, endMin)` — both null, or both valid `startMin`s with
   `endMin > startMin`. This is the pair rule from §2.2 in one function, called by both block routes.
+- `occurs` — strictly `0` or `1` (`value === 0 || value === 1`), not merely truthy: a JSON body
+  carrying `"0"` or `false` should be a 400, not a silently coerced skip that hides a client bug.
+  **`occurs: 0` with a span set is a 400** (§2.2.1 — a skipped day has no time).
 - The existing `parseSlotKey` / `resolveSlotChildId` are reused verbatim by the weekday routes —
   including the `claim`-chore household sentinel and the active-child check (§III.E bound 1).
 
@@ -409,10 +487,16 @@ carries a duration override, unchanged in spirit.
 The file gains a placement section beside its existing completion rollups, with a comment saying so:
 
 ```js
-blockOccursOn(weekdaysIndex, blockId, weekday)      -> boolean     // §2.2 row 0
+blockOccursOn(weekdaysIndex, datesIndex, blockId, date, weekday)  -> boolean   // §2.2's first table
 resolveBlockSpan(block, weekdayRow, dateRow)        -> { startMin, endMin, scope }
 scheduledWeekdays(weekdaysIndex, blockId)           -> [0..6]      // the sheet's checklist
+dateExceptionFor(datesIndex, blockId, date)         -> row | null  // §2.2.1, for the sheet's banner
 ```
+
+`blockOccursOn` takes both indexes and both keys because §2.2.1 makes the date row authoritative:
+the weekday list is consulted only when no date row exists. Getting that precedence backwards would
+make a skip look like it worked on scheduled days and silently fail on backup days, which is the
+subtle direction of the bug — hence tests 5 and 5a.
 
 `day-ui.js`'s `blocksForChild()` — the function §0.1 identified — becomes
 `blocksForChildOn(state, childId, date)`, filtering by `child_id` **and** `blockOccursOn`. All three
@@ -482,10 +566,26 @@ old wording would be the only one of the three that describes time rather than r
 │  Fri  ●   8:00 – 10:30    (changed)     │   ← its own weekday row
 │  Sat  ○                                 │
 │                                         │
-│  Just today: 10:00 – 12:30   [ Clear ]  │   ← only when a date row exists
+│  Today, Sun 30 Aug                      │   ← §2.2.1, always shown
+│   ( ) Not today                         │
+│   (•) As scheduled  ·  9:00 – 11:30     │
+│   ( ) Just today…   ·  10:00 – 12:30    │
+│                                         │
 │  [ Remove block ]           [ Done ]    │
 └─────────────────────────────────────────┘
 ```
+
+**The "Today" group is §2.2.1 made visible**, and it is three radio options rather than a hidden
+override that only appears once it exists:
+
+- **Not today** writes `occurs: 0`. On a day the block is scheduled, this is the skip.
+- **As scheduled** deletes the date row — the weekday rule takes over again.
+- **Just today…** opens the span stepper and writes `occurs: 1` with a span.
+
+On a day the block is **not** scheduled by weekday (a Sunday), the same group reads **Not today
+(selected) · Add for today · Add at a different time** — the identical three writes, worded for the
+direction the family is going. This is the backup-day control, and it is on the block itself, which
+is where someone looking at "Morning School" would think to find it.
 
 A toggle writes or deletes the weekday row; tapping a scheduled day's time opens the same
 15-minute stepper the duration sheet uses, pre-filled from the level below so both ends of the span
@@ -493,7 +593,32 @@ are always written together (§2.2). **A block with no days checked shows an inl
 sheet** — *"Not scheduled on any day — this block won't appear."* — because that state is reachable
 and otherwise invisible the moment the sheet closes.
 
-### 6.3 Where the "+ School" default comes from
+### 6.3 Reaching a block that is not on screen
+
+§6.2's control lives in the block's own long-press sheet — which works for a skip, since the block
+is right there, but **not for a backup Sunday: the block is not drawn, so there is nothing to press.**
+
+The tray header's existing `+ School` button (`day-ui.js:898`) grows to cover it. Today it mints a
+new block unconditionally. It becomes: if that child has blocks **not scheduled on this date**, a
+small sheet listing them —
+
+```
+┌─ Add school — Ellie ────────────────────┐
+│  Morning School    9:00 – 11:30   [Add] │   ← occurs = 1 for this date
+│  Afternoon School  1:00 – 2:00    [Add] │
+│  ─────────────────────────────────────  │
+│  [ New block… ]                         │   ← today's behaviour
+└─────────────────────────────────────────┘
+```
+
+— and if there are none (or the child has no blocks at all), it goes straight to minting a new one,
+exactly as it does now. A family that never uses backup days never sees the sheet.
+
+**Why not a new block each Sunday instead?** Because a block carries its member courses (§5.2), and
+a fresh block starts empty — so "do Thursday's school on Sunday" would mean re-checking every course
+by hand, on the day, for a session that already exists. Reusing the block is the whole point.
+
+### 6.4 Where the "+ School" default comes from
 
 `createSchoolBlock` (`day-ui.js:953`) mints the block and must now also mint its weekday rows.
 **A new block is scheduled Mon–Fri**, matching §3.3's backfill, so the two paths agree and a family
@@ -563,11 +688,17 @@ and IO-free precisely so this is possible (`CLAUDE.md` §I.B).
    with the weekday row absent.
 4. **Independence** — a weekday row with `start_min` set and `duration_min` NULL takes its duration
    from the standing row, not from the weekday row's null.
-5. **`blockOccursOn`** — a block with Mon–Fri rows renders Monday, not Saturday; a block with no
-   rows renders nowhere.
+5. **`blockOccursOn`, weekday level** — a block with Mon–Fri rows renders Monday, not Saturday; a
+   block with no rows renders nowhere.
+5a. **`blockOccursOn`, date level beats weekday level, both ways** (§2.2.1) — an `occurs: 0` row on a
+   scheduled Monday suppresses it; an `occurs: 1` row on an unscheduled Sunday renders it; and a
+   backup Sunday with no span of its own takes the block's DEFAULT span, not a weekday row's
+   (there isn't one to read). The precedence is the thing being pinned: a date row wins even when
+   the weekday list disagrees, in whichever direction it disagrees.
 6. **Block span resolves as a pair** — a date row with a span beats a weekday row with a span beats
    the block's own; a weekday row with a NULL span does not contribute half of one.
 7. **`isValidBlockSpan`** rejects one-of-two, rejects `end <= start`, accepts both-null.
+7a. **`occurs`** rejects `"0"`, `false`, `2`, `null`; rejects `occurs: 0` carrying a span.
 8. **`isValidWeekday`** rejects `7`, `-1`, `"1"`, `1.5`.
 9. **Route tests** (`worker-routes.test.js`): each new route 401s on a device token; the weekday
    routes reject an inactive `childId`; a PUT with both fields null is a 400; DELETE of a subject
@@ -580,6 +711,9 @@ Manual acceptance (§13 of the redesign slice's own checks still apply):
 
 11. On a Saturday, no school block renders in the day view. On Monday, it does. **This is §0.1.**
 12. Move a chore on Friday, tap "Only Fridays", navigate to Thursday — Thursday is unchanged.
+12a. On a scheduled Monday, "Not today" — the block goes, and Tuesday still has it. On a Sunday,
+    `+ School` → Add — the block appears at its default span with its member courses intact, and
+    the following Sunday does not have it.
 13. Apply the migrations on a copy of live data: no block moves, weekend blocks stop appearing,
     every weekday block keeps its time.
 
@@ -592,15 +726,15 @@ document** (his instruction, 2026-08-23: design first, code next session).
 
 | Phase | Work | Est. |
 |---|---|---|
-| **1** | Migrations 0015–0017 + registry; validation helpers + their tests. Apply on an empty DB and on a copy of live data. | ~1 h |
+| **1** | Migrations 0015–0017 + registry; validation helpers + tests 7, 7a, 8. Apply on an empty DB and on a copy of live data. | ~1 h |
 | **2** | Worker: the six new routes, the two widened ones, §3.4's delete cleanup, route tests. | ~1.5 h |
-| **3** | Pure layer: `time-core.weekdayOf`, `slots-core` chain + `scope`, `school-core` placement, `blocksForChildOn`, tests 1–8 and 10. | ~1.5 h |
+| **3** | Pure layer: `time-core.weekdayOf`, `slots-core` chain + `scope`, `school-core` placement, `blocksForChildOn`, tests 1–6 (incl. 5a) and 10. | ~1.5 h |
 | **4** | Chore UI: §6.1's sheet, §7.1's drag rule, §7.2's toast. | ~1.5 h |
-| **5** | Block UI: §6.2's sheet, §6.3's creation default, §5.3's member fix. | ~1.5 h |
+| **5** | Block UI: §6.2's sheet including the Today group, §6.3's add-for-today sheet, §6.4's creation default, §5.3's member fix. | ~2 h |
 | **6** | `CACHE_NAME` bump, §8's manual checks on the tablet, doc reconciliation: `CLAUDE.md` §I.A/§III.E/§VII amended from "authorized, unbuilt" to shipped, redesign slice §3.3/§5.4/§17.1 pointers, this file's status line. | ~1 h |
 
-**~8 hours.** Phases 1–3 are shippable on their own — they change no behaviour, since nothing writes
-the new tables until Phase 4 — so the natural break is after Phase 3.
+**~8.5 hours.** Phases 1–3 are shippable on their own — they change no behaviour, since nothing
+writes the new tables until Phase 4 — so the natural break is after Phase 3.
 
 ---
 
@@ -629,28 +763,28 @@ recorded as such rather than re-litigated as a fresh narrowing.
 
 ---
 
-## 11. Open items — flagged for Ray, not settled
+## 11. Open items
 
-Per `CLAUDE.md` §VI.C. None of these blocks Phase 1.
+Per `CLAUDE.md` §VI.C — flagged rather than settled. None of these blocks Phase 1, and the first two
+are answered.
 
-**11.1 Is Sunday a school day?** The backfill is Mon–Fri (Ray, 2026-08-23), but §6 of the redesign
-slice says Sunday-first was chosen so *"the busy days [are] contiguous and [the] quiet one close[s]
-the week"* — which reads as though Sunday carries something. If school happens on Sundays, the
-backfill should be `0..5` rather than `1..5`. One character in `migrations/0017`, and only until it
-is applied.
-
-**11.2 "No school today" — a skip, not a move.** §2.2 gives a block a per-date *span* override but
-no way to say "not today" (a field trip, a sick day). The table is the right home for it — a
-`skipped INTEGER NOT NULL DEFAULT 0` on `wall_school_block_dates`, one more button in §6.2's sheet —
-but Ray asked for time overrides, and a skip is a different feature wearing the same table (the
-argument §17.1 made about start times on `wall_slot_days`, which is now the argument for asking
-rather than assuming). **Not built. Worth ~20 minutes if wanted.**
+**11.1 and 11.2 — ANSWERED 2026-08-23, folded into the design.** Sunday is *"a backup school day
+but not regularly scheduled"* and a skip is wanted. Both are now §2.2.1's single mechanism: the
+backfill stays Mon–Fri, and `wall_school_block_dates.occurs` decides any date that disagrees with
+the weekly rule, in either direction. They are recorded here only so the numbering below stays
+stable against the first draft of this file.
 
 **11.3 Should a chore's weekday row be able to unplace it?** §2.1 says the weekday level answers
 only *when*, never *whether* — a chore exists because it was assigned. But "on Fridays this one goes
 back in the tray" is expressible in the same table (a weekday row meaning "unplaced" rather than
 "unset"), and a family that finishes early on Friday might want exactly that. It needs a third state
 per column, not just a nullable one, so it is genuinely more than a checkbox. **Not built.**
+
+Note that §2.2.1 makes this asymmetry sharper than it was in the first draft: a school block can now
+be added to or removed from a single date, and a chore cannot. That is defensible — a chore's
+existence is the Management App's fact, and the wall inventing or hiding one would be the wall
+disagreeing with the parent about what was assigned, which is the line §1 exists to hold. But it is
+the kind of asymmetry that reads as an oversight to whoever meets it next, so it is written down.
 
 **11.4 Does a weekday override survive the standing time changing?** As designed, yes — the more
 specific level keeps winning, silently. §6.1's sheet marks which level is in force, so it is
@@ -670,3 +804,4 @@ and neither needs to change. Noted so the next session does not go looking.
 | Date | Change |
 |---|---|
 | 2026-08-23 | Written. Prompted by Ray reporting school blocks on weekends (§0.1), then asking for per-weekday times on blocks and chores alike (§0.2) and a "only this occurrence" scope for both (§0.3). Answers captured in-session: existing blocks backfill to **Mon–Fri**; per-day times are **overrides on a default span**, not seven independent spans; **design first, code next session**. Supersedes redesign slice §3.3, §5.4's no-per-day-span note, and §17.1. |
+| 2026-08-23 (second pass) | §11.1 and §11.2 answered, and the answers merged into one mechanism rather than two features. Sunday is *"a backup school day but not regularly scheduled"* and a skip is *"awesome"* — which are the same fact pointing opposite ways, so `wall_school_block_dates` gains **`occurs`** (§2.2.1) and decides its own date outright: `0` skips a scheduled day, `1` adds an unscheduled one, absent defers to the weekday list. The Mon–Fri backfill therefore stands unchanged — a backup Sunday is a per-date act, not a standing schedule. New: §2.2.1's decision, the split existence/span tables in §2.2, the `occurs` column and its validation, §6.2's three-way **Today** group, and §6.3's add-for-today sheet on `+ School` (without which a backup Sunday has no affordance at all — the block is not drawn, so there is nothing to long-press). Tests 5a, 7a, 12a. Phase 5 grows ~30 min. |
