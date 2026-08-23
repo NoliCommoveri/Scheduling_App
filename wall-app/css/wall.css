@@ -1532,6 +1532,128 @@ button {
   text-align: center;
 }
 
+/* Placement Scopes §6.2 — the block sheet grew from "end time + label" into
+   the block's whole schedule, so its card is the one sheet here that can
+   outgrow a short tablet. Scoped to this overlay: no other sheet scrolls, and
+   none of them should start. */
+.school-block-sheet-overlay .duration-sheet-card {
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.block-schedule {
+  margin-top: 1.25rem;
+  border-top: 1px solid var(--panel-2);
+  padding-top: 0.75rem;
+  text-align: left;
+}
+
+.block-day-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* 44px rows throughout — this is a wall tablet, and every row here is either
+   a toggle or a button. */
+.block-day-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 44px;
+}
+
+.block-day-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex: 0 0 5.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.block-day-toggle input[type="checkbox"] {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+}
+
+.block-day-span {
+  padding: 0.35rem 0.7rem;
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* §6.2's "(changed)" marker, as an accent border rather than a word: the row
+   already carries two numbers, and a third label makes seven rows unreadable
+   from across the room. A day showing the default is a plain ghost button. */
+.block-day-changed {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.block-day-span.is-hidden {
+  visibility: hidden;
+}
+
+.block-day-warning {
+  margin: 0.75rem 0 0;
+  color: var(--accent);
+  font-size: 0.95rem;
+}
+
+/* §2.2.1's exception for the date on screen. Set off from the weekday list
+   above it, because the two answer different questions — "what is Friday" and
+   "what about this one Friday". */
+.block-today {
+  margin-top: 1rem;
+  border-top: 1px solid var(--panel-2);
+  padding-top: 0.75rem;
+}
+
+.block-today-head {
+  font-weight: 700;
+  margin-bottom: 0.4rem;
+}
+
+.block-today-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.block-today-row label {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 44px;
+  font-size: 1rem;
+}
+
+.block-today-row input[type="radio"] {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+}
+
+.block-today-span {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* §6.3's add-for-today rows reuse .overflow-sheet-row's layout and add the
+   button on the end; the title takes the slack so the times and the buttons
+   line up down the list. */
+.overflow-sheet-row .strip-title {
+  flex: 1 1 auto;
+}
+
+.block-add-btn {
+  flex: 0 0 auto;
+  padding: 0.35rem 0.9rem;
+}
+
 .school-picker-list {
   list-style: none;
   margin: 0 0 1rem;

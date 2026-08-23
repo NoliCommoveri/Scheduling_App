@@ -1228,7 +1228,7 @@
     var n = entry.unplaced.length;
     var cell = el('<div class="day-tray-cell"></div>');
     var addBtn = el('<button class="day-tray-add-school" type="button">+ School</button>');
-    addBtn.addEventListener("click", function () { createSchoolBlock(entry.child); });
+    addBtn.addEventListener("click", function () { addSchoolTapped(entry.child); });
     cell.appendChild(addBtn);
     if (!n) return cell;
     var toggle = el('<button class="day-tray-toggle">Not scheduled &middot; ' + n + "</button>");
@@ -1333,6 +1333,8 @@
       weekday: weekday,
       weekdayRow: g.SchoolCore.weekdayRowFor(idx.weekdays, block.id, weekday),
       dateRow: g.SchoolCore.dateExceptionFor(idx.dates, block.id, date),
+      scheduled: g.SchoolCore.scheduledWeekdays(idx.weekdays, block.id),
+      weekdayRowAt: function (w) { return g.SchoolCore.weekdayRowFor(idx.weekdays, block.id, w); },
       placement: g.SchoolCore.resolvePlacement(idx.weekdays, idx.dates, block, date, weekday),
     };
   }
@@ -1352,11 +1354,41 @@
     });
   }
 
-  // The local half of the same write. `block` is a live reference into
-  // `current.state.schoolBlocks` (blocksForChildOn filters, it doesn't clone),
-  // so the block level is a mutation in place; the two override levels are
-  // rows in their own arrays and are updated or appended, the same shape
+  // The local half of a scope-row write: update the row if it is there,
+  // append it if it is not. One function for both override tables because
+  // they differ only in which column identifies the row — the same shape
   // `applyOptimisticLevel` uses for a chore's.
+  //
+  // Every wall write is online-required with no outbox (§1), so these run
+  // AFTER the server has answered; they exist to spare the family the poll's
+  // round trip, not to survive a failure.
+  function upsertBlockScopeRow(isDate, block, key, fields) {
+    var listKey = isDate ? "schoolBlockDates" : "schoolBlockWeekdays";
+    var col = isDate ? "date" : "weekday";
+    var list = current.state[listKey] || (current.state[listKey] = []);
+    var existing = null;
+    list.forEach(function (r) {
+      if (r.block_id === block.id && r[col] === key) existing = r;
+    });
+    if (!existing) {
+      existing = { block_id: block.id };
+      existing[col] = key;
+      list.push(existing);
+    }
+    Object.keys(fields).forEach(function (f) { existing[f] = fields[f]; });
+  }
+
+  function removeBlockScopeRow(isDate, block, key) {
+    var listKey = isDate ? "schoolBlockDates" : "schoolBlockWeekdays";
+    var col = isDate ? "date" : "weekday";
+    current.state[listKey] = (current.state[listKey] || []).filter(function (r) {
+      return !(r.block_id === block.id && r[col] === key);
+    });
+  }
+
+  // `block` is a live reference into `current.state.schoolBlocks`
+  // (blocksForChildOn filters, it doesn't clone), so the block level is a
+  // mutation in place; the two override levels are rows in their own arrays.
   function applyOptimisticBlockSpan(block, plan) {
     if (plan.level === "block") {
       block.start_min = plan.startMin;
@@ -1364,22 +1396,9 @@
       return;
     }
     var isDate = plan.level === "date";
-    var key = isDate ? "schoolBlockDates" : "schoolBlockWeekdays";
-    var list = current.state[key] || (current.state[key] = []);
-    var existing = null;
-    list.forEach(function (r) {
-      if (r.block_id !== block.id) return;
-      if (isDate ? r.date === plan.date : r.weekday === plan.weekday) existing = r;
-    });
-    if (existing) {
-      existing.start_min = plan.startMin;
-      existing.end_min = plan.endMin;
-      if (isDate) existing.occurs = 1;
-      return;
-    }
-    var fresh = { block_id: block.id, start_min: plan.startMin, end_min: plan.endMin };
-    if (isDate) { fresh.date = plan.date; fresh.occurs = 1; } else { fresh.weekday = plan.weekday; }
-    list.push(fresh);
+    var fields = { start_min: plan.startMin, end_min: plan.endMin };
+    if (isDate) fields.occurs = 1;
+    upsertBlockScopeRow(isDate, block, isDate ? plan.date : plan.weekday, fields);
   }
 
   // §5.4 — drag moves a block; label and the length of the span are untouched.
@@ -1425,15 +1444,26 @@
     });
   }
 
-  // ---- school block span/label sheet (§5.4 — long-press on a block) --------
-  // This edits wall_school_blocks.end_min and .label directly — the block's
-  // DEFAULT span, in §6.2's vocabulary. Placement Scopes turns this sheet
-  // into the block's schedule (a weekday checklist and §2.2.1's "Today"
-  // group, both writing their own rows) in Phase 5b; the default span and
-  // the label stay exactly what this stepper and this input edit.
+  // ---- school block sheet (§5.4 long-press; Placement Scopes §6.2) ---------
+  // Was an end-time-and-label editor; it is now the block's SCHEDULE, which
+  // is the only place a family can answer "which days does this happen on"
+  // (§2.2 — the weekday list is the schedule, and a block with none renders
+  // nowhere).
+  //
+  // The three functions immediately below are unchanged in what they write:
+  // `submitBlockSheet` still edits `wall_school_blocks.end_min` and `.label`,
+  // which under §6.2 is the span the sheet labels "Default" — the one every
+  // weekday with no times of its own inherits. Everything after
+  // `finishBlockSheet` is the schedule half, and it writes only the two
+  // override tables.
 
   function showBlockSheet(block) {
-    blockSheetState = { block: block, value: block.end_min - block.start_min, label: block.label || "" };
+    blockSheetState = {
+      block: block,
+      value: block.end_min - block.start_min,
+      label: block.label || "",
+      editing: null,
+    };
     rerenderNow();
   }
 
@@ -1484,22 +1514,355 @@
     });
   }
 
-  function buildBlockSheet() {
+  // §6.2's mock has two buttons, not three, and Done is not Cancel wearing a
+  // friendlier word: the label and the default span are the only controls in
+  // this sheet that wait for a commit, so Done commits them — and only when
+  // they actually changed, so closing a sheet opened to flip one checkbox
+  // does not put a pointless write on the wire. The backdrop still cancels,
+  // which is what it does in every other sheet here.
+  function finishBlockSheet() {
     var s = blockSheetState;
+    var block = s.block;
+    var labelChanged = (s.label.trim() || null) !== (block.label || null);
+    var spanChanged = s.value !== block.end_min - block.start_min;
+    if (labelChanged || spanChanged) submitBlockSheet();
+    else closeBlockSheet();
+  }
+
+  // ---- the schedule half's writes (§6.2) -----------------------------------
+  // These commit the moment they are tapped, unlike the label and the default
+  // span above, which wait for Save. The split is not an oversight: a text
+  // field and a stepper are half-finished thoughts until somebody says they
+  // are done, and each control below is a complete statement on its own
+  // ("Fridays: yes", "not today"). It also matches the membership picker,
+  // which has written on every checkbox since §5.2.
+  //
+  // Each is one online-required write with no outbox behind it (§1), so each
+  // says so on failure and leaves the sheet showing what the server still
+  // holds — the re-render reads the state back rather than trusting the tap.
+
+  // A weekday toggle SCHEDULES or UNSCHEDULES the day (§2.2 — the presence of
+  // the row is the schedule), and it schedules at a NULL span, meaning "this
+  // day, at the block's default". Re-checking a day whose own times were
+  // deleted with it therefore comes back at the default rather than at what
+  // it used to be; the row is gone, and the wall does not remember rows it
+  // deleted.
+  function toggleBlockWeekday(block, weekday, checked) {
+    var write = checked
+      ? g.WallApi.putSchoolBlockWeekday(block.id, weekday, null, null)
+      : g.WallApi.deleteSchoolBlockWeekday(block.id, weekday);
+    write.then(function () {
+      if (checked) upsertBlockScopeRow(false, block, weekday, { start_min: null, end_min: null });
+      else removeBlockScopeRow(false, block, weekday);
+      rerenderNow();
+      g.Poll.pollNow();
+    }).catch(function () {
+      showToast("Couldn't change that day — try again.", "warning");
+      rerenderNow();
+    });
+  }
+
+  // "Use the default" on a weekday that has its own times. A PUT carrying
+  // nulls, NEVER a DELETE — and this is the one place the block side and the
+  // chore side disagree about what an empty override means.
+  // `SlotsCore.overrideWrite` maps both-null to a DELETE, because a chore's
+  // weekday row that overrides nothing is meaningless. A block's is not: it
+  // is what SCHEDULES the day (§2.2). Deleting it here would take the block
+  // off Fridays altogether, when all the family asked for was Friday at the
+  // usual time.
+  function clearBlockWeekdaySpan(block, weekday) {
+    blockSheetState.editing = null;
+    rerenderNow();
+    g.WallApi.putSchoolBlockWeekday(block.id, weekday, null, null).then(function () {
+      upsertBlockScopeRow(false, block, weekday, { start_min: null, end_min: null });
+      rerenderNow();
+      g.Poll.pollNow();
+    }).catch(function () {
+      showToast("Couldn't reset that day — try again.", "warning");
+      rerenderNow();
+    });
+  }
+
+  // §2.2.1's "Today" group. `SchoolCore.planDateWrite` decides the verb,
+  // because two of the three choices depend on what the weekday list already
+  // says: a date row exists only to DISAGREE with the weekly rule, so a
+  // choice that agrees with it is a DELETE. Writing an agreeing row instead
+  // would work today and pin the date against a later change to the week.
+  function setBlockTodayChoice(block, choice, span) {
+    var date = current.date;
+    var p = blockPlacementFor(block, date);
+    var plan = g.SchoolCore.planDateWrite(choice, !!p.weekdayRow, span || { startMin: null, endMin: null });
+    blockSheetState.editing = null;
+    rerenderNow();
+    var write = plan.verb === "delete"
+      ? g.WallApi.deleteSchoolBlockDate(block.id, date)
+      : g.WallApi.putSchoolBlockDate(block.id, date, plan.occurs, plan.startMin, plan.endMin);
+    write.then(function () {
+      if (plan.verb === "delete") removeBlockScopeRow(true, block, date);
+      else {
+        upsertBlockScopeRow(true, block, date, {
+          occurs: plan.occurs, start_min: plan.startMin, end_min: plan.endMin,
+        });
+      }
+      rerenderNow();
+      g.Poll.pollNow();
+    }).catch(function () {
+      showToast("Couldn't change today — try again.", "warning");
+      rerenderNow();
+    });
+  }
+
+  // ---- school block sheet (§5.4 long-press; §6.2's schedule) ----------------
+  // Two faces, one overlay. The schedule face is the block: its label, its
+  // DEFAULT span, the seven weekdays that are its schedule (§2.2), and
+  // §2.2.1's exception for the date on screen. Tapping a day's time swaps to
+  // the span face, which edits ONE level's span and comes back.
+  //
+  // A second overlay would have worked and would have had to reason about
+  // stacking, backdrop taps reaching the wrong card, and which one a
+  // re-render rebuilds. One overlay with two faces has none of that: the
+  // whole sheet is a pure function of `blockSheetState` plus the store.
+
+  function openBlockSpanEdit(kind, weekday, span) {
+    blockSheetState.editing = {
+      kind: kind, weekday: weekday, startMin: span.startMin, endMin: span.endMin,
+    };
+    rerenderNow();
+  }
+
+  function submitBlockSpanEdit() {
+    var s = blockSheetState;
+    var e = s.editing;
+    var block = s.block;
+    if (e.kind === "date") {
+      setBlockTodayChoice(block, "just-today", { startMin: e.startMin, endMin: e.endMin });
+      return;
+    }
+    var weekday = e.weekday;
+    s.editing = null;
+    rerenderNow();
+    g.WallApi.putSchoolBlockWeekday(block.id, weekday, e.startMin, e.endMin).then(function () {
+      upsertBlockScopeRow(false, block, weekday, { start_min: e.startMin, end_min: e.endMin });
+      rerenderNow();
+      g.Poll.pollNow();
+    }).catch(function () {
+      showToast("Couldn't set " + g.TimeCore.weekdayName(weekday, true) + " — try again.", "warning");
+      rerenderNow();
+    });
+  }
+
+  function formatSpan(startMin, endMin, fmt) {
+    return g.TimeCore.formatMinutes(startMin, fmt) + "–" + g.TimeCore.formatMinutes(endMin, fmt);
+  }
+
+  // "Today, Sun 30 Aug", or just the date when the day view is pointed
+  // somewhere else — §2.2.1's exception is always about the date ON SCREEN,
+  // and calling a Thursday in September "today" would be a lie the family
+  // acts on.
+  function sheetDateLabel(date) {
+    var parts = String(date).split("-");
+    var d = new Date(+parts[0], +parts[1] - 1, +parts[2]);
+    var name = d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+    return (date === current.state.today ? "Today, " : "") + name;
+  }
+
+  // §6.2's seven rows. A day that is not scheduled shows no time at all —
+  // there is nothing to show, and an inert "9:00–11:30" beside an empty
+  // checkbox reads as a schedule.
+  function buildBlockDayList(block, p, fmt) {
+    var list = el('<ul class="block-day-list"></ul>');
+    for (var w = 0; w <= 6; w++) {
+      (function (weekday) {
+        var row = p.weekdayRowAt(weekday);
+        var li = el(
+          '<li class="block-day-row">' +
+            '<label class="block-day-toggle"><input type="checkbox"><span></span></label>' +
+            '<button class="btn ghost block-day-span" type="button"></button>' +
+          "</li>"
+        );
+        var box = li.querySelector("input");
+        box.checked = !!row;
+        li.querySelector(".block-day-toggle span").textContent = g.TimeCore.weekdayShortName(weekday);
+        box.addEventListener("change", function () { toggleBlockWeekday(block, weekday, box.checked); });
+
+        var spanBtn = li.querySelector(".block-day-span");
+        if (!row) {
+          spanBtn.classList.add("is-hidden");
+        } else {
+          // The weekday's own line, so the DATE row is deliberately not
+          // consulted: a skip or a one-off move today says nothing about
+          // what Mondays are, and showing today's time on the Monday row
+          // would make a per-date change look permanent.
+          var span = g.SchoolCore.resolveBlockSpan(block, row, null);
+          spanBtn.textContent = formatSpan(span.startMin, span.endMin, fmt);
+          if (span.scope === "weekday") spanBtn.classList.add("block-day-changed");
+          spanBtn.addEventListener("click", function () {
+            openBlockSpanEdit("weekday", weekday, span);
+          });
+        }
+        list.appendChild(li);
+      })(w);
+    }
+    return list;
+  }
+
+  // §6.2's "Today" group — §2.2.1 made visible, as three radios rather than
+  // an override that only appears once it exists.
+  //
+  // The wording flips with the weekday list and re-derives on every render,
+  // which is not decoration: unchecking Friday while standing on a Friday
+  // turns "As scheduled" into "Add for today" under the family's finger, and
+  // both spellings are the same three writes.
+  function buildBlockTodayGroup(block, p, fmt) {
+    var scheduledByWeekday = !!p.weekdayRow;
+    var choice = g.SchoolCore.todayChoice(p.weekdayRow, p.dateRow);
+    // What would apply if this date had no exception at all — the weekday
+    // row's span, else the block's default. Never the resolved placement,
+    // which may already be a one-off.
+    var base = g.SchoolCore.resolveBlockSpan(block, p.weekdayRow, null);
+    var justSpan = choice === "just-today"
+      ? { startMin: p.placement.startMin, endMin: p.placement.endMin }
+      : { startMin: base.startMin, endMin: base.endMin };
+
+    var options = scheduledByWeekday
+      ? [["not-today", "Not today", ""],
+         ["as-scheduled", "As scheduled", formatSpan(base.startMin, base.endMin, fmt)],
+         ["just-today", "Just today…", formatSpan(justSpan.startMin, justSpan.endMin, fmt)]]
+      : [["not-today", "Not today", ""],
+         ["as-scheduled", "Add for today", formatSpan(base.startMin, base.endMin, fmt)],
+         ["just-today", "Add at a different time", formatSpan(justSpan.startMin, justSpan.endMin, fmt)]];
+
+    var wrap = el(
+      '<div class="block-today">' +
+        '<div class="block-today-head"></div>' +
+        '<ul class="block-today-list"></ul>' +
+      "</div>"
+    );
+    wrap.querySelector(".block-today-head").textContent = sheetDateLabel(current.date);
+    var list = wrap.querySelector(".block-today-list");
+    options.forEach(function (opt) {
+      var li = el(
+        '<li class="block-today-row">' +
+          '<label><input type="radio" name="blockToday"><span class="block-today-label"></span>' +
+          '<span class="block-today-span"></span></label>' +
+        "</li>"
+      );
+      var radio = li.querySelector("input");
+      radio.checked = choice === opt[0];
+      li.querySelector(".block-today-label").textContent = opt[1];
+      li.querySelector(".block-today-span").textContent = opt[2];
+      radio.addEventListener("change", function () {
+        // "Just today" is the only one that needs a time before it can be
+        // written, so it opens the span face; the other two are complete as
+        // taps. A cancelled span face leaves the radio wherever the DATA
+        // says it is — the group is derived, never remembered.
+        if (opt[0] === "just-today") openBlockSpanEdit("date", null, justSpan);
+        else setBlockTodayChoice(block, opt[0], null);
+      });
+      list.appendChild(li);
+    });
+    return wrap;
+  }
+
+  // The span face: two steppers, because §2.2 resolves a span as a PAIR and
+  // "Friday ends at the same time but starts earlier" is expressed by writing
+  // both numbers. Both are pre-filled from the level below, so that costs
+  // nothing to author.
+  function buildBlockSpanFace() {
+    var s = blockSheetState;
+    var e = s.editing;
+    var block = s.block;
+    var fmt = (g.Store.getSettings().timeFormat) || "24h";
+    var p = blockPlacementFor(block, current.date);
+    var ownRow = e.kind === "weekday" ? p.weekdayRowAt(e.weekday) : p.dateRow;
+    var hasOwnSpan = !!(ownRow && ownRow.start_min != null && ownRow.end_min != null);
+    var base = g.SchoolCore.resolveBlockSpan(block, e.kind === "date" ? p.weekdayRow : null, null);
+
     var overlay = el(
       '<div class="duration-sheet-overlay school-block-sheet-overlay">' +
         '<div class="duration-sheet-card">' +
-          "<h2>Edit school block</h2>" +
+          "<h2></h2>" +
+          '<div class="duration-sheet-stepper">' +
+            '<span class="duration-sheet-label">Starts</span>' +
+            '<button class="btn ghost span-start-step" data-step="-15" type="button">&minus;</button>' +
+            '<div class="duration-sheet-value" id="spanStart"></div>' +
+            '<button class="btn ghost span-start-step" data-step="15" type="button">+</button>' +
+          "</div>" +
+          '<div class="duration-sheet-stepper">' +
+            '<span class="duration-sheet-label">Ends</span>' +
+            '<button class="btn ghost span-end-step" data-step="-15" type="button">&minus;</button>' +
+            '<div class="duration-sheet-value" id="spanEnd"></div>' +
+            '<button class="btn ghost span-end-step" data-step="15" type="button">+</button>' +
+          "</div>" +
+          (e.kind === "weekday" && hasOwnSpan
+            ? '<button class="btn ghost duration-sheet-reset" id="spanUseDefault"></button>' : "") +
+          '<div class="duration-sheet-actions">' +
+            '<button class="btn" id="spanSave">Save</button>' +
+            '<button class="btn ghost" id="spanCancel">Cancel</button>' +
+          "</div>" +
+        "</div>" +
+      "</div>"
+    );
+    overlay.querySelector("h2").textContent = e.kind === "weekday"
+      ? g.TimeCore.weekdayName(e.weekday, true)
+      : sheetDateLabel(current.date);
+    overlay.querySelector("#spanStart").textContent = g.TimeCore.formatMinutes(e.startMin, fmt);
+    overlay.querySelector("#spanEnd").textContent = g.TimeCore.formatMinutes(e.endMin, fmt);
+    var reset = overlay.querySelector("#spanUseDefault");
+    if (reset) {
+      reset.textContent = "Use the default (" + formatSpan(base.startMin, base.endMin, fmt) + ")";
+      reset.addEventListener("click", function () { clearBlockWeekdaySpan(block, e.weekday); });
+    }
+
+    // `endMin` may be 1440 — it is an END, and a block finishing at midnight
+    // is valid (`isValidBlockSpan`). `startMin` may not: it is a start, and
+    // `isValidStartMin` stops at 1425.
+    overlay.querySelectorAll(".span-start-step").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        e.startMin = Math.max(0, Math.min(1440 - ROW_MIN, e.startMin + Number(btn.dataset.step)));
+        if (e.endMin <= e.startMin) e.endMin = e.startMin + ROW_MIN;
+        rerenderNow();
+      });
+    });
+    overlay.querySelectorAll(".span-end-step").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        e.endMin = Math.max(e.startMin + ROW_MIN, Math.min(1440, e.endMin + Number(btn.dataset.step)));
+        rerenderNow();
+      });
+    });
+    overlay.addEventListener("pointerdown", function (ev) {
+      if (ev.target === overlay) { s.editing = null; rerenderNow(); }
+    });
+    overlay.querySelector("#spanCancel").addEventListener("click", function () {
+      s.editing = null;
+      rerenderNow();
+    });
+    overlay.querySelector("#spanSave").addEventListener("click", submitBlockSpanEdit);
+    currentRoot.appendChild(overlay);
+  }
+
+  function buildBlockSheet() {
+    var s = blockSheetState;
+    if (s.editing) { buildBlockSpanFace(); return; }
+    var block = s.block;
+    var fmt = (g.Store.getSettings().timeFormat) || "24h";
+    var p = blockPlacementFor(block, current.date);
+
+    var overlay = el(
+      '<div class="duration-sheet-overlay school-block-sheet-overlay">' +
+        '<div class="duration-sheet-card">' +
+          "<h2>School block</h2>" +
           '<input class="school-block-label-input" type="text" placeholder="School" maxlength="60">' +
           '<div class="duration-sheet-stepper">' +
+            '<span class="duration-sheet-label">Default</span>' +
             '<button class="btn ghost dur-step" data-step="-15" type="button">&minus;</button>' +
-            '<div class="duration-sheet-value"></div>' +
+            '<div class="duration-sheet-value block-default-span"></div>' +
             '<button class="btn ghost dur-step" data-step="15" type="button">+</button>' +
           "</div>" +
+          '<div class="block-schedule"></div>' +
           '<div class="duration-sheet-actions">' +
-            '<button class="btn" id="blockSave">Save</button>' +
+            '<button class="btn" id="blockDone">Done</button>' +
             '<button class="btn ghost" id="blockRemove">Remove block</button>' +
-            '<button class="btn ghost" id="blockCancel">Cancel</button>' +
           "</div>" +
         "</div>" +
       "</div>"
@@ -1507,7 +1870,10 @@
     var labelInput = overlay.querySelector(".school-block-label-input");
     labelInput.value = s.label;
     labelInput.addEventListener("input", function () { s.label = labelInput.value; });
-    overlay.querySelector(".duration-sheet-value").textContent = g.TimeCore.formatDurationMin(s.value);
+    // The DEFAULT span, shown as the pair it is (§2.2) while the stepper
+    // moves its end — the start of the default span is what a drag sets.
+    overlay.querySelector(".block-default-span").textContent =
+      formatSpan(block.start_min, block.start_min + s.value, fmt);
 
     overlay.querySelectorAll(".dur-step").forEach(function (btn) {
       btn.addEventListener("click", function () {
@@ -1515,6 +1881,19 @@
         rerenderNow();
       });
     });
+
+    var schedule = overlay.querySelector(".block-schedule");
+    schedule.appendChild(buildBlockDayList(block, p, fmt));
+    // §6.2 — a block with nothing checked renders nowhere. That state is
+    // reachable (uncheck all seven) and it is not an error, but it is
+    // invisible the moment the sheet closes, so the sheet says so.
+    if (!p.scheduled.length) {
+      schedule.appendChild(el(
+        '<div class="block-day-warning">Not scheduled on any day — this block won\'t appear.</div>'
+      ));
+    }
+    schedule.appendChild(buildBlockTodayGroup(block, p, fmt));
+
     // `pointerdown`, NOT `click`: the tap that OPENS a sheet dispatches its
     // click after the overlay is already in the DOM, so a click listener
     // here closed the sheet in the same gesture that opened it — unless the
@@ -1525,12 +1904,129 @@
     overlay.addEventListener("pointerdown", function (ev) {
       if (ev.target === overlay) closeBlockSheet();
     });
-    overlay.querySelector("#blockCancel").addEventListener("click", closeBlockSheet);
+    overlay.querySelector("#blockDone").addEventListener("click", finishBlockSheet);
     overlay.querySelector("#blockRemove").addEventListener("click", function () { removeSchoolBlock(s.block); });
-    overlay.querySelector("#blockSave").addEventListener("click", submitBlockSheet);
 
     currentRoot.appendChild(overlay);
-    labelInput.focus();
+  }
+
+  // ---- add school for today (§6.3 — the + School fork) ---------------------
+  // §6.2's Today group lives in the block's own long-press sheet, which works
+  // for a skip (the block is right there) and not at all for a backup Sunday:
+  // the block is not drawn, so there is nothing to press. This is that door.
+  //
+  // Why reuse a block rather than mint one for the day: a block carries its
+  // member courses (§5.2), and a fresh block starts empty. "Do Thursday's
+  // school on Sunday" would otherwise mean re-checking every course by hand,
+  // on the day, for a session that already exists.
+  //
+  // A family that never uses backup days never sees this sheet — with no
+  // candidates, the button mints a block exactly as it always has.
+
+  function blocksNotOnDate(state, childId, date) {
+    var idx = blockIndexes(state);
+    var weekday = g.TimeCore.weekdayOf(date);
+    return (state.schoolBlocks || []).filter(function (b) {
+      return b.child_id === childId &&
+        !g.SchoolCore.blockOccursOn(idx.weekdays, idx.dates, b.id, date, weekday);
+    });
+  }
+
+  function addSchoolTapped(child) {
+    if (!blocksNotOnDate(current.state, child.id, current.date).length) {
+      createSchoolBlock(child);
+      return;
+    }
+    addSchoolSheetState = { child: child };
+    rerenderNow();
+  }
+
+  function closeAddSchoolSheet() {
+    addSchoolSheetState = null;
+    rerenderNow();
+  }
+
+  // Adding a block to this date is `planDateWrite`'s 'as-scheduled', which is
+  // a PUT on a day the weekday list excludes and a DELETE on a day it
+  // includes — the second being a block that was skipped earlier and is now
+  // un-skipped. One button, both meanings, because "make this block happen
+  // today" is one intent and the table below it decides the verb.
+  function addBlockForToday(block) {
+    var child = addSchoolSheetState.child;
+    addSchoolSheetState = null;
+    rerenderNow();
+    var date = current.date;
+    var p = blockPlacementFor(block, date);
+    var plan = g.SchoolCore.planDateWrite("as-scheduled", !!p.weekdayRow, { startMin: null, endMin: null });
+    var write = plan.verb === "delete"
+      ? g.WallApi.deleteSchoolBlockDate(block.id, date)
+      : g.WallApi.putSchoolBlockDate(block.id, date, plan.occurs, plan.startMin, plan.endMin);
+    write.then(function () {
+      if (plan.verb === "delete") removeBlockScopeRow(true, block, date);
+      else {
+        upsertBlockScopeRow(true, block, date, {
+          occurs: plan.occurs, start_min: plan.startMin, end_min: plan.endMin,
+        });
+      }
+      rerenderNow();
+      showToast(blockLabel(block) + " added for " + child.name);
+      g.Poll.pollNow();
+    }).catch(function () {
+      showToast("Couldn't add “" + blockLabel(block) + "” — try again.", "warning");
+    });
+  }
+
+  function buildAddSchoolSheet() {
+    var s = addSchoolSheetState;
+    var child = s.child;
+    var fmt = (g.Store.getSettings().timeFormat) || "24h";
+    var candidates = blocksNotOnDate(current.state, child.id, current.date);
+
+    var overlay = el(
+      '<div class="duration-sheet-overlay school-picker-overlay">' +
+        '<div class="duration-sheet-card">' +
+          "<h2></h2>" +
+          '<ul class="school-picker-list"></ul>' +
+          '<div class="duration-sheet-actions">' +
+            '<button class="btn" id="addSchoolNew">New block…</button>' +
+            '<button class="btn ghost" id="addSchoolCancel">Cancel</button>' +
+          "</div>" +
+        "</div>" +
+      "</div>"
+    );
+    overlay.querySelector("h2").textContent = "Add school — " + child.name;
+    var list = overlay.querySelector(".school-picker-list");
+    candidates.forEach(function (block) {
+      var p = blockPlacementFor(block, current.date);
+      // The span it WOULD take today: its weekday row's if this date has one
+      // (a skipped Monday keeps Monday's times), else the block's default —
+      // which is the backup-Sunday case, and the sensible reading of "we're
+      // doing Thursday's school on Sunday" (§2.2's note on row 2).
+      var span = g.SchoolCore.resolveBlockSpan(block, p.weekdayRow, null);
+      var li = el(
+        '<li class="overflow-sheet-row">' +
+          '<span class="strip-title"></span>' +
+          '<span class="strip-time"></span>' +
+          '<button class="btn ghost block-add-btn" type="button">Add</button>' +
+        "</li>"
+      );
+      li.querySelector(".strip-title").textContent = blockLabel(block);
+      li.querySelector(".strip-time").textContent = formatSpan(span.startMin, span.endMin, fmt);
+      li.querySelector(".block-add-btn").addEventListener("click", function () { addBlockForToday(block); });
+      list.appendChild(li);
+    });
+    // `pointerdown`, NOT `click`: the tap that OPENS a sheet dispatches its
+    // click after the overlay is already in the DOM, so a click listener
+    // here closed the sheet in the same gesture that opened it.
+    overlay.addEventListener("pointerdown", function (ev) {
+      if (ev.target === overlay) closeAddSchoolSheet();
+    });
+    overlay.querySelector("#addSchoolCancel").addEventListener("click", closeAddSchoolSheet);
+    overlay.querySelector("#addSchoolNew").addEventListener("click", function () {
+      addSchoolSheetState = null;
+      createSchoolBlock(child);
+    });
+    currentRoot.appendChild(overlay);
   }
 
   // ---- school block membership picker (§5.2 — a plain tap on a block) ------
@@ -2279,8 +2775,9 @@
   var lastRenderedMode = null;
   var selectedForPlacement = null; // tap-to-place: {row, child} armed by a tray tap, or null
   var sheetState = null; // adjust sheet: {row, startMin, durationMin, durationTouched} while open, or null (§16 Phase 5b; Placement Scopes §6.1)
-  var blockSheetState = null; // school block span/label sheet: {block, value, label} while open, or null (§16 Phase 7)
+  var blockSheetState = null; // school block sheet: {block, value, label, editing} while open, or null (§16 Phase 7; Placement Scopes §6.2)
   var membershipSheetState = null; // school block membership picker: {block} while open, or null (§16 Phase 7)
+  var addSchoolSheetState = null; // "+ School" fork: {child} while open, or null (Placement Scopes §6.3)
   var overflowSheetState = null; // same-slot overflow list: {items, child, opts} while open, or null (§9 display correction)
 
   function setMode(mode) {
@@ -2324,6 +2821,7 @@
     if ((isNewDate || isNewMode) && sheetState) sheetState = null;
     if ((isNewDate || isNewMode) && blockSheetState) blockSheetState = null;
     if ((isNewDate || isNewMode) && membershipSheetState) membershipSheetState = null;
+    if ((isNewDate || isNewMode) && addSchoolSheetState) addSchoolSheetState = null;
     if ((isNewDate || isNewMode) && overflowSheetState) overflowSheetState = null;
 
     root.innerHTML = "";
@@ -2370,6 +2868,7 @@
     if (sheetState) buildAdjustSheet();
     if (blockSheetState) buildBlockSheet();
     if (membershipSheetState) buildMembershipSheet();
+    if (addSchoolSheetState) buildAddSchoolSheet();
     if (overflowSheetState) buildOverflowSheet();
 
     var rh = rowHeightPx();
@@ -2440,6 +2939,7 @@
     sheetState = null;
     blockSheetState = null;
     membershipSheetState = null;
+    addSchoolSheetState = null;
     overflowSheetState = null;
   }
 

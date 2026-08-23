@@ -1129,6 +1129,18 @@ test('§6.1: weekdayName gives the sheet its button and the toast its plural', (
   assert.equal(TimeCore.weekdayName(7), '', 'out of range names nothing rather than "undefineds"');
 });
 
+test('§6.2: the block sheet\'s seven rows are named from the same table', () => {
+  assert.deepEqual(
+    [0, 1, 2, 3, 4, 5, 6].map((w) => TimeCore.weekdayShortName(w)),
+    ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']);
+  // Same table as weekdayName, so the checklist row and the "Every Friday"
+  // button can never name different days.
+  [0, 3, 6].forEach((w) => {
+    assert.ok(TimeCore.weekdayName(w).startsWith(TimeCore.weekdayShortName(w)));
+  });
+  assert.equal(TimeCore.weekdayShortName(7), '', 'out of range names nothing');
+});
+
 // ==========================================================================
 // Placement Scopes §8 (Phase 5a) — the write side of the BLOCK chain. §8
 // assigned Phase 5 only the manual checks (11, 12a, 13), but three of the

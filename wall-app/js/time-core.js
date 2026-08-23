@@ -85,11 +85,23 @@
     return plural ? name + "s" : name;
   }
 
+  // Placement Scopes §6.2 (Phase 5b) — the three-letter form the block
+  // sheet's seven-row checklist is drawn with. Same table, so the column of
+  // abbreviations and the "Every Friday" button can never name different
+  // days; a `.slice(0, 3)` at the call site would work identically today and
+  // silently stop matching the moment this table is ever localised.
+  function weekdayShortName(weekday) {
+    var name = WEEKDAY_NAMES[weekday];
+    if (name == null) return "";
+    return name.slice(0, 3);
+  }
+
   g.TimeCore = {
     formatMinutes: formatMinutes,
     formatDate: formatDate,
     formatDurationMin: formatDurationMin,
     weekdayOf: weekdayOf,
     weekdayName: weekdayName,
+    weekdayShortName: weekdayShortName,
   };
 })(typeof window !== "undefined" ? window : globalThis);
