@@ -403,6 +403,17 @@ Deferred, not forgotten: §17.1 sketches the per-day override if it is ever
 Locked for: this slice.
 ```
 
+> **SUPERSEDED for start times, 2026-08-23 — see `TDS_Slice_Wall_Placement_Scopes.md`.** The
+> "deferred, not forgotten" line above came due. Ray reported school blocks rendering on Saturdays
+> and asked for per-weekday times on chores as well (*"Fridays we do things earlier to finish
+> before sunset"*), plus a "only this occurrence" scope for both. A placement now resolves through
+> three levels — occurrence, weekday, standing — and this section's carry-forward rule survives as
+> the **bottom** of that chain rather than as the whole of it. Two of the three costs this
+> `[DECISION]` priced are already paid (`wall_slot_days` exists and is date-keyed; §3.5.2 is the UI
+> precedent), and the third — "a UI that asks 'this day or every day?' on every drag" — is answered
+> without paying it: a drag writes whichever level is already in force for that day (scopes slice
+> §7.1). Nothing here changes for a family that never touches the new controls.
+
 ### 3.4 Chores — and courses — with no placement yet
 
 A chore the wall has never been told a time for is **not hidden and not guessed at**. It goes in an
@@ -694,6 +705,12 @@ back through the week would show the same overdue chore on every day at once.
 
 ## 5. School blocks
 
+> **Amended 2026-08-23 — a block is scheduled by weekday now.** As shipped, a block renders on
+> **every** date, weekends included, because nothing in this section ever asked which days it
+> happens on. `TDS_Slice_Wall_Placement_Scopes.md` §2.2 gives a block a weekday schedule (its
+> weekday list *is* the schedule), a per-weekday span, and a per-date override; §5.3 there fixes
+> this section's other shipped defect, member courses rendering on days they have no activities.
+
 **Revised 2026-08-15, before any Phase 7 code was written — see §20.** The original model (§5 as it
 stood on 2026-08-14) keyed a block to a single course, created by dragging that course out of the
 unscheduled tray. This section replaces that model outright: a block is now a **span of time**
@@ -820,6 +837,8 @@ Consequence: a block's span is a standing placement like everything else in
   this slice (§3.3) — set once, carried forward until moved or resized.
   There is no per-day override for a block's span in v1, matching §17.1's
   deferred treatment of per-day start-time overrides for chores.
+  [SUPERSEDED 2026-08-23 — a block now carries a weekday schedule and a
+  per-date span override; see `TDS_Slice_Wall_Placement_Scopes.md` §2.2.]
 Consequence: unlike a chore chip, a block's long-press sheet has no
   precedence chain to display (§3.5.1 no longer applies to blocks) — it
   edits `wall_school_blocks.end_min` directly, with no "just this one" /
@@ -1646,11 +1665,18 @@ live with it before building placement.
 
 ## 17. Deferred — decided not to build, with reasons
 
-**17.1 Per-day *start-time* overrides.** §3.3 makes a placement's time standing. Per-day *duration*
-overrides are built (§3.5.2) and their table is already keyed by date, so this is now one nullable
-`start_min` column on `wall_slot_days` and one more button — but it is a different feature wearing
-the same table, and Ray asked for duration. Revisit if he finds himself fighting the carry-forward
-on times as well.
+**17.1 Per-day *start-time* overrides.** ~~§3.3 makes a placement's time standing. Per-day
+*duration* overrides are built (§3.5.2) and their table is already keyed by date, so this is now one
+nullable `start_min` column on `wall_slot_days` and one more button — but it is a different feature
+wearing the same table, and Ray asked for duration. Revisit if he finds himself fighting the
+carry-forward on times as well.~~
+
+**NO LONGER DEFERRED, 2026-08-23.** The revisit condition was met exactly as written — Ray is
+fighting the carry-forward on times. Designed in `TDS_Slice_Wall_Placement_Scopes.md`, which builds
+the nullable `start_min` this entry sketched (`migrations/0016`) and adds a **weekday** level
+between it and the standing placement, because the household's real pattern is "every Friday", not
+"the 23rd". Applies to school blocks as well as chores. Authorized 2026-08-23; unbuilt at the time
+of writing.
 
 **17.2 Parent-side scheduling.** Ray chose wall-only (§0.2). If the Management App ever wants to
 place chores, `wall_slots` is the table to promote — it is already keyed by things the Management
@@ -2041,5 +2067,34 @@ through it. §14.15 asserts it in a test rather than trusting the review.
 
 ---
 
+### 2026-08-23 — placement scopes, and two defects this slice shipped
+
+Ray, in-session: *"why am I showing school blocks with assigned courses on the weekends in the wall
+app."* Two things were wrong, one of them by design.
+
+**The block-on-a-weekend is this slice's own design, not a coding error.** §3.3 made every placement
+standing, §5.5 gave `wall_school_blocks` no date column, and nothing in §5 ever asked which days a
+block happens on — so `day-ui.js:316`'s `blocksForChild()` filters by `child_id` alone and draws
+every block on every date. Fixed properly rather than patched: a block now carries a weekday
+schedule, and the weekday list *is* the schedule (`TDS_Slice_Wall_Placement_Scopes.md` §2.2).
+
+**The member-course list is a genuine violation of §5.2/§5.3.** Those sections say a member course
+with no activities that date "simply disappears from that block's row list on the next render" and
+"has nothing to show that date". `SchoolCore.memberRollups` correctly returns `checked: null` for
+that case, but `schoolBlockChipHtml` (`day-ui.js:1313`) renders an `<li>` for every rollup and only
+suppresses the "3 of 5" count — so the course name shows on days it has nothing on. Fixed in the
+scopes slice's Phase 5 (§5.3 there), kept with the scopes work because both change what an
+unscheduled or empty day looks like.
+
+Ray then widened the request past the bug, and the widening is the better feature: per-weekday times
+for **chores** as well (*"Fridays we do things earlier to finish before sunset"*), and a "only this
+occurrence" scope for both subjects. That is §3.3's deferred per-day placement and §17.1's deferred
+start-time override, arriving together with a weekday level neither had anticipated. Designed in
+`TDS_Slice_Wall_Placement_Scopes.md`; unbuilt at the time of writing, on Ray's instruction to design
+first and code next session.
+
+---
+
 *Companion documents: `TDS_Slice_Wall_Display_App.md` (the app this rewrites),
+`TDS_Slice_Wall_Placement_Scopes.md` (supersedes §3.3/§5.4/§17.1 on placement),
 `TDS_Slice_Online_Revamp.md` (controlling), `TDS_Slice_Shared_Chores.md`, `CLAUDE.md`.*
