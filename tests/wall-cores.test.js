@@ -1128,3 +1128,87 @@ test('§6.1: weekdayName gives the sheet its button and the toast its plural', (
   assert.equal(TimeCore.weekdayName(6, true), 'Saturdays');
   assert.equal(TimeCore.weekdayName(7), '', 'out of range names nothing rather than "undefineds"');
 });
+
+// ==========================================================================
+// Placement Scopes §8 (Phase 5a) — the write side of the BLOCK chain. §8
+// assigned Phase 5 only the manual checks (11, 12a, 13), but three of the
+// rules the block UI runs on are decisions rather than rendering, and two of
+// them are wrong in a way nobody would see on the tablet until a school day
+// went missing: §6.4's creation default is invisible on five days out of
+// seven, and §2.2.1's write table turns on a condition (is this date already
+// scheduled by the weekday list?) that the sheet has no way to re-check.
+// ==========================================================================
+
+test('§6.4: a new block is scheduled Mon-Fri AND on the day you are standing on', () => {
+  // The weekday case: Monday is already in Mon-Fri, so nothing is added.
+  assert.deepEqual(SchoolCore.defaultWeekdaysFor(1), [1, 2, 3, 4, 5]);
+  assert.deepEqual(SchoolCore.defaultWeekdaysFor(5), [1, 2, 3, 4, 5]);
+  // The weekend case, which is the whole point: creating a block on a
+  // Saturday and having it vanish is indistinguishable from a crash (§6.4).
+  assert.deepEqual(SchoolCore.defaultWeekdaysFor(6), [1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(SchoolCore.defaultWeekdaysFor(0), [0, 1, 2, 3, 4, 5], 'Sunday-first sorts to the front');
+});
+
+test('§7.1: a block drag writes the level that put it where the finger found it', () => {
+  // The unchanged common path: no override carries a span, so the drag moves
+  // the block's own row and every scheduled day moves with it.
+  assert.deepEqual(
+    SchoolCore.planBlockMove('block', 480, 570, '2026-08-28', 5),
+    { level: 'block', startMin: 480, endMin: 570 });
+
+  // The case this rule exists for: the span came from the Friday row, so the
+  // write goes there. Writing the block row instead would land underneath the
+  // Friday row and the block would not move.
+  assert.deepEqual(
+    SchoolCore.planBlockMove('weekday', 480, 570, '2026-08-28', 5),
+    { level: 'weekday', weekday: 5, startMin: 480, endMin: 570 });
+
+  // A date-level move carries occurs: 1 — a move is not a skip, and under
+  // §4.1 an omitted `occurs` is written NULL, which is not a valid one.
+  assert.deepEqual(
+    SchoolCore.planBlockMove('date', 600, 690, '2026-08-28', 5),
+    { level: 'date', date: '2026-08-28', occurs: 1, startMin: 600, endMin: 690 });
+});
+
+test('§6.2: the Today radio is read off the state, not remembered', () => {
+  const MON = { block_id: 'b1', weekday: 1, start_min: null, end_min: null };
+  assert.equal(SchoolCore.todayChoice(MON, null), 'as-scheduled');
+  assert.equal(SchoolCore.todayChoice(null, null), 'not-today', 'no weekday row, no block');
+
+  const skip = { block_id: 'b1', date: '2026-08-24', occurs: 0, start_min: null, end_min: null };
+  assert.equal(SchoolCore.todayChoice(MON, skip), 'not-today');
+
+  // occurs: 1 with no span says the block HAPPENS and says nothing about
+  // when — Ray's backup Sunday. That is 'as-scheduled', not 'just-today'.
+  const backup = { block_id: 'b1', date: '2026-08-23', occurs: 1, start_min: null, end_min: null };
+  assert.equal(SchoolCore.todayChoice(null, backup), 'as-scheduled');
+
+  const moved = { block_id: 'b1', date: '2026-08-24', occurs: 1, start_min: 600, end_min: 690 };
+  assert.equal(SchoolCore.todayChoice(MON, moved), 'just-today');
+});
+
+test('§2.2.1: two of the three Today writes depend on what the weekday list already says', () => {
+  const span = { startMin: 600, endMin: 690 };
+
+  // A date row exists only to DISAGREE with the weekly rule. Agreeing with it
+  // is a DELETE, both ways round.
+  assert.deepEqual(SchoolCore.planDateWrite('as-scheduled', true, span), { verb: 'delete' });
+  assert.deepEqual(SchoolCore.planDateWrite('not-today', false, span), { verb: 'delete' });
+
+  // Disagreeing is a PUT, and a skipped day carries no time (§2.2.1) — the
+  // Worker rejects occurs: 0 with a span rather than ignoring it.
+  assert.deepEqual(
+    SchoolCore.planDateWrite('not-today', true, span),
+    { verb: 'put', occurs: 0, startMin: null, endMin: null });
+  assert.deepEqual(
+    SchoolCore.planDateWrite('as-scheduled', false, span),
+    { verb: 'put', occurs: 1, startMin: null, endMin: null },
+    'the backup day: it happens, at the level below\'s span');
+
+  // "Just today" is the one choice that does not care about the weekly rule.
+  [true, false].forEach((scheduled) => {
+    assert.deepEqual(
+      SchoolCore.planDateWrite('just-today', scheduled, span),
+      { verb: 'put', occurs: 1, startMin: 600, endMin: 690 });
+  });
+});

@@ -379,10 +379,11 @@
   //
   // `startMin`/`endMin` here are the RESOLVED pair (date row, else weekday
   // row, else the block's own), not `block.start_min`/`block.end_min`. Every
-  // render path reads them from the entry; the write paths (moveSchoolBlock,
-  // the block sheet) still address `block` directly, which is correct for
-  // today — they write the standing level, and §7.1's "write the level that
-  // is winning" rule is Phase 5's.
+  // render path reads them from the entry, and `moveSchoolBlock` writes the
+  // level `spanScope` names (§7.1, Phase 5a). The block SHEET still edits
+  // `block` directly, which stays correct under §6.2: the span it steps is
+  // the one labelled "Default", and the per-weekday and per-date spans get
+  // their own controls there (Phase 5b).
   //
   // `collapsed` and the rollups are computed from the RENDERABLE rollups
   // (§5.3): a member with nothing that date has nothing to show and is not
@@ -1285,7 +1286,13 @@
 
   function createSchoolBlock(child) {
     var startMin = nextFreeBlockStart(current.state, child.id, DEFAULT_BLOCK_DURATION_MIN, current.date);
-    g.WallApi.postSchoolBlock(child.id, startMin, DEFAULT_BLOCK_DURATION_MIN, null).then(function (res) {
+    // Placement Scopes §6.4 — Mon-Fri (matching 0018's backfill) PLUS the day
+    // being looked at. The Worker's own default is Mon-Fri alone, which is
+    // correct as a default and wrong as this caller's intent: on a Saturday it
+    // mints a block that is scheduled, invisible, and indistinguishable from a
+    // crash to the person who just tapped "+ School".
+    var weekdays = g.SchoolCore.defaultWeekdaysFor(g.TimeCore.weekdayOf(current.date));
+    g.WallApi.postSchoolBlock(child.id, startMin, DEFAULT_BLOCK_DURATION_MIN, null, weekdays).then(function (res) {
       current.state.schoolBlocks = (current.state.schoolBlocks || []).concat([{
         id: res.id, child_id: child.id, label: null,
         start_min: startMin, end_min: startMin + DEFAULT_BLOCK_DURATION_MIN,
@@ -1294,11 +1301,12 @@
       // SCHEDULE too, or `blocksForChildOn` filters the new block straight
       // back out and it flickers away until the next poll returns. The slice
       // (§9) predicted this and left it to Phase 5; it costs four lines here
-      // because the route already answers with the weekday list it applied,
-      // including the Mon-Fri default when the body named none.
-      var weekdays = res.weekdays || [1, 2, 3, 4, 5];
+      // because the route already answers with the weekday list it applied.
+      // `res.weekdays` is what the SERVER stored, not what was asked for, so
+      // an older Worker that ignored the field still leaves the local state
+      // honest rather than optimistic about a schedule it does not have.
       current.state.schoolBlockWeekdays = (current.state.schoolBlockWeekdays || []).concat(
-        weekdays.map(function (weekday) {
+        (res.weekdays || weekdays).map(function (weekday) {
           return { block_id: res.id, weekday: weekday, start_min: null, end_min: null };
         })
       );
@@ -1310,22 +1318,104 @@
     });
   }
 
-  // §5.4 — drag moves a block, setting a new standing start time (§3.3);
-  // duration and label are untouched. `block` is a live reference into
-  // `current.state.schoolBlocks` (blocksForChild filters, it doesn't clone),
-  // so mutating it in place is enough to keep the render in sync —
-  // the same optimistic-update shape applyOptimisticSlot uses for chores.
+  // The two override rows and the resolved placement for one block on one
+  // date, read fresh from `current.state` rather than closed over at render.
+  // A write path that captured them at render time would act on a placement
+  // the poll may already have replaced — the same reason `commitPlacement`
+  // re-reads through `levelRowsFor` instead of trusting the chip it was
+  // handed. The two rows come back beside the resolved placement because
+  // §6.2's sheet needs them as rows (which weekdays are scheduled, what the
+  // date exception says) where the drag needs only what they resolved to.
+  function blockPlacementFor(block, date) {
+    var idx = blockIndexes(current.state);
+    var weekday = g.TimeCore.weekdayOf(date);
+    return {
+      weekday: weekday,
+      weekdayRow: g.SchoolCore.weekdayRowFor(idx.weekdays, block.id, weekday),
+      dateRow: g.SchoolCore.dateExceptionFor(idx.dates, block.id, date),
+      placement: g.SchoolCore.resolvePlacement(idx.weekdays, idx.dates, block, date, weekday),
+    };
+  }
+
+  // Performs one `planBlockMove` plan. Three levels, three routes; the span
+  // goes out as a pair everywhere (§2.2) and a date-level write carries
+  // `occurs: 1` (§2.2.1 — a move is not a skip).
+  function writeBlockSpan(block, plan) {
+    if (plan.level === "date") {
+      return g.WallApi.putSchoolBlockDate(block.id, plan.date, 1, plan.startMin, plan.endMin);
+    }
+    if (plan.level === "weekday") {
+      return g.WallApi.putSchoolBlockWeekday(block.id, plan.weekday, plan.startMin, plan.endMin);
+    }
+    return g.WallApi.putSchoolBlock(block.id, {
+      startMin: plan.startMin, durationMin: plan.endMin - plan.startMin,
+    });
+  }
+
+  // The local half of the same write. `block` is a live reference into
+  // `current.state.schoolBlocks` (blocksForChildOn filters, it doesn't clone),
+  // so the block level is a mutation in place; the two override levels are
+  // rows in their own arrays and are updated or appended, the same shape
+  // `applyOptimisticLevel` uses for a chore's.
+  function applyOptimisticBlockSpan(block, plan) {
+    if (plan.level === "block") {
+      block.start_min = plan.startMin;
+      block.end_min = plan.endMin;
+      return;
+    }
+    var isDate = plan.level === "date";
+    var key = isDate ? "schoolBlockDates" : "schoolBlockWeekdays";
+    var list = current.state[key] || (current.state[key] = []);
+    var existing = null;
+    list.forEach(function (r) {
+      if (r.block_id !== block.id) return;
+      if (isDate ? r.date === plan.date : r.weekday === plan.weekday) existing = r;
+    });
+    if (existing) {
+      existing.start_min = plan.startMin;
+      existing.end_min = plan.endMin;
+      if (isDate) existing.occurs = 1;
+      return;
+    }
+    var fresh = { block_id: block.id, start_min: plan.startMin, end_min: plan.endMin };
+    if (isDate) { fresh.date = plan.date; fresh.occurs = 1; } else { fresh.weekday = plan.weekday; }
+    list.push(fresh);
+  }
+
+  // §5.4 — drag moves a block; label and the length of the span are untouched.
+  //
+  // Placement Scopes §7.1 (Phase 5a) — YOU MOVE WHAT YOU SEE. This used to
+  // write `wall_school_blocks.start_min` unconditionally, which was correct
+  // for exactly as long as nothing could give a weekday or a date its own
+  // span. §6.2's sheet is the thing that can, so the unconditional write
+  // becomes the worst failure a direct-manipulation gesture has: on a Friday
+  // whose span comes from its Friday row, the write lands underneath that row
+  // and the block does not move. It now writes `spanScope`'s level.
+  //
+  // A family that never opens the schedule sheet sees no change whatsoever:
+  // every block resolves at `spanScope: 'block'` and every drag writes the
+  // block row, exactly as before.
+  //
+  // The duration is the RESOLVED span's, not `block.end_min - block.start_min`
+  // — dragging a Friday that runs 8:00-10:30 must keep two and a half hours,
+  // not silently adopt the default span's length.
   function moveSchoolBlock(block, startMin, isUndo) {
-    var durationMin = block.end_min - block.start_min;
-    var wasAt = block.start_min;
+    var date = current.date;
+    var p = blockPlacementFor(block, date);
+    var durationMin = p.placement.endMin - p.placement.startMin;
+    var wasAt = p.placement.startMin;
+    var plan = g.SchoolCore.planBlockMove(
+      p.placement.spanScope, startMin, startMin + durationMin, date, p.weekday);
     var fmt = (g.Store.getSettings().timeFormat) || "24h";
-    g.WallApi.putSchoolBlock(block.id, { startMin: startMin }).then(function () {
-      block.start_min = startMin;
-      block.end_min = startMin + durationMin;
+    writeBlockSpan(block, plan).then(function () {
+      applyOptimisticBlockSpan(block, plan);
       rerenderNow();
       showToast(
         blockLabel(block) + (isUndo ? " back at " : " moved to ") + g.TimeCore.formatMinutes(startMin, fmt),
         null, false, isUndo ? null : {
+          // Undo re-resolves rather than replaying a captured level, and
+          // lands back on the same one: the write above is what put the span
+          // there, so `spanScope` still names it. The old start is enough.
           label: "Undo",
           run: function () { moveSchoolBlock(block, wasAt, true); },
         });
@@ -1336,10 +1426,11 @@
   }
 
   // ---- school block span/label sheet (§5.4 — long-press on a block) --------
-  // No precedence chain to display here (§3.5.1 doesn't apply to blocks,
-  // §20) — this edits wall_school_blocks.end_min and .label directly, with
-  // no "just this one"/"this and future" fork, unlike the chore duration
-  // sheet above.
+  // This edits wall_school_blocks.end_min and .label directly — the block's
+  // DEFAULT span, in §6.2's vocabulary. Placement Scopes turns this sheet
+  // into the block's schedule (a weekday checklist and §2.2.1's "Today"
+  // group, both writing their own rows) in Phase 5b; the default span and
+  // the label stay exactly what this stepper and this input edit.
 
   function showBlockSheet(block) {
     blockSheetState = { block: block, value: block.end_min - block.start_min, label: block.label || "" };
@@ -1358,6 +1449,15 @@
       current.state.schoolBlocks = (current.state.schoolBlocks || []).filter(function (b) { return b.id !== block.id; });
       current.state.schoolBlockCourses = (current.state.schoolBlockCourses || [])
         .filter(function (c) { return c.block_id !== block.id; });
+      // §3.4 — the Worker cascades to both scope tables; the local mirror has
+      // to as well. Nothing renders from an orphaned row (the block is gone
+      // from `schoolBlocks`, so no lookup reaches them) and the next poll
+      // replaces both arrays wholesale, but leaving them is the kind of stale
+      // local state that makes the next optimistic write hard to reason about.
+      current.state.schoolBlockWeekdays = (current.state.schoolBlockWeekdays || [])
+        .filter(function (r) { return r.block_id !== block.id; });
+      current.state.schoolBlockDates = (current.state.schoolBlockDates || [])
+        .filter(function (r) { return r.block_id !== block.id; });
       rerenderNow();
       showToast(blockLabel(block) + " removed");
       g.Poll.pollNow();

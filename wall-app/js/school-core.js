@@ -206,6 +206,104 @@
     return { occurs: occurs, startMin: span.startMin, endMin: span.endMin, spanScope: span.scope };
   }
 
+  // ---- the write side: WHICH level a block write lands on ------------------
+  // Placement Scopes §7.1/§6.2/§6.4 (Phase 5a). Still pure — these decide the
+  // shape of a write without performing one; the PUT/DELETE calls stay in
+  // `day-ui.js` and `api.js`. They live here for the same reason
+  // `slots-core.planScopeWrite` does: every one of them is a rule that is
+  // easy to get subtly wrong at a DOM call site and impossible to test there.
+
+  // §6.4 — the schedule a freshly minted block gets. Mon-Fri, matching
+  // migration 0018's backfill so the two paths agree, PLUS the weekday the
+  // family is standing on. Creating a block on a Saturday and watching it
+  // vanish is indistinguishable from a crash (§6.4), and under §2.2 that is
+  // exactly what a Mon-Fri-only default would do — the block would be
+  // correctly scheduled and correctly invisible on the one day anybody was
+  // looking at it.
+  //
+  // The Worker applies plain Mon-Fri when a body names no weekdays (§4.2),
+  // which is what let Phase 3 ship before this existed; this is the client
+  // saying what it actually wants instead of taking that default.
+  function defaultWeekdaysFor(weekday) {
+    var out = [1, 2, 3, 4, 5];
+    if (out.indexOf(weekday) === -1) out.push(weekday);
+    return out.sort(function (a, b) { return a - b; });
+  }
+
+  // §7.1 for blocks — YOU MOVE WHAT YOU SEE. A drag writes the level that put
+  // the block where the finger found it, which is `resolvePlacement`'s
+  // `spanScope`. Writing the block row unconditionally (what shipped through
+  // Phase 4) is invisible until a weekday or date row carries a span, and the
+  // moment one does it becomes the worst failure a direct-manipulation
+  // gesture can have: the write lands on a level the Friday row is still
+  // overriding, so the block does not move.
+  //
+  // The span goes out as a PAIR at every level (§2.2) — both ends or neither,
+  // never half of one — and a DATE-level move carries `occurs: 1`, because a
+  // move is not a skip. Under §4.1's full-row contract an omitted `occurs`
+  // would be written NULL, which is not a valid `occurs` at all.
+  //
+  // Note the case this rule reads oddly on, recorded rather than special-cased
+  // (see §11.10): on a backup day whose date row carries no span of its own,
+  // `spanScope` is 'block', so dragging there moves the block's DEFAULT span —
+  // every scheduled day of the term. That IS the level in force for the span,
+  // so it is §7.1 applied rather than an exception to it, and §6.2's
+  // "Just today..." is the affordance for the other reading.
+  function planBlockMove(spanScope, startMin, endMin, date, weekday) {
+    if (spanScope === "date") {
+      return { level: "date", date: date, occurs: 1, startMin: startMin, endMin: endMin };
+    }
+    if (spanScope === "weekday") {
+      return { level: "weekday", weekday: weekday, startMin: startMin, endMin: endMin };
+    }
+    return { level: "block", startMin: startMin, endMin: endMin };
+  }
+
+  // §6.2's "Today" group, read off the state rather than remembered: which of
+  // the three radios is selected for this block on this date.
+  //
+  //   'not-today'    the block does not happen today
+  //   'as-scheduled' it happens, at the weekday row's span or the block's own
+  //   'just-today'   it happens, at a span belonging to this date alone
+  //
+  // A date row with `occurs: 1` and NO span is 'as-scheduled', not
+  // 'just-today': it says the block happens and says nothing about when, which
+  // is exactly Ray's backup Sunday. The sheet words the same three choices
+  // differently on a day the weekday list excludes ("Add for today" rather
+  // than "As scheduled", §6.2) — that is wording, and it lives in the UI; the
+  // choice itself is one enum either way.
+  function todayChoice(weekdayRow, dateRow) {
+    if (dateRow) {
+      if (dateRow.occurs !== 1) return "not-today";
+      return hasSpan(dateRow) ? "just-today" : "as-scheduled";
+    }
+    return weekdayRow ? "as-scheduled" : "not-today";
+  }
+
+  // §6.2/§2.2.1 — the write one of those three radios makes. The subtlety is
+  // that TWO of the three depend on whether the weekday list already schedules
+  // this date, because the date row exists only to DISAGREE with that list:
+  //
+  //   not-today    on a scheduled day     PUT occurs: 0      (the skip)
+  //                on an unscheduled day  DELETE             (the rule already says no)
+  //   as-scheduled on a scheduled day     DELETE             (fall back to the rule)
+  //                on an unscheduled day  PUT occurs: 1      (Ray's backup day)
+  //   just-today   either                 PUT occurs: 1 + span
+  //
+  // Writing an agreeing row instead of deleting would work and would be wrong:
+  // it pins the date against a later change to the weekday list, so editing
+  // the week would silently stop reaching the days somebody had already looked
+  // at. `span` is ignored except by 'just-today' — a skipped day has no time
+  // (§2.2.1), and 'as-scheduled' means "whatever the level below says".
+  function planDateWrite(choice, scheduledByWeekday, span) {
+    if (choice === "just-today") {
+      return { verb: "put", occurs: 1, startMin: span.startMin, endMin: span.endMin };
+    }
+    var occurs = choice === "not-today" ? 0 : 1;
+    if (scheduledByWeekday === (occurs === 1)) return { verb: "delete" };
+    return { verb: "put", occurs: occurs, startMin: null, endMin: null };
+  }
+
   // §5.3 — the rollups a renderer should actually draw. A member whose
   // activities are absent that date has `checked: null` and, per §5.2,
   // "simply disappears from that block's row list on the next render" — it
@@ -237,5 +335,9 @@
     scheduledWeekdays: scheduledWeekdays,
     resolvePlacement: resolvePlacement,
     renderableRollups: renderableRollups,
+    defaultWeekdaysFor: defaultWeekdaysFor,
+    planBlockMove: planBlockMove,
+    todayChoice: todayChoice,
+    planDateWrite: planDateWrite,
   };
 })(typeof window !== "undefined" ? window : globalThis);
