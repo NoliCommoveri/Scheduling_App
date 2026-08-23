@@ -1215,8 +1215,19 @@ button {
   pointer-events: auto;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 0.9rem;
   text-align: left;
+}
+
+/* Placement Scopes §7.2 — a move now offers up to three buttons (the two
+   scopes it did not write, plus Undo). The text takes the slack so a long
+   chore title shrinks rather than pushing a button off the toast, and the
+   row wraps rather than overflowing on a narrower screen. §11.8's budget is
+   three; nothing here should ever be asked to carry a fourth. */
+.wall-toast.with-action .wall-toast-text {
+  flex: 1 1 14ch;
 }
 
 .wall-toast-action {
@@ -1439,8 +1450,20 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 1.5rem;
+  gap: 1rem;
   margin: 1rem 0;
+}
+
+/* Placement Scopes §6.1 — the sheet has TWO steppers now (Starts, Takes), so
+   each names itself. Fixed-width so the two rows' +/- controls line up under
+   each other rather than shifting with the label's length; the gap above came
+   down from 1.5rem to pay for it on the card's 420px. */
+.duration-sheet-label {
+  flex: 0 0 4rem;
+  text-align: left;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-dim);
 }
 
 .duration-sheet-value {
@@ -1456,9 +1479,29 @@ button {
   margin: 0 0 1rem;
 }
 
-/* Stacked, not `.wiz-actions`' side-by-side row — three full-width buttons
-   with "This and future"/"Just this one"'s longer labels wrap illegibly at
-   two-per-row on the sheet's 420px card. */
+/* Placement Scopes §6.1 — the three scope buttons, one per level of §2.1's
+   chain, replacing the old two-button "Just this one / This and future" fork.
+   Side by side rather than stacked (the labels are short, and the three read
+   as one choice), with the level currently IN FORCE marked by being the only
+   filled `.btn` of the three — accent fill against two ghost outlines, which
+   is the same mark the rest of this app uses for a chosen option and reads
+   from across the room. */
+.duration-sheet-scopes {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+
+.duration-sheet-scopes .btn {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0.75rem 0.4rem;
+  font-size: 1rem;
+}
+
+
+/* Stacked, not `.wiz-actions`' side-by-side row. It carried three full-width
+   buttons when the scope fork lived here; Cancel is what is left. */
 .duration-sheet-actions {
   display: flex;
   flex-direction: column;
