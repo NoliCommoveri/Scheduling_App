@@ -18,6 +18,10 @@ import m0011 from '../../migrations/0011_wall_school_blocks.sql';
 import m0012 from '../../migrations/0012_grading_reviews.sql';
 import m0013 from '../../migrations/0013_mechanics_findings.sql';
 import m0014 from '../../migrations/0014_grading_page_count.sql';
+import m0015 from '../../migrations/0015_wall_slot_weekdays.sql';
+import m0016 from '../../migrations/0016_wall_slot_days_start.sql';
+import m0017 from '../../migrations/0017_wall_school_block_scopes.sql';
+import m0018 from '../../migrations/0018_wall_school_block_weekday_backfill.sql';
 
 export const MIGRATIONS = [
   { name: '0001_online_revamp_init.sql', sql: m0001 },
@@ -34,4 +38,8 @@ export const MIGRATIONS = [
   { name: '0012_grading_reviews.sql', sql: m0012 },
   { name: '0013_mechanics_findings.sql', sql: m0013 },
   { name: '0014_grading_page_count.sql', sql: m0014 },
+  { name: '0015_wall_slot_weekdays.sql', sql: m0015 },
+  { name: '0016_wall_slot_days_start.sql', sql: m0016 },
+  { name: '0017_wall_school_block_scopes.sql', sql: m0017 },
+  { name: '0018_wall_school_block_weekday_backfill.sql', sql: m0018 },
 ];

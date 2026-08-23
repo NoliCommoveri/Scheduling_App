@@ -140,6 +140,32 @@ export function isValidSlotDuration(value) {
   return Number.isInteger(value) && value > 0 && value % 15 === 0;
 }
 
+// ---- placement scopes (Placement_Scopes §2.1, §2.3, §4.3, Phase 1) ----
+
+// The weekday level of the placement chain, shared by chores
+// (`wall_slot_weekdays`) and school blocks (`wall_school_block_weekdays`).
+// 0 = Sunday .. 6 = Saturday, matching §6's Sunday-first week so the number in
+// the table and the column on screen are the same number.
+//
+// The Worker NEVER derives a weekday — it stores and returns what the client
+// sends (§2.3). That is deliberate: `new Date("2026-08-23")` parses as UTC
+// midnight, which is the previous day in every timezone west of Greenwich, so
+// a server-side conversion would be wrong for exactly the household this is
+// built for and right in every test run under UTC. There is one
+// implementation, it is `TimeCore.weekdayOf`, and it is client-side. This
+// helper only checks the range.
+export function isValidWeekday(value) {
+  return Number.isInteger(value) && value >= 0 && value <= 6;
+}
+
+// A start-time override at the weekday or occurrence level (§2.1 rows 1-2).
+// Unlike `wall_slots.start_min` — NOT NULL, and its presence IS the placement
+// (§2.1 row 4) — an override level may say nothing, and `null` is how it says
+// so. Mirrors how isValidSlotDuration already treats a nullable override.
+export function isValidStartMinOverride(value) {
+  return value === null || isValidStartMin(value);
+}
+
 // ---- school blocks (Wall Calendar Redesign §5.5, §12, Phase 7) ----
 
 // A block's label is optional and cosmetic only (§5.1.1) — not a key, just a
@@ -166,6 +192,61 @@ export const MAX_COURSE_NAME_LEN = 200;
 
 export function isValidCourseName(value) {
   return typeof value === 'string' && value.length > 0 && value.length <= MAX_COURSE_NAME_LEN;
+}
+
+// ---- school block scopes (Placement_Scopes §2.2, §2.2.1, §4.3, Phase 1) ----
+
+// A block's span at ANY level resolves as a pair, never column by column
+// (§2.2): both set, or both NULL. `start_min` and `end_min` are two ends of
+// one span, not two independent facts the way a chore's start and duration
+// are, and mixing levels can compose `end_min <= start_min` — which the grid's
+// absolute positioning, §4.4's bucketing and the early/late strips all treat
+// as impossible. Resolving as a pair makes that unrepresentable rather than
+// merely validated against.
+//
+// `end_min` may be 1440 (midnight) — it is an END, so unlike isValidStartMin's
+// exclusive bound it may name the close of the day. That is also why this does
+// not simply call isValidStartMin twice.
+// `undefined` is REJECTED, not treated as null. §4.1's full-row PUT says an
+// omitted field is written NULL, so it is the route's job to normalize
+// `undefined -> null` before calling — exactly as handleWallSlotPut already
+// does for `durationMin`. Doing it here instead would let a body with a
+// misspelled key validate as "clear the span", which is the one outcome a
+// typo should never quietly produce.
+export function isValidBlockSpan(startMin, endMin) {
+  if (startMin === null && endMin === null) return true;      // inherit the level below
+  if (!isValidStartMin(startMin)) return false;
+  if (!Number.isInteger(endMin) || endMin % 15 !== 0) return false;
+  if (endMin > 1440) return false;
+  return endMin > startMin;
+}
+
+// §2.2.1 — `occurs` decides a single date outright, in both directions:
+// 0 skips a scheduled day, 1 adds an unscheduled one. Checked STRICTLY, not
+// for truthiness: a body carrying "0" or false is a client bug, and coercing
+// it would turn that bug into a silently skipped school day.
+export function isValidOccurs(value) {
+  return value === 0 || value === 1;
+}
+
+// The cross-field rule for a date row, kept here beside the two helpers it
+// composes rather than inline in the route, so the one rule that spans columns
+// is testable at the same boundary as the ones that do not (§8, test 7a).
+//
+// A SKIPPED DAY HAS NO TIME: `occurs: 0` carrying a span is rejected rather
+// than accepted-and-ignored, because a stored span nobody reads is a fact
+// waiting to be believed by a later reader of the table.
+// `occurs` is required here even though the column defaults to 1 (§3.3's
+// DDL). The default exists so a row written by some future path still means
+// "happens"; it is not a licence for the route to accept a body that omits
+// the field, since under §4.1 an omitted field means NULL and NULL is not a
+// valid `occurs`. Phase 2's route sends what the body carried and 400s if
+// that is not 0 or 1.
+export function isValidBlockDateException(occurs, startMin, endMin) {
+  if (!isValidOccurs(occurs)) return false;
+  if (!isValidBlockSpan(startMin, endMin)) return false;
+  if (occurs === 0 && !(startMin === null && endMin === null)) return false;
+  return true;
 }
 
 // ---- grading assistant (Grading_Assistant §1.1, §5, Phase 1) ----
