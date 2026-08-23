@@ -300,10 +300,23 @@
 
   // §5.4 — mints a new block ("+ School"). `label` may be omitted or null
   // for the "School" default.
-  function postSchoolBlock(childId, startMin, durationMin, label) {
+  //
+  // Placement Scopes §4.2/§6.4 — `weekdays` is the block's SCHEDULE, written
+  // WITH the block in one `batch()` rather than by follow-up PUTs, because
+  // every wall write is online-required with no outbox (§1) and five separate
+  // writes have four places to stop halfway. Omitting it is not neutral: the
+  // Worker then applies plain Mon-Fri, which is invisible on a weekend
+  // (§2.2 — no weekday row, no block). Callers say what they want.
+  //
+  // The response echoes the list actually stored, so an optimistic append can
+  // carry the schedule instead of guessing it.
+  function postSchoolBlock(childId, startMin, durationMin, label, weekdays) {
     return request("/api/wall/school-blocks", {
       method: "POST",
-      body: { childId: childId, startMin: startMin, durationMin: durationMin, label: label || null },
+      body: {
+        childId: childId, startMin: startMin, durationMin: durationMin,
+        label: label || null, weekdays: weekdays || null,
+      },
     });
   }
 
@@ -319,6 +332,54 @@
   // §5.4 — un-places the block; the Worker cascades to its membership rows.
   function deleteSchoolBlock(id) {
     return request("/api/wall/school-blocks/" + encodeURIComponent(id), { method: "DELETE" });
+  }
+
+  // Placement Scopes §4.2 (Phase 2's routes, Phase 5a's client) ---------------
+  // The block's two override levels. `wall_school_block_weekdays` presence IS
+  // the schedule (§2.2), so these two are not a time editor with a scheduling
+  // side effect — the PUT is what puts the block on that day and the DELETE is
+  // what takes it off.
+  //
+  // The span is a PAIR at every level (§2.2): both ends or both null, never
+  // one. `null`/`null` means "this day happens, at the block's own span",
+  // which is what every row migration 0018 backfilled holds.
+  function putSchoolBlockWeekday(id, weekday, startMin, endMin) {
+    return request("/api/wall/school-blocks/" + encodeURIComponent(id) + "/weekdays", {
+      method: "PUT",
+      body: { weekday: weekday, startMin: startMin == null ? null : startMin, endMin: endMin == null ? null : endMin },
+    });
+  }
+
+  function deleteSchoolBlockWeekday(id, weekday) {
+    return request("/api/wall/school-blocks/" + encodeURIComponent(id) + "/weekdays", {
+      method: "DELETE",
+      body: { weekday: weekday },
+    });
+  }
+
+  // §2.2.1 — the per-date exception, which decides its own date outright and
+  // in BOTH directions: `occurs: 0` skips a scheduled day, `occurs: 1` adds an
+  // unscheduled one. `occurs` is required, not defaulted here, because under
+  // §4.1 an omitted field is written NULL and NULL is not a valid `occurs`.
+  //
+  // A skipped day carries no span — the Worker rejects `occurs: 0` with one
+  // (§4.3) rather than accepting and ignoring it, so callers must pass nulls.
+  function putSchoolBlockDate(id, date, occurs, startMin, endMin) {
+    return request("/api/wall/school-blocks/" + encodeURIComponent(id) + "/dates", {
+      method: "PUT",
+      body: {
+        date: date, occurs: occurs,
+        startMin: startMin == null ? null : startMin,
+        endMin: endMin == null ? null : endMin,
+      },
+    });
+  }
+
+  function deleteSchoolBlockDate(id, date) {
+    return request("/api/wall/school-blocks/" + encodeURIComponent(id) + "/dates", {
+      method: "DELETE",
+      body: { date: date },
+    });
   }
 
   // §5.2 — checking a box in the membership picker. Idempotent.
@@ -358,6 +419,10 @@
     postSchoolBlock: postSchoolBlock,
     putSchoolBlock: putSchoolBlock,
     deleteSchoolBlock: deleteSchoolBlock,
+    putSchoolBlockWeekday: putSchoolBlockWeekday,
+    deleteSchoolBlockWeekday: deleteSchoolBlockWeekday,
+    putSchoolBlockDate: putSchoolBlockDate,
+    deleteSchoolBlockDate: deleteSchoolBlockDate,
     putSchoolBlockCourse: putSchoolBlockCourse,
     deleteSchoolBlockCourse: deleteSchoolBlockCourse,
     request: request,

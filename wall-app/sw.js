@@ -131,7 +131,7 @@
 // `slots-core.js` gains the write-shape helpers (`planScopeWrite`,
 // `levelRow`, `overrideWrite`); wall.css gains the second stepper's label,
 // the scope row and the toast's wrapping.
-const CACHE_NAME = "wall-display-shell-v18";
+const CACHE_NAME = "wall-display-shell-v20";
 
 const APP_SHELL = [
   "./",
