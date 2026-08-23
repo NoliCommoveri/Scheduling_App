@@ -1,0 +1,19 @@
+-- Placement Scopes §2.1 — the occurrence level gains a start time. This is
+-- exactly the column TDS_Slice_Wall_Calendar_Redesign.md §17.1 sketched and
+-- deferred ("one nullable start_min column and one more button"), built now
+-- that Ray is fighting the carry-forward on times (§0.2/§0.3).
+--
+-- wall_slot_days already carries duration_min and is already keyed by date;
+-- this adds the second overridable column beside it. A row with both NULL is
+-- meaningless — the Worker deletes rather than writing one — which is the
+-- same rule migrations/0010 states for duration_min alone.
+--
+-- migrations/0010 (which creates wall_slot_days) is NOT edited: forward-only,
+-- per CLAUDE.md §III.D and Online_Revamp §3.7.1. A new file instead.
+--
+-- Note for whoever reads the API next: handleWallSlotsGet does
+-- `SELECT * FROM wall_slot_days` (worker/index.js), so `days[]` in
+-- GET /api/wall/slots starts carrying `start_min: null` the moment this
+-- applies, with no Worker change. That is inert — the wall ignores keys it
+-- does not read — and it is why §4.2's "widened" day array costs nothing.
+ALTER TABLE wall_slot_days ADD COLUMN start_min INTEGER;
