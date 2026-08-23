@@ -50,8 +50,11 @@
     rowsById: Object.create(null),
     slots: [],
     slotDays: [],
+    slotWeekdays: [],
     schoolBlocks: [],
     schoolBlockCourses: [],
+    schoolBlockWeekdays: [],
+    schoolBlockDates: [],
     lastSuccessAt: null,
     lastAttemptAt: null,
     lastError: null,
@@ -72,8 +75,11 @@
       rows: values(state.rowsById),
       slots: state.slots,
       slotDays: state.slotDays,
+      slotWeekdays: state.slotWeekdays,
       schoolBlocks: state.schoolBlocks,
       schoolBlockCourses: state.schoolBlockCourses,
+      schoolBlockWeekdays: state.schoolBlockWeekdays,
+      schoolBlockDates: state.schoolBlockDates,
       lastSuccessAt: state.lastSuccessAt,
       lastAttemptAt: state.lastAttemptAt,
       lastError: state.lastError,
@@ -134,10 +140,13 @@
           .concat([g.WallApi.getSlots().then(function (res) {
             state.slots = res.slots;
             state.slotDays = res.days;
+            state.slotWeekdays = res.slotWeekdays;
           })])
           .concat([g.WallApi.getSchoolBlocks().then(function (res) {
             state.schoolBlocks = res.blocks;
             state.schoolBlockCourses = res.blockCourses;
+            state.schoolBlockWeekdays = res.blockWeekdays;
+            state.schoolBlockDates = res.blockDates;
           })])
       );
     }).then(function () {

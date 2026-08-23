@@ -313,8 +313,29 @@
   // `state.schoolBlocks`/`state.schoolBlockCourses` directly rather than
   // through SlotsCore, which only ever resolves chore rows (§3.1's table).
 
-  function blocksForChild(state, childId) {
-    return (state.schoolBlocks || []).filter(function (b) { return b.child_id === childId; });
+  // Placement Scopes §5.2 (Phase 3) — was `blocksForChild(state, childId)`,
+  // which filtered on `child_id` alone. THAT is §0.1: nothing asked which days
+  // a block happens on, so every block rendered on every date, weekends
+  // included. It now filters on the child AND `blockOccursOn`.
+  //
+  // The returned rows are live references into `state.schoolBlocks` — this
+  // filters, it does not clone — because `moveSchoolBlock` mutates one in
+  // place to keep an optimistic render in sync. The resolved span rides on
+  // the block ENTRY instead (`blockEntry` below), which is the read side.
+  function blockIndexes(state) {
+    return {
+      weekdays: g.SchoolCore.indexBlockWeekdays(state.schoolBlockWeekdays),
+      dates: g.SchoolCore.indexBlockDates(state.schoolBlockDates),
+    };
+  }
+
+  function blocksForChildOn(state, childId, date) {
+    var idx = blockIndexes(state);
+    var weekday = g.TimeCore.weekdayOf(date);
+    return (state.schoolBlocks || []).filter(function (b) {
+      return b.child_id === childId &&
+        g.SchoolCore.blockOccursOn(idx.weekdays, idx.dates, b.id, date, weekday);
+    });
   }
 
   function membersOf(state, blockId) {
@@ -328,11 +349,36 @@
   }
 
   // The full read for one block on one rendered date: its member courses'
-  // rollups (§5.3) and whether every one of them is checked.
+  // rollups (§5.3), whether every one of them is checked, and — Placement
+  // Scopes §2.2 — the span to actually draw it at.
+  //
+  // `startMin`/`endMin` here are the RESOLVED pair (date row, else weekday
+  // row, else the block's own), not `block.start_min`/`block.end_min`. Every
+  // render path reads them from the entry; the write paths (moveSchoolBlock,
+  // the block sheet) still address `block` directly, which is correct for
+  // today — they write the standing level, and §7.1's "write the level that
+  // is winning" rule is Phase 5's.
+  //
+  // `collapsed` and the rollups are computed from the RENDERABLE rollups
+  // (§5.3): a member with nothing that date has nothing to show and is not
+  // drawn, so it must not be able to hold the block open either.
   function blockEntry(state, child, block, date) {
     var members = membersOf(state, block.id);
-    var rollups = g.SchoolCore.memberRollups(state.rows, child.id, date, members);
-    return { block: block, rollups: rollups, collapsed: g.SchoolCore.isCollapsed(rollups) };
+    var rollups = g.SchoolCore.renderableRollups(
+      g.SchoolCore.memberRollups(state.rows, child.id, date, members)
+    );
+    var idx = blockIndexes(state);
+    var placement = g.SchoolCore.resolvePlacement(
+      idx.weekdays, idx.dates, block, date, g.TimeCore.weekdayOf(date)
+    );
+    return {
+      block: block,
+      rollups: rollups,
+      collapsed: g.SchoolCore.isCollapsed(rollups),
+      startMin: placement.startMin,
+      endMin: placement.endMin,
+      spanScope: placement.spanScope,
+    };
   }
 
   // Adapts a block entry to the shape buildStrip (§4.3's early/late strips)
@@ -340,7 +386,7 @@
   // block placed outside 06:00-23:00 shows there too rather than being
   // silently dropped.
   function blockStripItem(be) {
-    return { row: { title: blockLabel(be.block) }, chip: { startMin: be.block.start_min } };
+    return { row: { title: blockLabel(be.block) }, chip: { startMin: be.startMin } };
   }
 
   function positionGhost(ghost, x, y) {
@@ -355,11 +401,12 @@
     if (!g.SlotsCore.isPrivateChore(row)) return null;
     var slotsIdx = g.SlotsCore.indexSlots(current.state.slots);
     var daysIdx = g.SlotsCore.indexDays(current.state.slotDays);
+    var wdIdx = g.SlotsCore.indexWeekdays(current.state.slotWeekdays);
     var chores = g.ChoresCore.choresForChild(current.state.rows, row.child_id, current.date, current.state.today);
     var others = [];
     chores.forEach(function (r) {
       if (r.id === row.id) return; // exclude the subject being moved
-      others.push({ row: r, chip: g.SlotsCore.resolveChip(slotsIdx, daysIdx, r, current.date) });
+      others.push({ row: r, chip: g.SlotsCore.resolveChip(slotsIdx, wdIdx, daysIdx, r, current.date) });
     });
     return g.SlotsCore.findCollision(row, candidateStart, candidateDuration, others);
   }
@@ -448,7 +495,7 @@
     var existingSlot = g.SlotsCore.placementFor(slotsIdx, row);
     var durationOverride = existingSlot ? existingSlot.duration_min : null; // preserved, never guessed (§3.5.1)
     var wasAt = existingSlot ? existingSlot.start_min : null; // null = it was in the tray
-    var chip = g.SlotsCore.resolveChip(slotsIdx, g.SlotsCore.indexDays(current.state.slotDays), row, current.date);
+    var chip = g.SlotsCore.resolveChip(slotsIdx, g.SlotsCore.indexWeekdays(current.state.slotWeekdays), g.SlotsCore.indexDays(current.state.slotDays), row, current.date);
     var collision = findCollisionForDrop(row, startMin, chip.durationMin);
     var fmt = (g.Store.getSettings().timeFormat) || "24h";
 
@@ -534,7 +581,8 @@
   function showDurationSheet(row) {
     var slotsIdx = g.SlotsCore.indexSlots(current.state.slots);
     var daysIdx = g.SlotsCore.indexDays(current.state.slotDays);
-    var chip = g.SlotsCore.resolveChip(slotsIdx, daysIdx, row, current.date);
+    var wdIdx = g.SlotsCore.indexWeekdays(current.state.slotWeekdays);
+    var chip = g.SlotsCore.resolveChip(slotsIdx, wdIdx, daysIdx, row, current.date);
     if (chip.startMin == null) return; // not placed — the sheet has nothing to adjust
     sheetState = { row: row, value: chip.durationMin };
     rerenderNow();
@@ -622,10 +670,16 @@
     var row = s.row;
     var slotsIdx = g.SlotsCore.indexSlots(current.state.slots);
     var daysIdx = g.SlotsCore.indexDays(current.state.slotDays);
+    var wdIdx = g.SlotsCore.indexWeekdays(current.state.slotWeekdays);
     var slot = g.SlotsCore.placementFor(slotsIdx, row);
     if (!slot) { sheetState = null; return; } // un-placed from under us while open — drop silently
     var dayOverride = g.SlotsCore.dayOverrideFor(daysIdx, row, current.date);
-    var overridden = g.SlotsCore.isOverridden(slot, dayOverride);
+    // Placement Scopes §2.1 — three override levels now, so the marker asks
+    // all three. Passing only the date row here would light the "Use the
+    // assigned time" reset for a chip whose duration comes from a weekday row
+    // and leave it dark for one that has only a weekday override.
+    var weekdayOverride = g.SlotsCore.weekdayOverrideFor(wdIdx, row, g.TimeCore.weekdayOf(current.date));
+    var overridden = g.SlotsCore.isOverridden(slot, weekdayOverride, dayOverride);
     var assigned = g.SlotsCore.assignedDurationMin(row);
 
     var overlay = el(
@@ -929,13 +983,23 @@
   // trigger).
   var DEFAULT_BLOCK_DURATION_MIN = 60;
 
-  function nextFreeBlockStart(state, childId, durationMin) {
-    var existing = blocksForChild(state, childId);
+  // Placement Scopes §5.2 — takes the DATE-filtered set. A block created on a
+  // Saturday should not dodge the span of one that only happens on Mondays;
+  // it would land lower down the grid than it needed to. Harmless and
+  // invisible when it happens, and cheap to get right.
+  function nextFreeBlockStart(state, childId, durationMin, date) {
+    var idx = blockIndexes(state);
+    var weekday = g.TimeCore.weekdayOf(date);
+    // Resolved spans, not the block rows' own: the gap this looks for is a
+    // gap in what will be DRAWN that day (§2.2).
+    var existing = blocksForChildOn(state, childId, date).map(function (b) {
+      return g.SchoolCore.resolvePlacement(idx.weekdays, idx.dates, b, date, weekday);
+    });
     var start = GRID_START_MIN;
     var limit = GRID_END_MIN - durationMin;
     while (start <= limit) {
       var end = start + durationMin;
-      var overlaps = existing.some(function (b) { return start < b.end_min && b.start_min < end; });
+      var overlaps = existing.some(function (b) { return start < b.endMin && b.startMin < end; });
       if (!overlaps) return start;
       start += ROW_MIN;
     }
@@ -943,12 +1007,24 @@
   }
 
   function createSchoolBlock(child) {
-    var startMin = nextFreeBlockStart(current.state, child.id, DEFAULT_BLOCK_DURATION_MIN);
+    var startMin = nextFreeBlockStart(current.state, child.id, DEFAULT_BLOCK_DURATION_MIN, current.date);
     g.WallApi.postSchoolBlock(child.id, startMin, DEFAULT_BLOCK_DURATION_MIN, null).then(function (res) {
       current.state.schoolBlocks = (current.state.schoolBlocks || []).concat([{
         id: res.id, child_id: child.id, label: null,
         start_min: startMin, end_min: startMin + DEFAULT_BLOCK_DURATION_MIN,
       }]);
+      // Placement Scopes §2.2 — the optimistic append must carry the block's
+      // SCHEDULE too, or `blocksForChildOn` filters the new block straight
+      // back out and it flickers away until the next poll returns. The slice
+      // (§9) predicted this and left it to Phase 5; it costs four lines here
+      // because the route already answers with the weekday list it applied,
+      // including the Mon-Fri default when the body named none.
+      var weekdays = res.weekdays || [1, 2, 3, 4, 5];
+      current.state.schoolBlockWeekdays = (current.state.schoolBlockWeekdays || []).concat(
+        weekdays.map(function (weekday) {
+          return { block_id: res.id, weekday: weekday, start_min: null, end_min: null };
+        })
+      );
       rerenderNow();
       showToast("School block added to " + child.name);
       g.Poll.pollNow();
@@ -1301,7 +1377,9 @@
   // membership picker instead (attachGesture's onTap in buildColumn).
   function schoolBlockChipHtml(be, fmt) {
     var block = be.block;
-    var span = g.TimeCore.formatMinutes(block.start_min, fmt) + "–" + g.TimeCore.formatMinutes(block.end_min, fmt);
+    // The RESOLVED span (§2.2), not the block row's own — on a date or
+    // weekday the block has its own time for, those differ.
+    var span = g.TimeCore.formatMinutes(be.startMin, fmt) + "–" + g.TimeCore.formatMinutes(be.endMin, fmt);
     if (be.collapsed) {
       return (
         '<div class="school-block-chip school-block-collapsed" data-block-id="' + escapeHtml(block.id) + '">' +
@@ -1339,7 +1417,7 @@
   // member course: block-mode rows are already compact by design (§4.4).
   function schoolBlockListItemHtml(be, fmt) {
     var block = be.block;
-    var span = g.TimeCore.formatMinutes(block.start_min, fmt) + "–" + g.TimeCore.formatMinutes(block.end_min, fmt);
+    var span = g.TimeCore.formatMinutes(be.startMin, fmt) + "–" + g.TimeCore.formatMinutes(be.endMin, fmt);
     var summary = be.collapsed
       ? "All courses done"
       : be.rollups.map(function (r) {
@@ -1476,7 +1554,7 @@
     var blockSpans = [];
     (entry.blocks || []).forEach(function (be) {
       var top = ((be.topMin - rangeStart) / ROW_MIN) * rh;
-      var rows = Math.max(1, Math.ceil((be.block.end_min - be.block.start_min) / ROW_MIN));
+      var rows = Math.max(1, Math.ceil((be.endMin - be.startMin) / ROW_MIN));
       var chip = el(schoolBlockChipHtml(be, opts.fmt));
       chip.style.top = top + "px";
       chip.style.height = (rows * rh - 2) + "px";
@@ -1490,7 +1568,7 @@
         showBlockSheet(be.block);
       }, function (startMin) {
         moveSchoolBlock(be.block, startMin);
-      }, null, be.block.start_min);
+      }, null, be.startMin);
       col.appendChild(chip);
     });
 
@@ -1628,22 +1706,23 @@
   function layoutPerChildGrid(state, date) {
     var slotsIdx = g.SlotsCore.indexSlots(state.slots);
     var daysIdx = g.SlotsCore.indexDays(state.slotDays);
+    var wdIdx = g.SlotsCore.indexWeekdays(state.slotWeekdays);
     return (state.children || []).map(function (child) {
       var chores = g.ChoresCore.choresForChild(state.rows, child.id, date, state.today);
       var placed = [], unplaced = [], early = [], late = [];
       chores.forEach(function (row) {
-        var chip = g.SlotsCore.resolveChip(slotsIdx, daysIdx, row, date);
+        var chip = g.SlotsCore.resolveChip(slotsIdx, wdIdx, daysIdx, row, date);
         if (chip.startMin == null) { unplaced.push(row); return; }
         if (chip.startMin < GRID_START_MIN) { early.push({ row: row, chip: chip }); return; }
         if (chip.startMin >= GRID_END_MIN) { late.push({ row: row, chip: chip }); return; }
         placed.push({ row: row, chip: chip, topMin: chip.startMin });
       });
       var blocks = [];
-      blocksForChild(state, child.id).forEach(function (block) {
+      blocksForChildOn(state, child.id, date).forEach(function (block) {
         var be = blockEntry(state, child, block, date);
-        if (block.start_min < GRID_START_MIN) { early.push(blockStripItem(be)); return; }
-        if (block.start_min >= GRID_END_MIN) { late.push(blockStripItem(be)); return; }
-        be.topMin = block.start_min;
+        if (be.startMin < GRID_START_MIN) { early.push(blockStripItem(be)); return; }
+        if (be.startMin >= GRID_END_MIN) { late.push(blockStripItem(be)); return; }
+        be.topMin = be.startMin;
         blocks.push(be);
       });
       return { child: child, placed: placed, unplaced: unplaced, early: early, late: late, blocks: blocks };
@@ -1673,23 +1752,24 @@
   function layoutPerChildByBlock(state, date) {
     var slotsIdx = g.SlotsCore.indexSlots(state.slots);
     var daysIdx = g.SlotsCore.indexDays(state.slotDays);
+    var wdIdx = g.SlotsCore.indexWeekdays(state.slotWeekdays);
     return (state.children || []).map(function (child) {
       var chores = g.ChoresCore.choresForChild(state.rows, child.id, date, state.today);
       var buckets = { morning: [], afternoon: [], evening: [], night: [] };
       chores.forEach(function (row) {
-        var chip = g.SlotsCore.resolveChip(slotsIdx, daysIdx, row, date);
+        var chip = g.SlotsCore.resolveChip(slotsIdx, wdIdx, daysIdx, row, date);
         buckets[g.ChoresCore.blockForChip(row, chip)].push({ kind: "chore", row: row, chip: chip });
       });
-      blocksForChild(state, child.id).forEach(function (block) {
+      blocksForChildOn(state, child.id, date).forEach(function (block) {
         var be = blockEntry(state, child, block, date);
-        buckets[g.ChoresCore.blockFromStartMin(block.start_min)].push({ kind: "school", entry: be });
+        buckets[g.ChoresCore.blockFromStartMin(be.startMin)].push({ kind: "school", entry: be });
       });
       g.ChoresCore.CANON_BLOCKS.forEach(function (b) {
         // Placed items first, ordered by time; unplaced last (§6's convention
         // for week view, reused here for the same reason: a time beats no time).
         buckets[b].sort(function (a, bItem) {
-          var at = a.kind === "school" ? a.entry.block.start_min : a.chip.startMin;
-          var bt = bItem.kind === "school" ? bItem.entry.block.start_min : bItem.chip.startMin;
+          var at = a.kind === "school" ? a.entry.startMin : a.chip.startMin;
+          var bt = bItem.kind === "school" ? bItem.entry.startMin : bItem.chip.startMin;
           if (at == null && bt == null) return 0;
           if (at == null) return 1;
           if (bt == null) return -1;
@@ -1776,20 +1856,21 @@
   function layoutPerChildForBlock(state, date, blockName) {
     var slotsIdx = g.SlotsCore.indexSlots(state.slots);
     var daysIdx = g.SlotsCore.indexDays(state.slotDays);
+    var wdIdx = g.SlotsCore.indexWeekdays(state.slotWeekdays);
     return (state.children || []).map(function (child) {
       var chores = g.ChoresCore.choresForChild(state.rows, child.id, date, state.today);
       var placed = [], unplaced = [];
       chores.forEach(function (row) {
-        var chip = g.SlotsCore.resolveChip(slotsIdx, daysIdx, row, date);
+        var chip = g.SlotsCore.resolveChip(slotsIdx, wdIdx, daysIdx, row, date);
         if (g.ChoresCore.blockForChip(row, chip) !== blockName) return;
         if (chip.startMin == null) { unplaced.push(row); return; }
         placed.push({ row: row, chip: chip, topMin: g.ChoresCore.blockVirtualMin(chip.startMin, blockName) });
       });
       var blocks = [];
-      blocksForChild(state, child.id).forEach(function (block) {
-        if (g.ChoresCore.blockFromStartMin(block.start_min) !== blockName) return;
+      blocksForChildOn(state, child.id, date).forEach(function (block) {
         var be = blockEntry(state, child, block, date);
-        be.topMin = g.ChoresCore.blockVirtualMin(block.start_min, blockName);
+        if (g.ChoresCore.blockFromStartMin(be.startMin) !== blockName) return;
+        be.topMin = g.ChoresCore.blockVirtualMin(be.startMin, blockName);
         blocks.push(be);
       });
       return { child: child, placed: placed, unplaced: unplaced, blocks: blocks };

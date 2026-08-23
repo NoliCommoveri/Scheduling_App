@@ -26,6 +26,11 @@ import {
   SLOT_SUBJECT_KINDS,
   isValidStartMin,
   isValidSlotDuration,
+  isValidWeekday,
+  isValidStartMinOverride,
+  isValidBlockSpan,
+  isValidOccurs,
+  isValidBlockDateException,
   isValidBlockLabel,
   isValidBlockDuration,
   isValidCourseName,
@@ -446,6 +451,17 @@ async function routeApi(request, env, ctx, url) {
     return withWall(request, env, ctx, (wall) => withJsonBody(request, (body) =>
       handleWallSlotDayDelete(env, wall, body)));
   }
+  // Placement Scopes §4.2 (Phase 2) — the weekday level, between the standing
+  // placement above and the per-date override beside it. Same key, same
+  // sentinel rule, same `resolveSlotChildId`; only the level differs.
+  if (pathname === '/api/wall/slots/weekday' && method === 'PUT') {
+    return withWall(request, env, ctx, (wall) => withJsonBody(request, (body) =>
+      handleWallSlotWeekdayPut(env, wall, body)));
+  }
+  if (pathname === '/api/wall/slots/weekday' && method === 'DELETE') {
+    return withWall(request, env, ctx, (wall) => withJsonBody(request, (body) =>
+      handleWallSlotWeekdayDelete(env, wall, body)));
+  }
   if (pathname === '/api/wall/events' && method === 'GET') {
     return withWall(request, env, ctx, () => handleWallEvents(url, env));
   }
@@ -481,6 +497,29 @@ async function routeApi(request, env, ctx, url) {
   if (schoolBlockCoursesMatch && method === 'DELETE') {
     return withWall(request, env, ctx, () => withJsonBody(request, (body) =>
       handleWallSchoolBlockCourseDelete(env, schoolBlockCoursesMatch[1], body)));
+  }
+
+  // Placement Scopes §4.2 (Phase 2) — a block's weekday schedule and its
+  // per-date exception. Keyed by block id like the courses routes above and
+  // gated the same way (the block must exist, or 404); they name no child of
+  // their own because the block row already does.
+  const schoolBlockWeekdaysMatch = /^\/api\/wall\/school-blocks\/([^/]+)\/weekdays$/.exec(pathname);
+  if (schoolBlockWeekdaysMatch && method === 'PUT') {
+    return withWall(request, env, ctx, () => withJsonBody(request, (body) =>
+      handleWallSchoolBlockWeekdayPut(env, schoolBlockWeekdaysMatch[1], body)));
+  }
+  if (schoolBlockWeekdaysMatch && method === 'DELETE') {
+    return withWall(request, env, ctx, () => withJsonBody(request, (body) =>
+      handleWallSchoolBlockWeekdayDelete(env, schoolBlockWeekdaysMatch[1], body)));
+  }
+  const schoolBlockDatesMatch = /^\/api\/wall\/school-blocks\/([^/]+)\/dates$/.exec(pathname);
+  if (schoolBlockDatesMatch && method === 'PUT') {
+    return withWall(request, env, ctx, () => withJsonBody(request, (body) =>
+      handleWallSchoolBlockDatePut(env, schoolBlockDatesMatch[1], body)));
+  }
+  if (schoolBlockDatesMatch && method === 'DELETE') {
+    return withWall(request, env, ctx, () => withJsonBody(request, (body) =>
+      handleWallSchoolBlockDateDelete(env, schoolBlockDatesMatch[1], body)));
   }
 
   return json({ error: 'Not found.' }, 404);
@@ -1629,18 +1668,30 @@ async function handleWallSlotsGet(url, env) {
   daysSql += ` ORDER BY date, child_id, subject_kind, subject_key, instance_key`;
   const { results: dayRows } = await env.DB.prepare(daysSql).bind(...daysParams).all();
 
-  // Two arrays, so capRows' single `truncated`/`limit` shape would collide if
-  // both were capped — named separately instead of reused generically.
+  // Placement Scopes §4.2 (Phase 2) — the weekday level is UNBOUNDED by the
+  // window, like `slots` and unlike `days`: a weekday row carries no date, so
+  // there is nothing here for `from`/`to` to bound. It is at most seven rows
+  // per placed chore by construction (the primary key ends in `weekday`).
+  const { results: weekdayRows } = await env.DB.prepare(
+    `SELECT * FROM wall_slot_weekdays ORDER BY child_id, subject_kind, subject_key, instance_key, weekday`
+  ).all();
+
+  // Three arrays now, so capRows' single `truncated`/`limit` shape would
+  // collide if more than one were capped — named separately instead of reused
+  // generically.
   const slotsCapped = slotRows.length > MAX_QUERY_ROWS;
   const daysCapped = dayRows.length > MAX_QUERY_ROWS;
+  const weekdaysCapped = weekdayRows.length > MAX_QUERY_ROWS;
   const body = {
     slots: slotsCapped ? slotRows.slice(0, MAX_QUERY_ROWS) : slotRows,
     days: daysCapped ? dayRows.slice(0, MAX_QUERY_ROWS) : dayRows,
+    slotWeekdays: weekdaysCapped ? weekdayRows.slice(0, MAX_QUERY_ROWS) : weekdayRows,
     from,
     to,
   };
   if (slotsCapped) body.slotsTruncated = true;
   if (daysCapped) body.daysTruncated = true;
+  if (weekdaysCapped) body.slotWeekdaysTruncated = true;
   return json(body);
 }
 
@@ -1679,9 +1730,36 @@ async function handleWallSlotPut(env, wall, body) {
   return json({ ok: true });
 }
 
-// §12 — un-place; the chore returns to the tray. Also clears that subject's
-// `wall_slot_days` rows: an override of a placement that no longer exists is
-// unreachable garbage.
+// §12 — un-place; the chore returns to the tray.
+//
+// Placement Scopes §11.6, ANSWERED by Ray 2026-08-23: this route is
+// STANDING-SCOPED and non-destructive. It deletes the `wall_slots` row and
+// NOTHING else — not `wall_slot_days`, which it used to sweep, and not
+// `wall_slot_weekdays`, which §3.4's first draft would have added.
+//
+// Two facts drove the answer. First, the sweep had no honest undo: the tray
+// gesture is the route's ONLY caller (`day-ui.js:505`, plus the same call in
+// its own Undo path), and Undo restores just the standing row's start and
+// duration — so every per-day override it destroyed was already gone for
+// good behind a button that said otherwise. Second, §3.4's alternative
+// trigger ("clean up when the subject disappears") does not exist on the
+// chore side: a chore's existence is the assignment row's fact (§1) and the
+// wall is never told one was deleted, so moving the sweep there would have
+// left the override levels with no cleanup path at all.
+//
+// What makes leaving the rows safe is that an override level cannot place a
+// chore by itself — only a `wall_slots` row can, because `start_min` is NOT
+// NULL there and its presence IS the placement (§2.1 row 4). That is not a
+// new rule invented to rescue this route: `resolveChip` already reads
+// `startMin` from the standing row alone, so a `wall_slot_days` row with no
+// placement under it is inert TODAY. Phase 3 extends exactly that to the
+// weekday level, which also answers §11.7 in the negative — a Friday-only
+// chore with no standing placement is not reachable, by design.
+//
+// The consequence, stated because §3.4 called it a hazard before it was a
+// feature: re-placing the same chore later restores its weekday and date
+// times. Ray chose that. Clearing an override level is its own explicit act
+// — DELETE /api/wall/slots/weekday, DELETE /api/wall/slots/day.
 async function handleWallSlotDelete(env, wall, body) {
   body = body || {};
   const key = parseSlotKey(body);
@@ -1694,16 +1772,32 @@ async function handleWallSlotDelete(env, wall, body) {
   const result = await env.DB.prepare(
     `DELETE FROM wall_slots WHERE child_id = ?1 AND subject_kind = ?2 AND subject_key = ?3 AND instance_key = ?4`
   ).bind(childId, key.subjectKind, key.subjectKey, key.instanceKey).run();
-  await env.DB.prepare(
-    `DELETE FROM wall_slot_days WHERE child_id = ?1 AND subject_kind = ?2 AND subject_key = ?3 AND instance_key = ?4`
-  ).bind(childId, key.subjectKind, key.subjectKey, key.instanceKey).run();
 
   return json({ deleted: !!(result.meta && result.meta.changes > 0) });
 }
 
-// §3.5.2 — "just this one." Same key as a placement plus a date. `durationMin`
-// is required and non-null: a null row is meaningless, so clearing an
-// override is DELETE, never a PUT that writes null.
+// §3.5.2 — "just this one." Same key as a placement plus a date.
+//
+// Placement Scopes §4.1/§4.2 (Phase 2) — WIDENED: `startMin` joins
+// `durationMin` here (migration 0016), so a date can move a chore as well as
+// re-time it. The pair is written under §4.1's full-row contract: a field the
+// body omits is written NULL, cleared rather than left alone, so this route's
+// outcome never depends on a row state the client had to fetch first.
+//
+// Both-null is still a 400, which is the shipped rule generalized rather than
+// relaxed: a row that overrides nothing is meaningless, and DELETE is how an
+// override goes away. What changed is that `durationMin` alone may now be
+// null — as long as `startMin` is not.
+//
+// The caller must send THAT LEVEL'S OWN value, never the resolved number the
+// chip is drawing with (§4.1) — a chip showing 30 minutes because the parent
+// authored 30 has a date-level `durationMin` of null, and writing the
+// resolved 30 here would freeze it against the parent's later change. The
+// standing route's `// preserved, never guessed (§3.5.1)` rule, inherited.
+//
+// No past-midnight check, deliberately (§4.3): the start and the duration can
+// come from different levels, so no single write ever sees the composed pair.
+// `resolveChip` clamps it at render time instead — the only place it exists.
 async function handleWallSlotDayPut(env, wall, body) {
   body = body || {};
   const key = parseSlotKey(body);
@@ -1711,8 +1805,16 @@ async function handleWallSlotDayPut(env, wall, body) {
   if (!isValidDate(body.date)) {
     return json({ error: 'date must be a YYYY-MM-DD date.' }, 400);
   }
-  if (body.durationMin === null || !isValidSlotDuration(body.durationMin)) {
-    return json({ error: 'durationMin must be a positive multiple of 15 minutes.' }, 400);
+  const startMin = body.startMin === undefined ? null : body.startMin;
+  const durationMin = body.durationMin === undefined ? null : body.durationMin;
+  if (!isValidStartMinOverride(startMin)) {
+    return json({ error: 'startMin must be a multiple of 15 minutes, 0-1425, or null.' }, 400);
+  }
+  if (!isValidSlotDuration(durationMin)) {
+    return json({ error: 'durationMin must be a positive multiple of 15 minutes, or null.' }, 400);
+  }
+  if (startMin === null && durationMin === null) {
+    return json({ error: 'an override must set startMin or durationMin; use DELETE to clear it.' }, 400);
   }
   const childId = await resolveSlotChildId(env, body.childId, key.subjectKind);
   if (childId === null) {
@@ -1721,11 +1823,11 @@ async function handleWallSlotDayPut(env, wall, body) {
 
   const now = Date.now();
   await env.DB.prepare(
-    `INSERT INTO wall_slot_days (child_id, subject_kind, subject_key, instance_key, date, duration_min, updated_at, updated_by)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+    `INSERT INTO wall_slot_days (child_id, subject_kind, subject_key, instance_key, date, start_min, duration_min, updated_at, updated_by)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
      ON CONFLICT (child_id, subject_kind, subject_key, instance_key, date)
-     DO UPDATE SET duration_min = ?6, updated_at = ?7, updated_by = ?8`
-  ).bind(childId, key.subjectKind, key.subjectKey, key.instanceKey, body.date, body.durationMin, now, `wall:${wall.deviceId}`).run();
+     DO UPDATE SET start_min = ?6, duration_min = ?7, updated_at = ?8, updated_by = ?9`
+  ).bind(childId, key.subjectKind, key.subjectKey, key.instanceKey, body.date, startMin, durationMin, now, `wall:${wall.deviceId}`).run();
 
   return json({ ok: true });
 }
@@ -1746,6 +1848,77 @@ async function handleWallSlotDayDelete(env, wall, body) {
   const result = await env.DB.prepare(
     `DELETE FROM wall_slot_days WHERE child_id = ?1 AND subject_kind = ?2 AND subject_key = ?3 AND instance_key = ?4 AND date = ?5`
   ).bind(childId, key.subjectKind, key.subjectKey, key.instanceKey, body.date).run();
+
+  return json({ deleted: !!(result.meta && result.meta.changes > 0) });
+}
+
+// Placement Scopes §4.2 (Phase 2) — "every Friday." Same key as a placement
+// plus a weekday, sitting between the standing row and the per-date one.
+//
+// The body's `weekday` is stored as sent and never derived here (§2.3): the
+// Worker has no timezone to derive it in, and `new Date("2026-08-23")` is UTC
+// midnight — the previous day everywhere west of Greenwich, which is this
+// household. `TimeCore.weekdayOf` is the one implementation and it is
+// client-side; `isValidWeekday` only bounds the range.
+//
+// Both override columns are independent and either may be null (§2.1): a
+// Friday row may move the chore without re-timing it. Both null is a 400 for
+// the same reason it is on the day route — DELETE is how a level goes away.
+// Same full-row contract, same "send the level's own value, not the resolved
+// one" rule (§4.1), same absence of a past-midnight check (§4.3).
+async function handleWallSlotWeekdayPut(env, wall, body) {
+  body = body || {};
+  const key = parseSlotKey(body);
+  if (key.error) return json({ error: key.error }, 400);
+  if (!isValidWeekday(body.weekday)) {
+    return json({ error: 'weekday must be an integer 0-6, Sunday first.' }, 400);
+  }
+  const startMin = body.startMin === undefined ? null : body.startMin;
+  const durationMin = body.durationMin === undefined ? null : body.durationMin;
+  if (!isValidStartMinOverride(startMin)) {
+    return json({ error: 'startMin must be a multiple of 15 minutes, 0-1425, or null.' }, 400);
+  }
+  if (!isValidSlotDuration(durationMin)) {
+    return json({ error: 'durationMin must be a positive multiple of 15 minutes, or null.' }, 400);
+  }
+  if (startMin === null && durationMin === null) {
+    return json({ error: 'an override must set startMin or durationMin; use DELETE to clear it.' }, 400);
+  }
+  const childId = await resolveSlotChildId(env, body.childId, key.subjectKind);
+  if (childId === null) {
+    return json({ error: 'childId must be an active child, or the shared sentinel on a chore.' }, 400);
+  }
+
+  const now = Date.now();
+  await env.DB.prepare(
+    `INSERT INTO wall_slot_weekdays (child_id, subject_kind, subject_key, instance_key, weekday, start_min, duration_min, updated_at, updated_by)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+     ON CONFLICT (child_id, subject_kind, subject_key, instance_key, weekday)
+     DO UPDATE SET start_min = ?6, duration_min = ?7, updated_at = ?8, updated_by = ?9`
+  ).bind(childId, key.subjectKind, key.subjectKey, key.instanceKey, body.weekday, startMin, durationMin, now, `wall:${wall.deviceId}`).run();
+
+  return json({ ok: true });
+}
+
+// Placement Scopes §4.2 (Phase 2) — clears the weekday level; the chip falls
+// to the standing row, and to the assignment's own duration under that. Note
+// what this does NOT do: it never removes the chore from that weekday, because
+// the weekday level answers only *when*, never *whether* (§2.1, §11.3).
+async function handleWallSlotWeekdayDelete(env, wall, body) {
+  body = body || {};
+  const key = parseSlotKey(body);
+  if (key.error) return json({ error: key.error }, 400);
+  if (!isValidWeekday(body.weekday)) {
+    return json({ error: 'weekday must be an integer 0-6, Sunday first.' }, 400);
+  }
+  const childId = await resolveSlotChildId(env, body.childId, key.subjectKind);
+  if (childId === null) {
+    return json({ error: 'childId must be an active child, or the shared sentinel on a chore.' }, 400);
+  }
+
+  const result = await env.DB.prepare(
+    `DELETE FROM wall_slot_weekdays WHERE child_id = ?1 AND subject_kind = ?2 AND subject_key = ?3 AND instance_key = ?4 AND weekday = ?5`
+  ).bind(childId, key.subjectKind, key.subjectKey, key.instanceKey, body.weekday).run();
 
   return json({ deleted: !!(result.meta && result.meta.changes > 0) });
 }
@@ -1807,15 +1980,36 @@ async function handleWallSchoolBlocksGet(env) {
   const { results: blockCourses } = await env.DB.prepare(
     `SELECT * FROM wall_school_block_courses ORDER BY block_id, course_name`
   ).all();
+  // Placement Scopes §4.2 (Phase 2) — the weekday list IS the block's
+  // schedule (§2.2), so this array is what decides whether a block renders at
+  // all on a given day. A block with no rows here renders nowhere.
+  const { results: blockWeekdays } = await env.DB.prepare(
+    `SELECT * FROM wall_school_block_weekdays ORDER BY block_id, weekday`
+  ).all();
+  // §2.2.1 — the per-date exception, returned IN FULL rather than filtered to
+  // the poll's window, even though these rows do carry a date. They are rare
+  // by construction (one per unusual day, a few dozen a school year), a past
+  // row is the record of why last Tuesday looked odd, and MAX_QUERY_ROWS
+  // already caps the response. Windowing this alone is a one-line change if
+  // that ever stops being true, and it would not touch the resolver.
+  const { results: blockDates } = await env.DB.prepare(
+    `SELECT * FROM wall_school_block_dates ORDER BY block_id, date`
+  ).all();
 
   const blocksCapped = blocks.length > MAX_QUERY_ROWS;
   const coursesCapped = blockCourses.length > MAX_QUERY_ROWS;
+  const weekdaysCapped = blockWeekdays.length > MAX_QUERY_ROWS;
+  const datesCapped = blockDates.length > MAX_QUERY_ROWS;
   const body = {
     blocks: blocksCapped ? blocks.slice(0, MAX_QUERY_ROWS) : blocks,
     blockCourses: coursesCapped ? blockCourses.slice(0, MAX_QUERY_ROWS) : blockCourses,
+    blockWeekdays: weekdaysCapped ? blockWeekdays.slice(0, MAX_QUERY_ROWS) : blockWeekdays,
+    blockDates: datesCapped ? blockDates.slice(0, MAX_QUERY_ROWS) : blockDates,
   };
   if (blocksCapped) body.blocksTruncated = true;
   if (coursesCapped) body.blockCoursesTruncated = true;
+  if (weekdaysCapped) body.blockWeekdaysTruncated = true;
+  if (datesCapped) body.blockDatesTruncated = true;
   return json(body);
 }
 
@@ -1842,14 +2036,60 @@ async function handleWallSchoolBlockPost(env, wall, body) {
   const childId = await resolveActiveChildId(env, body.childId);
   if (!childId) return json({ error: 'childId must be an active child.' }, 400);
 
+  // Placement Scopes §4.2/§6.4 (Phase 2) — the block's weekday schedule is
+  // named at creation and written WITH the block, in one batch.
+  //
+  // The default is load-bearing, not a convenience. Under §2.2 a block with no
+  // weekday rows renders on no day at all, so a client that omits `weekdays`
+  // would otherwise mint an invisible block — §6.4's "indistinguishable from a
+  // crash." Applying Mon-Fri here means a Phase 3 client that does not know
+  // about weekdays yet still creates a correctly scheduled block, which is
+  // what lets Phase 3 ship before the Phase 5 UI exists.
+  //
+  // One `batch()` rather than N writes because every wall write is
+  // online-required with no outbox behind it (CLAUDE.md §III.A): six separate
+  // statements have five places to stop halfway, and a block that kept three
+  // of its five weekdays is indistinguishable from a deliberate schedule.
+  const weekdays = normalizeBlockWeekdays(body.weekdays);
+  if (weekdays === null) {
+    return json({ error: 'weekdays must be an array of integers 0-6, Sunday first.' }, 400);
+  }
+
   const id = crypto.randomUUID();
   const now = Date.now();
-  await env.DB.prepare(
-    `INSERT INTO wall_school_blocks (id, child_id, label, start_min, end_min, updated_at, updated_by)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
-  ).bind(id, childId, body.label || null, body.startMin, body.startMin + body.durationMin, now, `wall:${wall.deviceId}`).run();
+  const statements = [
+    env.DB.prepare(
+      `INSERT INTO wall_school_blocks (id, child_id, label, start_min, end_min, updated_at, updated_by)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
+    ).bind(id, childId, body.label || null, body.startMin, body.startMin + body.durationMin, now, `wall:${wall.deviceId}`),
+  ];
+  for (const weekday of weekdays) {
+    // NULL span: the weekday inherits the block's own, which is what
+    // "overrides on a default span" means (§2.2, Ray 2026-08-23).
+    statements.push(env.DB.prepare(
+      `INSERT INTO wall_school_block_weekdays (block_id, weekday, start_min, end_min)
+       VALUES (?1, ?2, NULL, NULL)
+       ON CONFLICT (block_id, weekday) DO NOTHING`
+    ).bind(id, weekday));
+  }
+  await env.DB.batch(statements);
 
-  return json({ id });
+  return json({ id, weekdays });
+}
+
+// §4.2 — the weekday list a POST body may carry: an array of valid weekdays,
+// deduped and sorted, or Mon-Fri when it is absent or empty. Returns null on
+// anything malformed so the route can 400 rather than silently defaulting —
+// an omitted key is a client that predates the field, a key holding rubbish
+// is a client bug, and only the first deserves the default.
+const DEFAULT_BLOCK_WEEKDAYS = [1, 2, 3, 4, 5];
+
+function normalizeBlockWeekdays(value) {
+  if (value === undefined || value === null) return [...DEFAULT_BLOCK_WEEKDAYS];
+  if (!Array.isArray(value)) return null;
+  if (value.length === 0) return [...DEFAULT_BLOCK_WEEKDAYS];
+  if (!value.every(isValidWeekday)) return null;
+  return [...new Set(value)].sort((a, b) => a - b);
 }
 
 // §5.4 — moves (startMin), resizes (durationMin) or relabels (label) an
@@ -1898,9 +2138,24 @@ async function handleWallSchoolBlockPut(env, wall, id, body) {
 // §5.4 — un-places the block entirely. Cascades to its
 // wall_school_block_courses rows; touches no activity row (§5's write-side
 // rule, unchanged — this deletes a wall-owned row, not a course's own).
+//
+// Placement Scopes §3.4 (Phase 2) — and to its weekday and date rows. This is
+// the half of §3.4 that survived §11.6 unchanged, and the difference from the
+// chore side is worth naming: deleting a block genuinely IS the subject
+// disappearing. There is no block left for an orphaned schedule to describe,
+// no way to reach those rows from any UI, and no re-placement path that could
+// resurrect them (a new block gets a new minted id). A chore has none of
+// those properties, which is why un-placing one deletes only its standing row.
+//
+// The REFERENCES clauses in migration 0017 do not do this: D1 has foreign
+// keys off for this database, which is why deleting the parent row before its
+// children here has always worked. This explicit cleanup is the only thing
+// keeping these rows from orphaning.
 async function handleWallSchoolBlockDelete(env, id) {
   const result = await env.DB.prepare(`DELETE FROM wall_school_blocks WHERE id = ?1`).bind(id).run();
   await env.DB.prepare(`DELETE FROM wall_school_block_courses WHERE block_id = ?1`).bind(id).run();
+  await env.DB.prepare(`DELETE FROM wall_school_block_weekdays WHERE block_id = ?1`).bind(id).run();
+  await env.DB.prepare(`DELETE FROM wall_school_block_dates WHERE block_id = ?1`).bind(id).run();
   return json({ deleted: !!(result.meta && result.meta.changes > 0) });
 }
 
@@ -1931,6 +2186,112 @@ async function handleWallSchoolBlockCourseDelete(env, id, body) {
   const result = await env.DB.prepare(
     `DELETE FROM wall_school_block_courses WHERE block_id = ?1 AND course_name = ?2`
   ).bind(id, body.courseName).run();
+  return json({ deleted: !!(result.meta && result.meta.changes > 0) });
+}
+
+// Placement Scopes §4.2 (Phase 2) — schedules the block on one weekday, or
+// re-times it there. THIS IS WHAT MAKES A BLOCK HAPPEN ON A DAY: unlike the
+// chore side, where the weekday level answers only *when*, a block's weekday
+// row carries existence as well as time (§2.2). Creating one puts the block on
+// that day; deleting it takes the block off that day entirely.
+//
+// The span is both-or-neither at every level (§2.2's pair decision, enforced
+// by isValidBlockSpan): a block's start and end are two ends of one span, not
+// two independent facts the way a chore's start and duration are, and mixing
+// half a span across levels can compose end <= start — which the grid's
+// absolute positioning treats as impossible. NULL/NULL means "the block's own
+// span", which is the ordinary case: most weekdays do not need their own time.
+async function handleWallSchoolBlockWeekdayPut(env, id, body) {
+  body = body || {};
+  if (!isValidWeekday(body.weekday)) {
+    return json({ error: 'weekday must be an integer 0-6, Sunday first.' }, 400);
+  }
+  const startMin = body.startMin === undefined ? null : body.startMin;
+  const endMin = body.endMin === undefined ? null : body.endMin;
+  if (!isValidBlockSpan(startMin, endMin)) {
+    return json({ error: 'startMin and endMin must both be set on the 15-minute grid with endMin > startMin, or both null.' }, 400);
+  }
+  const block = await env.DB.prepare(`SELECT id FROM wall_school_blocks WHERE id = ?1`).bind(id).first();
+  if (!block) return json({ error: 'Not found.' }, 404);
+
+  await env.DB.prepare(
+    `INSERT INTO wall_school_block_weekdays (block_id, weekday, start_min, end_min)
+     VALUES (?1, ?2, ?3, ?4)
+     ON CONFLICT (block_id, weekday) DO UPDATE SET start_min = ?3, end_min = ?4`
+  ).bind(id, body.weekday, startMin, endMin).run();
+  return json({ ok: true });
+}
+
+// §4.2 — unschedules that weekday. The block stops rendering there, which is
+// §0.1's bug fixed for one day at a time: a block with Mon-Fri rows and no
+// Saturday row does not appear on Saturday.
+async function handleWallSchoolBlockWeekdayDelete(env, id, body) {
+  body = body || {};
+  if (!isValidWeekday(body.weekday)) {
+    return json({ error: 'weekday must be an integer 0-6, Sunday first.' }, 400);
+  }
+  const result = await env.DB.prepare(
+    `DELETE FROM wall_school_block_weekdays WHERE block_id = ?1 AND weekday = ?2`
+  ).bind(id, body.weekday).run();
+  return json({ deleted: !!(result.meta && result.meta.changes > 0) });
+}
+
+// Placement Scopes §2.2.1/§4.2 (Phase 2) — the per-date exception, which
+// decides its own date OUTRIGHT and in BOTH directions:
+//
+//   occurs: 0  a scheduled day that does not happen — a field trip, a sick day
+//   occurs: 1  an unscheduled day that does — Ray's backup Sunday
+//
+// and an absent row defers to the weekday list. That two-way override is why
+// this is a separate table from the weekday one rather than a seventh and
+// eighth column on it.
+//
+// `occurs` is required even though the column defaults to 1: under §4.1 an
+// omitted field is written NULL, and NULL is not a valid `occurs`. It is
+// checked strictly, so a body carrying "0" or false is a 400 rather than a
+// silently skipped school day.
+//
+// A SKIPPED DAY HAS NO TIME — occurs: 0 carrying a span is rejected, not
+// accepted-and-ignored, because a stored span nobody reads is a fact waiting
+// to be believed by a later reader of the table. That cross-column rule lives
+// in isValidBlockDateException rather than here so it stays testable at the
+// same boundary as the two helpers it composes (§4.3).
+async function handleWallSchoolBlockDatePut(env, id, body) {
+  body = body || {};
+  if (!isValidDate(body.date)) {
+    return json({ error: 'date must be a YYYY-MM-DD date.' }, 400);
+  }
+  const startMin = body.startMin === undefined ? null : body.startMin;
+  const endMin = body.endMin === undefined ? null : body.endMin;
+  if (!isValidOccurs(body.occurs)) {
+    return json({ error: 'occurs must be 0 or 1.' }, 400);
+  }
+  if (!isValidBlockSpan(startMin, endMin)) {
+    return json({ error: 'startMin and endMin must both be set on the 15-minute grid with endMin > startMin, or both null.' }, 400);
+  }
+  if (!isValidBlockDateException(body.occurs, startMin, endMin)) {
+    return json({ error: 'a skipped date carries no span: occurs 0 requires startMin and endMin to be null.' }, 400);
+  }
+  const block = await env.DB.prepare(`SELECT id FROM wall_school_blocks WHERE id = ?1`).bind(id).first();
+  if (!block) return json({ error: 'Not found.' }, 404);
+
+  await env.DB.prepare(
+    `INSERT INTO wall_school_block_dates (block_id, date, occurs, start_min, end_min)
+     VALUES (?1, ?2, ?3, ?4, ?5)
+     ON CONFLICT (block_id, date) DO UPDATE SET occurs = ?3, start_min = ?4, end_min = ?5`
+  ).bind(id, body.date, body.occurs, startMin, endMin).run();
+  return json({ ok: true });
+}
+
+// §4.2 — clears the exception; the date falls back to the weekday rule.
+async function handleWallSchoolBlockDateDelete(env, id, body) {
+  body = body || {};
+  if (!isValidDate(body.date)) {
+    return json({ error: 'date must be a YYYY-MM-DD date.' }, 400);
+  }
+  const result = await env.DB.prepare(
+    `DELETE FROM wall_school_block_dates WHERE block_id = ?1 AND date = ?2`
+  ).bind(id, body.date).run();
   return json({ deleted: !!(result.meta && result.meta.changes > 0) });
 }
 

@@ -105,7 +105,23 @@
 // `goTo(view, date)` so a day-cell tap moves view and date in one poll;
 // app.js drops its last placeholder branch; wall.css gains the grid, the
 // in-cell event lines and the overflow sheet.
-const CACHE_NAME = "wall-display-shell-v16";
+// v17: Placement Scopes Phases 2-3 — placements resolve through three
+// scopes (standing / weekday / occurrence) and a school block's weekday list
+// becomes its schedule, which is what stops blocks rendering on weekends
+// (§0.1). `time-core.js` gains `weekdayOf` and is now the ONE place a date
+// becomes a day-of-week (nav-ui.js and week-ui.js each had their own copy);
+// `slots-core.js` gains the weekday level, the `scope` a chip resolved
+// through, and the past-midnight clamp; `school-core.js` gains a placement
+// section (`blockOccursOn`, `resolveBlockSpan`, `scheduledWeekdays`) beside
+// its rollups; `day-ui.js`'s `blocksForChild` becomes `blocksForChildOn` and
+// every block render reads the RESOLVED span; api.js and poll.js carry the
+// three new arrays.
+//
+// The bump belongs to THIS phase, not Phase 6 as the slice's §9 scheduled it.
+// This worker is cache-first for the shell, so without it the tablet keeps
+// serving the old scripts and Phase 3 changes nothing a family can see —
+// which is the one thing the Phase 2+3 break is supposed to deliver.
+const CACHE_NAME = "wall-display-shell-v17";
 
 const APP_SHELL = [
   "./",

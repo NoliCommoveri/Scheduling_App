@@ -1267,6 +1267,13 @@ const WALL_ROUTES = [
   ['/api/wall/school-blocks/BLOCK-1', 'DELETE', undefined],
   ['/api/wall/school-blocks/BLOCK-1/courses', 'PUT', { courseName: 'Math' }],
   ['/api/wall/school-blocks/BLOCK-1/courses', 'DELETE', { courseName: 'Math' }],
+  // Placement Scopes §4.2, §8 test 9 (Phase 2)
+  ['/api/wall/slots/weekday', 'PUT', { childId: 'CH-1', subjectKind: 'chore', subjectKey: 'CHORE-1', weekday: 5, startMin: 480 }],
+  ['/api/wall/slots/weekday', 'DELETE', { childId: 'CH-1', subjectKind: 'chore', subjectKey: 'CHORE-1', weekday: 5 }],
+  ['/api/wall/school-blocks/BLOCK-1/weekdays', 'PUT', { weekday: 1 }],
+  ['/api/wall/school-blocks/BLOCK-1/weekdays', 'DELETE', { weekday: 1 }],
+  ['/api/wall/school-blocks/BLOCK-1/dates', 'PUT', { date: '2026-08-24', occurs: 0 }],
+  ['/api/wall/school-blocks/BLOCK-1/dates', 'DELETE', { date: '2026-08-24' }],
 ];
 
 test('§12.13: a child device token is 401 on every /api/wall/* route', async () => {
@@ -1650,7 +1657,15 @@ test('§14.11: startMin and durationMin are bound to the 15-minute grid', async 
   }
 });
 
-test('§3.2: un-placing deletes both the placement and its per-day overrides', async () => {
+test('Placement Scopes §11.6: un-placing deletes the standing row and NOTHING else', async () => {
+  // This reverses what this test asserted before Phase 2, deliberately. The
+  // old sweep of `wall_slot_days` had no honest undo — the tray gesture is
+  // this route's only caller and its Undo restores the standing row alone —
+  // and §3.4's alternative trigger does not exist on the chore side, since the
+  // wall is never told a chore was deleted. Ray's answer (2026-08-23): un-
+  // placing is standing-scoped, and the override levels are left inert
+  // beneath it, exactly as a `wall_slot_days` row already is with no
+  // placement above it.
   const { env, statements } = makeEnv(wallResolver());
   const res = await call(env, '/api/wall/slots', {
     method: 'DELETE', token: WALL_TOKEN,
@@ -1658,20 +1673,41 @@ test('§3.2: un-placing deletes both the placement and its per-day overrides', a
   });
   assert.equal(res.status, 200);
   assert.ok(statements.some((s) => s.sql.startsWith('DELETE FROM wall_slots ')), 'the placement is removed');
-  assert.ok(
-    statements.some((s) => s.sql.startsWith('DELETE FROM wall_slot_days')),
-    'an override of a placement that no longer exists is unreachable garbage'
+  assert.equal(
+    statements.filter((s) => s.sql.startsWith('DELETE FROM wall_slot_days')).length, 0,
+    'a per-date override survives, and comes back if the chore is placed again'
+  );
+  assert.equal(
+    statements.filter((s) => s.sql.startsWith('DELETE FROM wall_slot_weekdays')).length, 0,
+    'so does a weekday one — clearing a level is its own explicit route'
   );
 });
 
-test('§3.5.2: a wall_slot_days write requires a real duration, never null', async () => {
+test('Placement Scopes §4.1: a wall_slot_days write that overrides nothing is a 400', async () => {
+  // Was "durationMin may never be null". §4.1 generalizes rather than relaxes
+  // it: either column may be null now that `start_min` exists (0016), but not
+  // both, because DELETE is how an override goes away.
   const { env, statements } = makeEnv(wallResolver());
   const res = await call(env, '/api/wall/slots/day', {
     method: 'PUT', token: WALL_TOKEN,
     body: { childId: 'CH-1', subjectKind: 'chore', subjectKey: 'CHORE-1', date: '2026-08-14', durationMin: null },
   });
   assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /startMin or durationMin/);
   assert.equal(statements.filter((s) => s.sql.includes('wall_slot_days')).length, 0);
+});
+
+test('Placement Scopes §4.2: a date override may move a chore without re-timing it', async () => {
+  const { env, statements } = makeEnv(wallResolver());
+  const res = await call(env, '/api/wall/slots/day', {
+    method: 'PUT', token: WALL_TOKEN,
+    body: { childId: 'CH-1', subjectKind: 'chore', subjectKey: 'CHORE-1', date: '2026-08-14', startMin: 900 },
+  });
+  assert.equal(res.status, 200);
+  const insert = statements.find((s) => s.sql.includes('INSERT INTO wall_slot_days'));
+  assert.ok(insert.sql.includes('start_min'), '0016\'s column is written, not ignored');
+  assert.equal(insert.args[5], 900);
+  assert.equal(insert.args[6], null, 'the level\'s own duration is null, not the resolved one (§4.1)');
 });
 
 test('§12: GET /api/wall/slots bounds wall_slot_days to the window but returns every placement', async () => {
@@ -1855,6 +1891,12 @@ test('§5.4/§12: DELETE /api/wall/school-blocks/:id cascades to its membership 
   assert.equal(res.status, 200);
   assert.ok(statements.some((s) => s.sql.startsWith('DELETE FROM wall_school_blocks WHERE id')));
   assert.ok(statements.some((s) => s.sql.startsWith('DELETE FROM wall_school_block_courses WHERE block_id')));
+  // Placement Scopes §3.4 — the half of the cleanup that survived §11.6.
+  // Unlike a chore, a deleted block really is the subject disappearing: no UI
+  // can reach these rows again and no new block can inherit them, since a new
+  // block gets a newly minted id.
+  assert.ok(statements.some((s) => s.sql.startsWith('DELETE FROM wall_school_block_weekdays WHERE block_id')));
+  assert.ok(statements.some((s) => s.sql.startsWith('DELETE FROM wall_school_block_dates WHERE block_id')));
 });
 
 test('§5.2/§12: PUT .../courses adds a member, idempotently', async () => {
@@ -1919,6 +1961,24 @@ test('§12: GET /api/wall/school-blocks returns both tables, household-wide', as
   assert.equal(out.blockCourses.length, 1);
 });
 
+test('Placement Scopes §4.2: GET /api/wall/school-blocks returns the schedule and its exceptions too', async () => {
+  const { env } = makeEnv(wallResolver((sql) => {
+    if (sql.startsWith('SELECT * FROM wall_school_block_weekdays')) {
+      return { results: [{ block_id: 'BLOCK-1', weekday: 1, start_min: null, end_min: null }] };
+    }
+    if (sql.startsWith('SELECT * FROM wall_school_block_dates')) {
+      return { results: [{ block_id: 'BLOCK-1', date: '2026-08-24', occurs: 0, start_min: null, end_min: null }] };
+    }
+    return {};
+  }));
+  const res = await call(env, '/api/wall/school-blocks', { token: WALL_TOKEN });
+  const out = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(out.blockWeekdays.length, 1, 'without this array nothing can decide which days a block happens on');
+  assert.equal(out.blockDates.length, 1);
+  assert.equal(out.blockDates[0].occurs, 0);
+});
+
 test('§14.15: no school-block route ever touches expected_duration_min or an activity row', async () => {
   const { env, statements } = makeEnv(wallResolver((sql) => {
     if (sql.startsWith('SELECT * FROM wall_school_blocks WHERE id')) {
@@ -1940,6 +2000,300 @@ test('§14.15: no school-block route ever touches expected_duration_min or an ac
     'block is not an assignment row at all'
   );
 });
+
+// ============================  Placement Scopes §4.2, §8 test 9 (Phase 2)
+//
+// The credential matrix for these six routes is covered by WALL_ROUTES above
+// (a device token and a parent token are both 401 on every one of them). What
+// is left is what each route decides for itself: the child gate on the chore
+// side, the block gate on the block side, and the validation rules that only
+// exist because a level may say nothing.
+
+test('§4.2: a weekday override stores the level\'s own values under the chore\'s key', async () => {
+  const { env, statements } = makeEnv(wallResolver());
+  const res = await call(env, '/api/wall/slots/weekday', {
+    method: 'PUT', token: WALL_TOKEN,
+    body: { childId: 'CH-1', subjectKind: 'chore', subjectKey: 'CHORE-1', weekday: 5, startMin: 900 },
+  });
+  assert.equal(res.status, 200);
+  const insert = statements.find((s) => s.sql.includes('INSERT INTO wall_slot_weekdays'));
+  assert.deepEqual(insert.args.slice(0, 6), ['CH-1', 'chore', 'CHORE-1', '', 5, 900]);
+  assert.equal(insert.args[6], null, 'duration is the level\'s own null, not the resolved number (§4.1)');
+  assert.equal(insert.args.at(-1), 'wall:DEV-WALL', 'provenance matches every other wall write');
+});
+
+test('§4.2: the weekday routes take the sentinel childId, like every other chore placement', async () => {
+  const { env, statements } = makeEnv(wallResolver());
+  const res = await call(env, '/api/wall/slots/weekday', {
+    method: 'PUT', token: WALL_TOKEN,
+    body: { childId: '', subjectKind: 'chore', subjectKey: 'CHORE-1', weekday: 5, startMin: 900 },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(statements.find((s) => s.sql.includes('INSERT INTO wall_slot_weekdays')).args[0], '');
+});
+
+test('§8 test 9: the weekday routes reject an archived or unknown childId', async () => {
+  for (const method of ['PUT', 'DELETE']) {
+    for (const childId of ['CH-ARCHIVED', 'CH-NOT-A-CHILD']) {
+      const { env, statements } = makeEnv(wallResolver());
+      const res = await call(env, '/api/wall/slots/weekday', {
+        method, token: WALL_TOKEN,
+        body: { childId, subjectKind: 'chore', subjectKey: 'CHORE-1', weekday: 5, startMin: 900 },
+      });
+      assert.equal(res.status, 400, `${method} with ${childId}`);
+      assert.equal(
+        statements.filter((s) => s.sql.includes('wall_slot_weekdays')).length, 0,
+        `${method} must write nothing for ${childId}`
+      );
+    }
+  }
+});
+
+test('§8 test 9: a weekday PUT with both fields null is a 400', async () => {
+  for (const body of [{}, { startMin: null, durationMin: null }]) {
+    const { env, statements } = makeEnv(wallResolver());
+    const res = await call(env, '/api/wall/slots/weekday', {
+      method: 'PUT', token: WALL_TOKEN,
+      body: { childId: 'CH-1', subjectKind: 'chore', subjectKey: 'CHORE-1', weekday: 5, ...body },
+    });
+    assert.equal(res.status, 400, JSON.stringify(body));
+    assert.match((await res.json()).error, /startMin or durationMin/);
+    assert.equal(statements.filter((s) => s.sql.includes('wall_slot_weekdays')).length, 0);
+  }
+});
+
+test('§2.3/§4.3: the weekday is bounded 0-6 and never derived server-side', async () => {
+  for (const weekday of [7, -1, '1', 1.5, undefined, null]) {
+    const { env, statements } = makeEnv(wallResolver());
+    const res = await call(env, '/api/wall/slots/weekday', {
+      method: 'PUT', token: WALL_TOKEN,
+      body: { childId: 'CH-1', subjectKind: 'chore', subjectKey: 'CHORE-1', weekday, startMin: 900 },
+    });
+    assert.equal(res.status, 400, JSON.stringify(weekday));
+    assert.equal(statements.filter((s) => s.sql.includes('wall_slot_weekdays')).length, 0);
+  }
+  // No Date() anywhere in the path: a UTC-parsed "YYYY-MM-DD" is the previous
+  // day in this household's timezone, so the client owns the conversion.
+  const { env, statements } = makeEnv(wallResolver());
+  await call(env, '/api/wall/slots/weekday', {
+    method: 'PUT', token: WALL_TOKEN,
+    body: { childId: 'CH-1', subjectKind: 'chore', subjectKey: 'CHORE-1', weekday: 5, startMin: 900, date: '2026-08-23' },
+  });
+  assert.equal(statements.find((s) => s.sql.includes('INSERT INTO wall_slot_weekdays')).args[4], 5);
+});
+
+test('§2.1/§11.3: clearing a weekday override deletes one row and unplaces nothing', async () => {
+  const { env, statements } = makeEnv(wallResolver());
+  const res = await call(env, '/api/wall/slots/weekday', {
+    method: 'DELETE', token: WALL_TOKEN,
+    body: { childId: 'CH-1', subjectKind: 'chore', subjectKey: 'CHORE-1', weekday: 5 },
+  });
+  assert.equal(res.status, 200);
+  const del = statements.find((s) => s.sql.startsWith('DELETE FROM wall_slot_weekdays'));
+  assert.deepEqual(del.args, ['CH-1', 'chore', 'CHORE-1', '', 5]);
+  assert.equal(
+    statements.filter((s) => s.sql.includes('wall_slots ')).length, 0,
+    'the weekday level answers when, never whether — the standing placement is untouched'
+  );
+});
+
+// ---- the block side: the weekday list IS the schedule -------------------
+
+test('§2.2/§4.2: scheduling a block on a weekday writes a row with no span of its own', async () => {
+  const { env, statements } = makeEnv(blockExistsResolver());
+  const res = await call(env, '/api/wall/school-blocks/BLOCK-1/weekdays', {
+    method: 'PUT', token: WALL_TOKEN, body: { weekday: 1 },
+  });
+  assert.equal(res.status, 200);
+  const insert = statements.find((s) => s.sql.includes('INSERT INTO wall_school_block_weekdays'));
+  assert.deepEqual(insert.args, ['BLOCK-1', 1, null, null], 'NULL span = the block\'s own (§2.2)');
+});
+
+test('§2.2: a block\'s span is both-or-neither at the weekday level', async () => {
+  const cases = [
+    { startMin: 540 },
+    { endMin: 600 },
+    { startMin: 600, endMin: 540 },
+    { startMin: 600, endMin: 600 },
+    { startMin: 7, endMin: 600 },
+  ];
+  for (const span of cases) {
+    const { env, statements } = makeEnv(blockExistsResolver());
+    const res = await call(env, '/api/wall/school-blocks/BLOCK-1/weekdays', {
+      method: 'PUT', token: WALL_TOKEN, body: { weekday: 1, ...span },
+    });
+    assert.equal(res.status, 400, JSON.stringify(span));
+    assert.equal(statements.filter((s) => s.sql.includes('wall_school_block_weekdays')).length, 0);
+  }
+  // 1440 is allowed: end_min is an END, so it may name the close of the day.
+  const { env, statements } = makeEnv(blockExistsResolver());
+  const ok = await call(env, '/api/wall/school-blocks/BLOCK-1/weekdays', {
+    method: 'PUT', token: WALL_TOKEN, body: { weekday: 1, startMin: 1380, endMin: 1440 },
+  });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(statements.find((s) => s.sql.includes('INSERT INTO wall_school_block_weekdays')).args, ['BLOCK-1', 1, 1380, 1440]);
+});
+
+test('§4.2: a weekday or date PUT on an unknown block is 404, and writes nothing', async () => {
+  for (const [path, body] of [
+    ['/api/wall/school-blocks/NOPE/weekdays', { weekday: 1 }],
+    ['/api/wall/school-blocks/NOPE/dates', { date: '2026-08-24', occurs: 0 }],
+  ]) {
+    const { env, statements } = makeEnv(wallResolver((sql) => (
+      sql.startsWith('SELECT id FROM wall_school_blocks WHERE id') ? { first: null } : {}
+    )));
+    const res = await call(env, path, { method: 'PUT', token: WALL_TOKEN, body });
+    assert.equal(res.status, 404, path);
+    assert.equal(statements.filter((s) => s.sql.startsWith('INSERT INTO wall_school_block')).length, 0);
+  }
+});
+
+test('§0.1/§4.2: unscheduling a weekday is what takes a block off Saturday', async () => {
+  const { env, statements } = makeEnv(blockExistsResolver());
+  const res = await call(env, '/api/wall/school-blocks/BLOCK-1/weekdays', {
+    method: 'DELETE', token: WALL_TOKEN, body: { weekday: 6 },
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(statements.find((s) => s.sql.startsWith('DELETE FROM wall_school_block_weekdays')).args, ['BLOCK-1', 6]);
+});
+
+test('§2.2.1: a date row decides its own date in both directions', async () => {
+  // occurs 0 — a scheduled Monday that does not happen.
+  const { env: skipEnv, statements: skipStmts } = makeEnv(blockExistsResolver());
+  const skip = await call(skipEnv, '/api/wall/school-blocks/BLOCK-1/dates', {
+    method: 'PUT', token: WALL_TOKEN, body: { date: '2026-08-24', occurs: 0 },
+  });
+  assert.equal(skip.status, 200);
+  assert.deepEqual(
+    skipStmts.find((s) => s.sql.includes('INSERT INTO wall_school_block_dates')).args,
+    ['BLOCK-1', '2026-08-24', 0, null, null]
+  );
+
+  // occurs 1 on an unscheduled Sunday — Ray's backup school day, taking the
+  // block's own span because there is no weekday row to read.
+  const { env: addEnv, statements: addStmts } = makeEnv(blockExistsResolver());
+  const add = await call(addEnv, '/api/wall/school-blocks/BLOCK-1/dates', {
+    method: 'PUT', token: WALL_TOKEN, body: { date: '2026-08-23', occurs: 1 },
+  });
+  assert.equal(add.status, 200);
+  assert.deepEqual(
+    addStmts.find((s) => s.sql.includes('INSERT INTO wall_school_block_dates')).args,
+    ['BLOCK-1', '2026-08-23', 1, null, null]
+  );
+});
+
+test('§2.2.1: a skipped date may not carry a span, and occurs is checked strictly', async () => {
+  const cases = [
+    { occurs: 0, startMin: 540, endMin: 600 },  // a skipped day has no time
+    { occurs: '0' },                            // a string is a client bug, not a skip
+    { occurs: false },
+    { occurs: 2 },
+    { occurs: undefined },                      // the column's DEFAULT 1 is not a licence to omit it
+    { occurs: null },
+  ];
+  for (const body of cases) {
+    const { env, statements } = makeEnv(blockExistsResolver());
+    const res = await call(env, '/api/wall/school-blocks/BLOCK-1/dates', {
+      method: 'PUT', token: WALL_TOKEN, body: { date: '2026-08-24', ...body },
+    });
+    assert.equal(res.status, 400, JSON.stringify(body));
+    assert.equal(statements.filter((s) => s.sql.includes('wall_school_block_dates')).length, 0);
+  }
+});
+
+test('§4.2: clearing a date exception lets the weekday rule decide again', async () => {
+  const { env, statements } = makeEnv(blockExistsResolver());
+  const res = await call(env, '/api/wall/school-blocks/BLOCK-1/dates', {
+    method: 'DELETE', token: WALL_TOKEN, body: { date: 'not-a-date' },
+  });
+  assert.equal(res.status, 400, 'the date is validated even on the delete path');
+  assert.equal(statements.filter((s) => s.sql.includes('wall_school_block_dates')).length, 0);
+
+  const { env: okEnv, statements: okStmts } = makeEnv(blockExistsResolver());
+  const ok = await call(okEnv, '/api/wall/school-blocks/BLOCK-1/dates', {
+    method: 'DELETE', token: WALL_TOKEN, body: { date: '2026-08-24' },
+  });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(okStmts.find((s) => s.sql.startsWith('DELETE FROM wall_school_block_dates')).args, ['BLOCK-1', '2026-08-24']);
+});
+
+// ---- §6.4: creating a block schedules it, in one batch --------------------
+
+test('§4.2/§6.4: a POST that names no weekdays still gets a Mon-Fri schedule', async () => {
+  const { env, DB } = makeEnv(wallResolver());
+  const res = await call(env, '/api/wall/school-blocks', {
+    method: 'POST', token: WALL_TOKEN, body: { childId: 'CH-1', startMin: 540, durationMin: 60 },
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual((await res.json()).weekdays, [1, 2, 3, 4, 5]);
+  // The default is applied HERE, server-side, which is what lets a Phase 3
+  // client that knows nothing of weekdays create a visible block (§9).
+  assert.equal(DB.batched.length, 1, 'the block and its schedule are one batch, not six writes');
+  assert.equal(DB.batched[0].length, 6, 'the block row plus five weekday rows');
+});
+
+test('§4.2: a POST may name its own weekdays, deduped and sorted', async () => {
+  const { env, DB } = makeEnv(wallResolver());
+  const res = await call(env, '/api/wall/school-blocks', {
+    method: 'POST', token: WALL_TOKEN,
+    body: { childId: 'CH-1', startMin: 540, durationMin: 60, weekdays: [3, 1, 3] },
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual((await res.json()).weekdays, [1, 3]);
+  assert.equal(DB.batched[0].length, 3);
+});
+
+test('§4.2: a malformed weekdays list is a 400, not a silent Mon-Fri', async () => {
+  for (const weekdays of [[7], ['1'], [1, 1.5], 'weekdays', 5]) {
+    const { env, DB } = makeEnv(wallResolver());
+    const res = await call(env, '/api/wall/school-blocks', {
+      method: 'POST', token: WALL_TOKEN,
+      body: { childId: 'CH-1', startMin: 540, durationMin: 60, weekdays },
+    });
+    assert.equal(res.status, 400, JSON.stringify(weekdays));
+    assert.equal(DB.batched.length, 0, 'no block is minted for a body the client got wrong');
+  }
+});
+
+test('§4.2: an empty weekdays array is an older client, not a request for no schedule', async () => {
+  // A block with no weekday rows renders on no day at all (§2.2), so treating
+  // [] as "schedule nothing" would mint §6.4's invisible block.
+  const { env, DB } = makeEnv(wallResolver());
+  const res = await call(env, '/api/wall/school-blocks', {
+    method: 'POST', token: WALL_TOKEN,
+    body: { childId: 'CH-1', startMin: 540, durationMin: 60, weekdays: [] },
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual((await res.json()).weekdays, [1, 2, 3, 4, 5]);
+  assert.equal(DB.batched[0].length, 6);
+});
+
+test('§4.2: no placement-scope route touches an assignments column', async () => {
+  const calls = [
+    ['/api/wall/slots/weekday', 'PUT', { childId: 'CH-1', subjectKind: 'chore', subjectKey: 'CHORE-1', weekday: 5, startMin: 900 }],
+    ['/api/wall/slots/weekday', 'DELETE', { childId: 'CH-1', subjectKind: 'chore', subjectKey: 'CHORE-1', weekday: 5 }],
+    ['/api/wall/slots/day', 'PUT', { childId: 'CH-1', subjectKind: 'chore', subjectKey: 'CHORE-1', date: '2026-08-24', startMin: 900 }],
+    ['/api/wall/school-blocks/BLOCK-1/weekdays', 'PUT', { weekday: 1 }],
+    ['/api/wall/school-blocks/BLOCK-1/weekdays', 'DELETE', { weekday: 1 }],
+    ['/api/wall/school-blocks/BLOCK-1/dates', 'PUT', { date: '2026-08-24', occurs: 0 }],
+    ['/api/wall/school-blocks/BLOCK-1/dates', 'DELETE', { date: '2026-08-24' }],
+  ];
+  for (const [path, method, body] of calls) {
+    const { env, statements } = makeEnv(blockExistsResolver());
+    const res = await call(env, path, { method, token: WALL_TOKEN, body });
+    assert.equal(res.status, 200, `${method} ${path}`);
+    assert.ok(
+      !statements.some((s) => s.sql.includes('assignments') || s.sql.includes('expected_duration_min')),
+      `${method} ${path} must widen nothing on assignments (CLAUDE.md §0, §I.A)`
+    );
+  }
+});
+
+function blockExistsResolver(extra = () => ({})) {
+  return wallResolver((sql, args) => (
+    sql.startsWith('SELECT id FROM wall_school_blocks WHERE id') ? { first: { id: args[0] } } : extra(sql, args)
+  ));
+}
 
 // ---- §8.3.1: the claim route can now carry the completion sheet's time ----
 

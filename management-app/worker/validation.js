@@ -132,9 +132,14 @@ export function isValidStartMin(value) {
 // A duration override on `wall_slots` or `wall_slot_days` (§3.5.1's rows 1-2
 // of the precedence chain). `null` is always valid — it is how a standing
 // `wall_slots` override is cleared, returning a chip to the assignment's own
-// estimate. `wall_slot_days` never stores null (a null row is meaningless;
-// the route deletes the row instead), but the same positive-multiple-of-15
-// shape applies whenever a value is present.
+// estimate.
+//
+// An OVERRIDE row may carry a null here too (Placement Scopes §4.1, Phase 2):
+// `wall_slot_days` and `wall_slot_weekdays` each hold an independent start and
+// duration, and a row that moves a chore without re-timing it has a null
+// duration. What stays true is that a row overriding NOTHING is meaningless —
+// both routes reject both-null and DELETE is how a level goes away. The same
+// positive-multiple-of-15 shape applies whenever a value is present.
 export function isValidSlotDuration(value) {
   if (value === null) return true;
   return Number.isInteger(value) && value > 0 && value % 15 === 0;

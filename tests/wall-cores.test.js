@@ -323,24 +323,33 @@ test('§3.1.2 — a claim and an each placement at the same subject key do not c
 test('§3.5.1 — the duration chain: per-day beats standing beats the parent\'s estimate beats 15', () => {
   const withEstimate = { source_id: 'bins', instance_key: '', expected_duration_min: 30 };
   const noEstimate = { source_id: 'trash', instance_key: '', expected_duration_min: null };
-  assert.equal(SlotsCore.resolveDurationMin(noEstimate, null, null), 15); // row 4 — nothing else to go on
-  assert.equal(SlotsCore.resolveDurationMin(withEstimate, null, null), 30); // row 3 — the parent's estimate
-  assert.equal(SlotsCore.resolveDurationMin(withEstimate, { duration_min: null }, null), 30); // a cleared standing override still falls to the estimate
-  assert.equal(SlotsCore.resolveDurationMin(withEstimate, { duration_min: 45 }, null), 45); // row 2 — standing override
-  assert.equal(SlotsCore.resolveDurationMin(withEstimate, { duration_min: 45 }, { duration_min: 10 }), 10); // row 1 — per-day wins
+  // Placement Scopes §8 test 3 — these four assertions must still hold with
+  // the weekday row absent. The calls now pass it explicitly as null rather
+  // than relying on argument position: the weekday row sits at position 2 of
+  // the chain, so a 3-argument call would silently deliver the per-day row
+  // into the weekday slot and still produce these answers, which would leave
+  // the test passing while asserting something else.
+  assert.equal(SlotsCore.resolveDurationMin(noEstimate, null, null, null), 15); // nothing else to go on
+  assert.equal(SlotsCore.resolveDurationMin(withEstimate, null, null, null), 30); // the parent's estimate
+  assert.equal(SlotsCore.resolveDurationMin(withEstimate, { duration_min: null }, null, null), 30); // a cleared standing override still falls to the estimate
+  assert.equal(SlotsCore.resolveDurationMin(withEstimate, { duration_min: 45 }, null, null), 45); // standing override
+  assert.equal(SlotsCore.resolveDurationMin(withEstimate, { duration_min: 45 }, null, { duration_min: 10 }), 10); // per-day wins
 });
 
 test('§3.5.1 — clearing the per-day override falls back exactly one step, not to the bottom', () => {
   const row = { source_id: 'bins', instance_key: '', claim_group: null, expected_duration_min: 30 };
-  const withStanding = SlotsCore.resolveDurationMin(row, { duration_min: 45 }, null);
+  const withStanding = SlotsCore.resolveDurationMin(row, { duration_min: 45 }, null, null);
   assert.equal(withStanding, 45); // not 30 or 15 — the standing override still applies
 });
 
-test('isOverridden is true with either override present, false with neither', () => {
-  assert.equal(SlotsCore.isOverridden(null, null), false);
-  assert.equal(SlotsCore.isOverridden({ duration_min: null }, null), false);
-  assert.equal(SlotsCore.isOverridden({ duration_min: 45 }, null), true);
-  assert.equal(SlotsCore.isOverridden(null, { duration_min: 10 }), true);
+test('isOverridden is true with any of the three overrides present, false with none', () => {
+  assert.equal(SlotsCore.isOverridden(null, null, null), false);
+  assert.equal(SlotsCore.isOverridden({ duration_min: null }, null, null), false);
+  assert.equal(SlotsCore.isOverridden({ duration_min: 45 }, null, null), true);
+  assert.equal(SlotsCore.isOverridden(null, null, { duration_min: 10 }), true);
+  // Placement Scopes §2.1 — the weekday level counts too, or the italic-dot
+  // marker goes dark on a chip whose duration a family set for Fridays.
+  assert.equal(SlotsCore.isOverridden(null, { duration_min: 20 }, null), true);
 });
 
 test('§16 Phase 5b — assignedDurationMin is row 3/4 of the chain in isolation, with no override applied', () => {
@@ -813,4 +822,248 @@ test('§7.1 — chunkWeeks lays the 42 cells out as six rows of seven, in grid o
   weeks.forEach((w) => assert.equal(w.length, 7));
   assert.equal(weeks[0][0].date, '2026-07-26');
   assert.equal(weeks[5][6].date, '2026-09-05');
+});
+
+// ==========================================================================
+// Placement Scopes §8, tests 1-6 and 10 (Phase 3) — the pure layer of
+// standing / weekday / occurrence, for chores and school blocks alike.
+// ==========================================================================
+
+// --- test 1: the timezone trap (§2.3) -------------------------------------
+
+test('§8.1: weekdayOf is LOCAL — 2026-08-23 is Sunday in Chicago, not Saturday', () => {
+  // The whole reason this function exists. `new Date("2026-08-23")` parses as
+  // UTC midnight, which is the previous day west of Greenwich — so the naive
+  // implementation answers Saturday for a Sunday, and does it only for the
+  // people who never run the tests. Node honours a TZ change at runtime, so
+  // the trap can be sprung here rather than described in a comment.
+  const original = process.env.TZ;
+  try {
+    process.env.TZ = 'America/Chicago';
+    assert.equal(TimeCore.weekdayOf('2026-08-23'), 0, 'Sunday');
+    assert.equal(new Date('2026-08-23').getDay(), 6, 'the trap itself: string-parsed, it reads Saturday');
+    assert.equal(TimeCore.weekdayOf('2026-08-22'), 6, 'Saturday');
+    assert.equal(TimeCore.weekdayOf('2026-08-24'), 1, 'Monday');
+    // month-core builds its own Dates for date arithmetic (§2.3 leaves it
+    // alone); checked against the same trap so the exemption stays honest.
+    assert.equal(MonthCore.gridDates('2026-08-15')[0], '2026-07-26');
+  } finally {
+    if (original === undefined) delete process.env.TZ; else process.env.TZ = original;
+  }
+});
+
+// --- tests 2-4: the chore chains ------------------------------------------
+
+const CHORE = { id: 'a1', child_id: 'c1', source_id: 'dishes', instance_key: '', claim_group: null, expected_duration_min: 30 };
+const FRIDAY = '2026-08-21';   // a Friday in every timezone this runs in
+const THURSDAY = '2026-08-20';
+
+function chipOn(date, { slot, weekday, day } = {}) {
+  return SlotsCore.resolveChip(
+    SlotsCore.indexSlots(slot ? [{ child_id: 'c1', subject_kind: 'chore', subject_key: 'dishes', instance_key: '', ...slot }] : []),
+    SlotsCore.indexWeekdays(weekday ? [{ child_id: 'c1', subject_kind: 'chore', subject_key: 'dishes', instance_key: '', ...weekday }] : []),
+    SlotsCore.indexDays(day ? [{ child_id: 'c1', subject_kind: 'chore', subject_key: 'dishes', instance_key: '', ...day }] : []),
+    CHORE, date
+  );
+}
+
+test('§8.2: the start-time chain, all four rows, each naming its own scope', () => {
+  const standing = chipOn(FRIDAY, { slot: { start_min: 480, duration_min: null } });
+  assert.equal(standing.startMin, 480);
+  assert.equal(standing.scope, 'standing');
+
+  const byWeekday = chipOn(FRIDAY, {
+    slot: { start_min: 480, duration_min: null },
+    weekday: { weekday: 5, start_min: 420, duration_min: null },
+  });
+  assert.equal(byWeekday.startMin, 420, 'Friday moves earlier');
+  assert.equal(byWeekday.scope, 'weekday');
+
+  // A date row over a weekday row over a standing row — all three at once,
+  // which is the row this chain exists for.
+  const byDate = chipOn(FRIDAY, {
+    slot: { start_min: 480, duration_min: null },
+    weekday: { weekday: 5, start_min: 420, duration_min: null },
+    day: { date: FRIDAY, start_min: 600, duration_min: null },
+  });
+  assert.equal(byDate.startMin, 600);
+  assert.equal(byDate.scope, 'day');
+
+  const unplaced = chipOn(FRIDAY, {});
+  assert.equal(unplaced.startMin, null);
+  assert.equal(unplaced.scope, null, 'in the tray — no level supplied a time');
+});
+
+test('§8.2/§11.7: a weekday row cannot PLACE a chore that has no standing row', () => {
+  // §2.1's gate, and the property that makes un-placing safe to leave
+  // standing-scoped: the rows left behind are dormant, not orphaned.
+  const chip = chipOn(FRIDAY, { weekday: { weekday: 5, start_min: 420, duration_min: 45 } });
+  assert.equal(chip.startMin, null, 'still in the tray, on its own weekday');
+  assert.equal(chip.scope, null);
+  // Same for a date row alone — this is the shipped behaviour the gate
+  // generalizes, not a new rule.
+  assert.equal(chipOn(FRIDAY, { day: { date: FRIDAY, start_min: 600 } }).startMin, null);
+});
+
+test('§8.2: a weekday override applies on its weekday and nowhere else', () => {
+  const opts = {
+    slot: { start_min: 480, duration_min: null },
+    weekday: { weekday: 5, start_min: 420, duration_min: null },
+  };
+  assert.equal(chipOn(FRIDAY, opts).startMin, 420);
+  assert.equal(chipOn(THURSDAY, opts).startMin, 480, 'Thursday is untouched');
+  assert.equal(chipOn(THURSDAY, opts).scope, 'standing');
+});
+
+test('§8.3: the duration chain, all five rows', () => {
+  const base = { slot: { start_min: 480, duration_min: null } };
+  assert.equal(chipOn(FRIDAY, base).durationMin, 30, 'the parent\'s estimate');
+  assert.equal(
+    SlotsCore.resolveDurationMin({ ...CHORE, expected_duration_min: null }, null, null, null), 15,
+    'and 15 under that'
+  );
+  assert.equal(chipOn(FRIDAY, { slot: { start_min: 480, duration_min: 45 } }).durationMin, 45, 'standing');
+  assert.equal(chipOn(FRIDAY, {
+    slot: { start_min: 480, duration_min: 45 },
+    weekday: { weekday: 5, start_min: null, duration_min: 20 },
+  }).durationMin, 20, 'weekday beats standing');
+  assert.equal(chipOn(FRIDAY, {
+    slot: { start_min: 480, duration_min: 45 },
+    weekday: { weekday: 5, start_min: null, duration_min: 20 },
+    day: { date: FRIDAY, start_min: null, duration_min: 10 },
+  }).durationMin, 10, 'the date beats them both');
+});
+
+test('§8.4: the two chains are independent — a weekday row may move a chore without re-timing it', () => {
+  const chip = chipOn(FRIDAY, {
+    slot: { start_min: 480, duration_min: 45 },
+    weekday: { weekday: 5, start_min: 420, duration_min: null },
+  });
+  assert.equal(chip.startMin, 420, 'start comes from the weekday row');
+  assert.equal(chip.durationMin, 45, 'duration falls PAST it to the standing row, not to its null');
+  assert.equal(chip.scope, 'weekday');
+});
+
+test('§8.4a: the composed pair is clamped, because no single write can see it', () => {
+  // A weekday row moving the chore to 23:45 validates fine against its own
+  // null duration; the standing row's 60 minutes then composes a chip ending
+  // at 00:45. Neither write could have caught it — the resolver is the only
+  // place this exists (§2.1's decision).
+  const chip = chipOn(FRIDAY, {
+    slot: { start_min: 480, duration_min: 60 },
+    weekday: { weekday: 5, start_min: 1425, duration_min: null },
+  });
+  assert.equal(chip.startMin, 1425);
+  assert.equal(chip.durationMin, 15, 'clamped to midnight, not 60');
+  assert.equal(chip.clamped, true);
+  // An ordinary chip is not marked clamped.
+  assert.equal(chipOn(FRIDAY, { slot: { start_min: 480, duration_min: 60 } }).clamped, false);
+});
+
+test('§8.4b: an override write carries the level\'s own value, never the resolved one', () => {
+  // Asserted at the boundary the day view calls: the chip renders 30 minutes
+  // because the PARENT authored 30, so the weekday row's own duration is
+  // null. Writing the resolved 30 would freeze Friday against the parent's
+  // later change and light the override marker on a chip nobody re-timed.
+  const chip = chipOn(FRIDAY, {
+    slot: { start_min: 480, duration_min: null },
+    weekday: { weekday: 5, start_min: 420, duration_min: null },
+  });
+  assert.equal(chip.durationMin, 30, 'what is drawn');
+  const idx = SlotsCore.indexWeekdays([{ child_id: 'c1', subject_kind: 'chore', subject_key: 'dishes', instance_key: '', weekday: 5, start_min: 420, duration_min: null }]);
+  const own = SlotsCore.weekdayOverrideFor(idx, CHORE, 5);
+  assert.equal(own.duration_min, null, 'what must be written');
+  assert.equal(chip.overridden, false, 'and the marker stays dark');
+});
+
+// --- tests 5-6: the block side --------------------------------------------
+
+const BLOCK = { id: 'b1', child_id: 'c1', start_min: 540, end_min: 600 };
+const MON_FRI = [1, 2, 3, 4, 5].map((weekday) => ({ block_id: 'b1', weekday, start_min: null, end_min: null }));
+
+function occursOn(weekdayRows, dateRows, date) {
+  return SchoolCore.blockOccursOn(
+    SchoolCore.indexBlockWeekdays(weekdayRows),
+    SchoolCore.indexBlockDates(dateRows),
+    'b1', date, TimeCore.weekdayOf(date)
+  );
+}
+
+test('§8.5: the weekday list IS the schedule — Mon-Fri renders Monday, not Saturday', () => {
+  assert.equal(occursOn(MON_FRI, [], '2026-08-24'), true, 'Monday');
+  assert.equal(occursOn(MON_FRI, [], '2026-08-22'), false, 'Saturday — this is §0.1');
+  assert.equal(occursOn(MON_FRI, [], '2026-08-23'), false, 'Sunday');
+  // A block with no weekday rows happens on NO day. That is why POST applies
+  // the Mon-Fri default server-side rather than leaving it to the client.
+  assert.equal(occursOn([], [], '2026-08-24'), false);
+  assert.deepEqual(SchoolCore.scheduledWeekdays(SchoolCore.indexBlockWeekdays(MON_FRI), 'b1'), [1, 2, 3, 4, 5]);
+});
+
+test('§8.5a: a date row beats the weekday list, in BOTH directions', () => {
+  // occurs 0 on a scheduled Monday — a field trip.
+  assert.equal(occursOn(MON_FRI, [{ block_id: 'b1', date: '2026-08-24', occurs: 0, start_min: null, end_min: null }], '2026-08-24'), false);
+  // occurs 1 on an unscheduled Sunday — the backup school day.
+  assert.equal(occursOn(MON_FRI, [{ block_id: 'b1', date: '2026-08-23', occurs: 1, start_min: null, end_min: null }], '2026-08-23'), true);
+  // The exception is confined to its own date, in both directions.
+  assert.equal(occursOn(MON_FRI, [{ block_id: 'b1', date: '2026-08-24', occurs: 0 }], '2026-08-25'), true);
+  assert.equal(occursOn(MON_FRI, [{ block_id: 'b1', date: '2026-08-23', occurs: 1 }], '2026-08-30'), false);
+
+  // A backup Sunday with no span of its own takes the BLOCK's default span —
+  // there is no Sunday weekday row to read, which is the case a reader
+  // assumes must be special and is not.
+  const placement = SchoolCore.resolvePlacement(
+    SchoolCore.indexBlockWeekdays(MON_FRI),
+    SchoolCore.indexBlockDates([{ block_id: 'b1', date: '2026-08-23', occurs: 1, start_min: null, end_min: null }]),
+    BLOCK, '2026-08-23', TimeCore.weekdayOf('2026-08-23')
+  );
+  assert.equal(placement.occurs, true);
+  assert.equal(placement.startMin, 540);
+  assert.equal(placement.endMin, 600);
+  assert.equal(placement.spanScope, 'block');
+});
+
+test('§8.6: a block span resolves as a PAIR, and a half-span contributes nothing', () => {
+  const wdSpan = { block_id: 'b1', weekday: 1, start_min: 480, end_min: 570 };
+  const dtSpan = { block_id: 'b1', date: '2026-08-24', occurs: 1, start_min: 600, end_min: 660 };
+
+  assert.deepEqual(SchoolCore.resolveBlockSpan(BLOCK, null, null), { startMin: 540, endMin: 600, scope: 'block' });
+  assert.deepEqual(SchoolCore.resolveBlockSpan(BLOCK, wdSpan, null), { startMin: 480, endMin: 570, scope: 'weekday' });
+  assert.deepEqual(SchoolCore.resolveBlockSpan(BLOCK, wdSpan, dtSpan), { startMin: 600, endMin: 660, scope: 'date' });
+
+  // A NULL span does not contribute half of one: the level is skipped whole.
+  assert.deepEqual(
+    SchoolCore.resolveBlockSpan(BLOCK, { block_id: 'b1', weekday: 1, start_min: null, end_min: null }, null),
+    { startMin: 540, endMin: 600, scope: 'block' }
+  );
+  // Neither does a malformed one-sided row, which the routes reject but a
+  // resolver should never be the second line of defence against.
+  assert.deepEqual(
+    SchoolCore.resolveBlockSpan(BLOCK, { block_id: 'b1', weekday: 1, start_min: 480, end_min: null }, null),
+    { startMin: 540, endMin: 600, scope: 'block' }
+  );
+});
+
+// --- test 10: the member-course fix (§5.3) --------------------------------
+
+test('§8.10: a member course with nothing that date is not drawn, and cannot hold the block open', () => {
+  const rows = [
+    { kind: 'activity', child_id: 'c1', course_name: 'Math', date: '2026-08-24', status: 'complete', rescinded_at: null },
+    { kind: 'activity', child_id: 'c1', course_name: 'Latin', date: '2026-08-25', status: 'pending', rescinded_at: null },
+  ];
+  const rollups = SchoolCore.memberRollups(rows, 'c1', '2026-08-24', ['Math', 'Latin']);
+  assert.equal(rollups.length, 2);
+  assert.equal(rollups[1].checked, null, 'Latin has nothing on the 24th');
+
+  const renderable = SchoolCore.renderableRollups(rollups);
+  assert.deepEqual(renderable.map((r) => r.courseName), ['Math'], 'the phantom course is gone');
+  // And the block collapses, which it could not while a null member was in
+  // the list — `isCollapsed` requires every entry to be checked === true.
+  assert.equal(SchoolCore.isCollapsed(rollups), false);
+  assert.equal(SchoolCore.isCollapsed(renderable), true);
+
+  // A block whose members ALL have nothing that day is the empty shell, not
+  // a collapsed one: an empty set is not an achievement (§5.3).
+  const none = SchoolCore.renderableRollups(SchoolCore.memberRollups(rows, 'c1', '2026-08-26', ['Math', 'Latin']));
+  assert.deepEqual(none, []);
+  assert.equal(SchoolCore.isCollapsed(none), false);
 });

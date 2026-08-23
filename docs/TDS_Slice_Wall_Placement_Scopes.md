@@ -112,6 +112,16 @@ make one that was not assigned appear.
 | 3 | `wall_slots.start_min` | the standing placement (§3.3) |
 | 4 | *(none of the above)* | unplaced — the chore is in the tray (§3.4) |
 
+**Row 3 is a gate, not just the last resort** (added Phase 2, from §11.6's and §11.7's answers). A
+chore is placed **if and only if** a `wall_slots` row exists for it. Rows 1 and 2 are overrides
+*on* a placement; neither can create one. A `wall_slot_weekdays` row with a `start_min` and no
+standing row under it resolves to **unplaced**, not to "on the grid on Fridays only".
+
+This is not a rule invented for §11.6 — it is the shipped behaviour of the level that already
+exists, stated. `resolveChip` reads `startMin` from the standing row alone, so a `wall_slot_days`
+row with no placement above it is inert today. The weekday level inherits that, which is what makes
+un-placing a chore safe to keep standing-scoped (§3.4) and what answers §11.7 in the negative.
+
 **Duration** — §3.5.1's existing chain, with one row inserted at position 2:
 
 | # | Source | Meaning |
@@ -466,13 +476,37 @@ in Phase 3, and 0018's job is to stop that fix from taking the weekdays with it 
 weekday rows renders nowhere (§2.2), so without the backfill Phase 3 would hide *every* block, not
 just the weekend ones. See §9 for what this means for the phase order.
 
-### 3.4 Deleting a subject cleans up all three levels
+### 3.4 Deleting a subject — and why the two sides differ
 
-`handleWallSlotDelete` already deletes from `wall_slots` **and** `wall_slot_days` in one handler; it
-gains `wall_slot_weekdays`. `handleWallSchoolBlockDelete` gains `wall_school_block_weekdays` and
-`wall_school_block_dates` alongside the `wall_school_block_courses` cleanup it already does.
-Orphaned override rows keyed to a subject that no longer exists are invisible, un-clearable from any
-UI, and would silently re-apply if the same `source_id` were ever placed again.
+**Amended at Phase 2 by §11.6's answer.** The first draft of this section said "deleting a subject
+cleans up all three levels" on both sides. That is right for a block and wrong for a chore, and the
+difference is not a nicety — it is the whole of §11.6.
+
+**Blocks: cleanup, as designed.** `handleWallSchoolBlockDelete` gains `wall_school_block_weekdays`
+and `wall_school_block_dates` alongside the `wall_school_block_courses` cleanup it already does.
+Deleting a block genuinely *is* the subject disappearing: nothing can reach those rows again, and a
+new block gets a newly minted id, so nothing can inherit them either. Orphans here are invisible,
+un-clearable garbage. The `REFERENCES` clauses in `0017` do not do this work — D1 has foreign keys
+off for this database — so the explicit cleanup is the only thing keeping the rows from orphaning.
+
+**Chores: no cleanup, because there is no subject-disappeared event.** `handleWallSlotDelete` now
+deletes the `wall_slots` row and **nothing else** — it no longer sweeps `wall_slot_days`, which it
+used to, and it does not gain `wall_slot_weekdays`. Two facts forced this:
+
+1. **The route's only caller is the tray gesture** (`day-ui.js:505`, plus the same call in its own
+   Undo path). There is no "the chore was deleted" caller to move the sweep to, and there cannot
+   be: a chore's existence is the assignment row's fact (§1), and the wall is never told one went
+   away. §11.6's proposed third shape therefore had no trigger at all on this side.
+2. **The sweep had no honest undo.** Un-placing offers Undo, and Undo restores the standing row's
+   start and duration only — so every per-day override the sweep destroyed was already gone for
+   good, behind a button that said otherwise. That defect is shipped, pre-dating this slice;
+   §3.4's first draft would have widened it from date rows to weekday rows.
+
+What makes leaving the rows safe is §2.1's gate: an override level cannot place a chore by itself,
+so orphaned rows render nothing. They are not garbage, they are dormant — re-placing the same chore
+restores its Friday time, which Ray chose (2026-08-23) over a gesture that quietly destroys a
+year of deliberate work. Clearing a level is its own explicit act:
+`DELETE /api/wall/slots/weekday`, `DELETE /api/wall/slots/day`.
 
 ---
 
@@ -513,15 +547,18 @@ Locked for: this slice.
 
 ### 4.2 Routes
 
-Six new, four widened. **No new route pattern beyond `/api/wall/*`**, and every one of them 401s on a
-device token exactly as the existing wall routes do (§III.E's fourth bound).
+Six new, four widened. **BUILT 2026-08-23 (Phase 2).** **No new route pattern beyond
+`/api/wall/*`**, and every one of them 401s on a device token — and on a `SYNC_TOKEN` — exactly as
+the existing wall routes do (§III.E's fourth bound), asserted by extending the `WALL_ROUTES` table
+the credential-matrix tests already iterate.
 
 | Route | Method | Body / query | Notes |
 |---|---|---|---|
 | `/api/wall/slots` | GET | `?from=&to=` | **Widened**: response gains a third array, `slotWeekdays`, and a third cap flag, `slotWeekdaysTruncated` — the handler caps each array separately for the reason its own comment gives (`capRows`' single `truncated` key would collide across arrays). Unbounded by the window, like `slots` — a weekday row carries no date. |
 | `/api/wall/slots/weekday` | PUT | `{childId, subjectKind, subjectKey, instanceKey?, weekday, startMin, durationMin}` | **NEW.** Both override fields required by §4.1; either may be `null`, not both. |
 | `/api/wall/slots/weekday` | DELETE | `{childId, subjectKind, subjectKey, instanceKey?, weekday}` | **NEW.** Clears the weekday level; the chip falls to the standing row. |
-| `/api/wall/slots/day` | PUT | `{…, date, startMin, durationMin}` | **Widened**: `startMin` joins `durationMin`. Today `durationMin` is required non-null; under §4.1 it becomes "both present, not both null". |
+| `/api/wall/slots/day` | PUT | `{…, date, startMin, durationMin}` | **Widened**: `startMin` joins `durationMin`. Today `durationMin` is required non-null; under §4.1 it becomes "both present, not both null". Backward-compatible with the shipped client, which sends a non-null `durationMin` and no `startMin`. |
+| `/api/wall/slots` | DELETE | `{childId, subjectKind, subjectKey, instanceKey?}` | **Narrowed, not widened** (§11.6's answer, §3.4): deletes the `wall_slots` row only. It no longer sweeps `wall_slot_days`, and it does not sweep `wall_slot_weekdays`. Un-placing is standing-scoped and non-destructive; the override levels go dormant under §2.1's gate. |
 | `/api/wall/school-blocks` | GET | — | **Widened**: response gains `blockWeekdays` and `blockDates` beside `blocks` and `blockCourses`, each with its own cap flag. |
 | `/api/wall/school-blocks` | POST | `{…, weekdays: [1,2,3,4,5]}` | **Widened**: the body names the block's weekday schedule and the handler writes the block row and its weekday rows in ONE `env.DB.batch()`. See §6.4 — without this, creating a block is six online-required writes with no outbox behind them. Omitted or empty → the same Mon–Fri default, applied server-side. |
 | `/api/wall/school-blocks/:id/weekdays` | PUT | `{weekday, startMin, endMin}` | **NEW.** Creates or updates the weekday row — **this is what schedules the block on that day.** Span both-or-neither (§2.2). |
@@ -572,6 +609,8 @@ inline:
 
 ### 5.1 `slots-core.js` — the chain becomes real
 
+**BUILT 2026-08-23 (Phase 3).**
+
 `resolveChip(slotsIndex, daysIndex, row, date)` gains a weekdays index and a resolved weekday:
 
 ```js
@@ -591,6 +630,17 @@ the question "which level am I looking at?" is answered once, in the pure layer,
 carries a duration override, unchanged in spirit.
 
 ### 5.2 `school-core.js` — placement joins the rollups
+
+**BUILT 2026-08-23 (Phase 3).** One addition beyond the four functions below:
+`resolvePlacement(weekdaysIndex, datesIndex, block, date, weekday)` returns
+`{occurs, startMin, endMin, spanScope}` in one call. `blockOccursOn` and `resolveBlockSpan` read
+the *same two rows*, and a caller that fetches them twice can be given a span from one date and an
+occurrence from another if the indexes are rebuilt in between. One call, one pair of rows.
+
+The block side's `scope` vocabulary is `'date' | 'weekday' | 'block'`, deliberately not §5.1's
+`'day' | 'weekday' | 'standing'`: a block's base level is the block row itself rather than a
+placement row, and §2.2.1 calls the exception level "the date row". Two tables, two vocabularies,
+each named after what it actually is.
 
 The file gains a placement section beside its existing completion rollups, with a comment saying so:
 
@@ -618,6 +668,14 @@ and lands lower down the grid than it needed to. Harmless when it happens, invis
 and cheap to get right while the function is being renamed anyway.
 
 ### 5.3 The member-course fix rides along
+
+**BUILT 2026-08-23 (Phase 3), not Phase 5.** §9 listed the fix under Phase 5 while listing its test
+(§8, test 10) under Phase 3, and a test without its implementation is not a test. Phase 3 is the
+right half: the filter lives in the pure layer as `SchoolCore.renderableRollups`, which is the only
+way test 10 can assert it "at the core boundary" as §8 asks, since the renderer is not pure. It has
+a second consequence §8 names and this section did not: `blockEntry` computes `collapsed` from the
+renderable rollups, so a block whose only unfinished member has nothing that date now collapses,
+where a phantom `checked: null` member used to hold it open.
 
 Independent of the scopes work, and a spec violation today: `schoolBlockChipHtml` renders an `<li>`
 for every member course including those with `total === 0`, while §5.2 says a course whose
@@ -881,11 +939,11 @@ document** (his instruction, 2026-08-23: design first, code next session).
 | Phase | Work | Est. |
 |---|---|---|
 | **1** | Migrations 0015–0018 + registry; validation helpers + tests 7, 7a, 8, the migration-shape tests, and `tests/migrations-apply.test.js`. Apply on an empty DB and on a copy of live data. **BUILT 2026-08-23.** | ~1 h |
-| **2** | Worker: the six new routes, the **four** widened ones (§4.2), §3.4's delete cleanup, route tests. Answer §11.6 first. | ~2 h |
-| **3** | Pure layer: `time-core.weekdayOf`, `slots-core` chain + `scope`, `school-core` placement, `blocksForChildOn`, tests 1–6 (incl. 5a) and 10. | ~1.5 h |
+| **2** | Worker: the six new routes, the **four** widened ones (§4.2), §3.4's delete cleanup, route tests. Answer §11.6 first. **BUILT 2026-08-23**, with §11.6 and §11.7 answered by Ray first. | ~2 h |
+| **3** | Pure layer: `time-core.weekdayOf`, `slots-core` chain + `scope`, `school-core` placement, `blocksForChildOn`, tests 1–6 (incl. 5a) and 10. **BUILT 2026-08-23**, plus the `CACHE_NAME` bump moved here from Phase 6 and §9's predicted create-block flicker closed. | ~1.5 h |
 | **4** | Chore UI: §6.1's sheet, §7.1's drag rule, §7.2's toast. | ~1.5 h |
 | **5** | Block UI: §6.2's sheet including the Today group, §6.3's add-for-today sheet, §6.4's creation default, §5.3's member fix. | ~2 h |
-| **6** | `CACHE_NAME` bump, §8's manual checks on the tablet, doc reconciliation: `CLAUDE.md` §I.A/§III.E/§VII amended from "authorized, unbuilt" to shipped, redesign slice §3.3/§5.4/§17.1 pointers, this file's status line. | ~1 h |
+| **6** | ~~`CACHE_NAME` bump~~ (done in Phase 3 — see below), §8's manual checks on the tablet, doc reconciliation: `CLAUDE.md` §I.A/§III.E/§VII amended from "authorized, unbuilt" to shipped, redesign slice §3.3/§5.4/§17.1 pointers, this file's status line. | ~1 h |
 
 **~9 hours.** Corrected 2026-08-23 during the Phase 1 build — the first draft of this paragraph
 got the visible phase wrong in one direction and missed a real hazard in the other.
@@ -909,10 +967,22 @@ correctly scheduled block anyway. Phase 2 must therefore land with Phase 3, and 
 work is not optional groundwork — it is the thing that keeps Phase 3 safe to ship.
 
 **So the natural break is after Phase 3, with Phase 2 in it** — Phases 1–3 together still change no
-behaviour a family can see except the one they asked for: blocks stop appearing on Saturdays. One
-loose end at that break, which Phase 5 ties off: `createSchoolBlock`'s optimistic append to
-`current.state.schoolBlocks` does not add the weekday rows the render now needs, so a newly created
-block flickers out until the next poll returns. Cosmetic, and only on the create path.
+behaviour a family can see except the one they asked for: blocks stop appearing on Saturdays.
+
+**Two corrections from the Phase 3 build, both about that break actually working.**
+
+- **The `CACHE_NAME` bump belongs to Phase 3, not Phase 6.** `wall-app/sw.js` is cache-first for the
+  shell (`caches.match(canonical).then(cached => cached || fetch(...))`, and its own line 8 says
+  "bump `CACHE_NAME` on any shell file change"). Without the bump the tablet keeps serving the old
+  scripts, so a Phase 2+3 release changes nothing a family can see — which is the single thing this
+  break exists to deliver. Bumped to `wall-display-shell-v17` in the Phase 3 commit; Phase 6's row
+  keeps the manual checks and the doc reconciliation.
+- **The loose end this paragraph predicted is closed, in Phase 3 rather than Phase 5.**
+  `createSchoolBlock`'s optimistic append writes no weekday rows, so `blocksForChildOn` filters the
+  new block straight back out and it flickers away until the next poll returns. It cost four lines
+  here because **Phase 2's `POST /api/wall/school-blocks` already answers with the weekday list it
+  applied** — including the Mon–Fri default when the body named none — so the client appends what
+  the server actually stored rather than guessing.
 
 **§11.6 must be answered before Phase 2 starts.** It decides whether
 `DELETE /api/wall/slots` keeps one meaning or grows a scope, which is a route signature Phase 2
@@ -947,8 +1017,9 @@ recorded as such rather than re-litigated as a fresh narrowing.
 
 ## 11. Open items
 
-Per `CLAUDE.md` §VI.C — flagged rather than settled. None of these blocks Phase 1, and the first two
-are answered. **§11.6 blocks Phase 2** — it decides a route signature that phase writes.
+Per `CLAUDE.md` §VI.C — flagged rather than settled. **§11.1, §11.2, §11.6 and §11.7 are now
+answered**; §11.6 and §11.7 were answered together on 2026-08-23, before Phase 2 wrote the routes
+they govern, and their answers are folded into §2.1 and §3.4.
 
 **11.1 and 11.2 — ANSWERED 2026-08-23, folded into the design.** Sunday is *"a backup school day
 but not regularly scheduled"* and a skip is wanted. Both are now §2.2.1's single mechanism: the
@@ -981,8 +1052,31 @@ than solved.
 tokens per day and the month grid shows events only, so neither can display a weekday-specific time
 and neither needs to change. Noted so the next session does not go looking.
 
-**11.6 Unplacing a chore is not scope-aware, and §3.4 makes that worse. NEEDS AN ANSWER BEFORE
-PHASE 2.** Dragging a chip to the tray calls `unplace` (`day-ui.js:505`), which is
+**11.6 — ANSWERED 2026-08-23 (before Phase 2). Unplacing is standing-scoped, and the override
+levels are left dormant beneath it.** Ray's decision, from three options put to him with the code
+read against this section. `DELETE /api/wall/slots` deletes the `wall_slots` row and nothing else:
+it no longer sweeps `wall_slot_days` either, so the gesture became *less* destructive than it
+shipped, not more. §3.4 is rewritten around it and §2.1 gains the gate that makes it safe. Two
+findings from the Phase 2 build decided it, neither of them visible from this document alone:
+
+- **The "third shape" this item recommended cannot be built.** It proposed moving §3.4's cleanup off
+  the tray gesture and onto "the subject disappearing" — but `DELETE /api/wall/slots` has exactly
+  one caller in the whole wall app (`day-ui.js:505`, plus the same call in its own Undo path), and
+  the wall is never told a chore was deleted, because a chore's existence is the assignment row's
+  fact (§1). There is no second caller to distinguish, and no event to hook. That option would have
+  left the override levels with no cleanup path at all.
+- **The sweep already had no honest undo, before this slice.** Un-placing offers Undo;
+  `revertPlacement` restores the standing row's start and duration only. Every `wall_slot_days`
+  override the shipped sweep destroyed was therefore already unrecoverable, behind a button
+  promising otherwise. "Unplace is total" was never the neutral status quo this item took it for.
+
+What makes dormancy safe rather than merely tidy is §2.1's gate — an override level cannot place a
+chore, so leftover rows render nothing. The accepted cost, which §3.4's first draft called a hazard:
+re-placing the same chore later restores its weekday and date times. Ray chose that over a gesture
+that silently destroys a year of deliberate work. **The original text follows, for the record.**
+
+**11.6 (original) Unplacing a chore is not scope-aware, and §3.4 makes that worse. NEEDS AN ANSWER
+BEFORE PHASE 2.** Dragging a chip to the tray calls `unplace` (`day-ui.js:505`), which is
 `DELETE /api/wall/slots` — the same route §3.4 is about to teach to clear `wall_slot_weekdays` and
 `wall_slot_days` as well. So after this slice ships, dragging a chip to the tray **on a Friday**
 deletes the standing placement and every weekday and date override the chore has, for every day of
@@ -1006,8 +1100,20 @@ route. Recommend deciding this with Ray before **Phase 2**, since it changes a r
 writes — the heading of this item said "Phase 4" in the first two drafts and §9 and §12 said
 Phase 2; §9 was right, and the heading is corrected to match (2026-08-23, Phase 1 build).
 
-**11.7 A weekday row can place a chore that has no standing placement, and §2.1 does not say whether
-that is a feature.** The chain reads level 2 before level 3, so a `wall_slot_weekdays` row with a
+**11.7 — ANSWERED 2026-08-23 (with §11.6). Not a feature: a weekday row cannot place a chore.**
+§2.1 now states the gate — a chore is placed if and only if a `wall_slots` row exists, and rows 1
+and 2 are overrides *on* a placement rather than sources of one. A `wall_slot_weekdays` row with a
+`start_min` and nothing under it resolves to **unplaced**.
+
+This costs nothing that was reachable: as this item already noted, no §6.1 button path can create
+that state. It buys §11.6's answer, since dormant override rows are exactly what un-placing now
+leaves behind, and it is the shipped behaviour of the level that already exists rather than a new
+rule — `resolveChip` reads `startMin` from the standing row alone, so a `wall_slot_days` row with
+no placement above it is already inert. Phase 3 says so in `slots-core`'s comment, as this item
+asked. **The original text follows, for the record.**
+
+**11.7 (original) A weekday row can place a chore that has no standing placement, and §2.1 does not
+say whether that is a feature.** The chain reads level 2 before level 3, so a `wall_slot_weekdays` row with a
 `start_min` and no `wall_slots` row underneath it renders the chore on Fridays and leaves it in the
 tray the rest of the week. That is a genuinely useful state — "this only happens on Fridays" — and
 it falls out of the model for free. But nothing in §6.1 can create it (every button path goes
@@ -1033,6 +1139,8 @@ deliberate omission that a future reporting need would reverse with one `ALTER`.
 
 | Date | Change |
 |---|---|
+| 2026-08-23 (Phase 3 build) | **The pure layer, and §0.1's bug is gone.** `TimeCore.weekdayOf` (§2.3) is now the one place a date becomes a day-of-week — `nav-ui.js`'s and `week-ui.js`'s identical copies both call it, and §8's test 1 springs the trap under `TZ=America/Chicago` rather than describing it (the suite's own default is UTC, so the assertion that a string-parsed `2026-08-23` reads Saturday only passes because the TZ change takes effect). `slots-core.js` gains `indexWeekdays`, `weekdayOverrideFor`, `resolveStartMin` and a five-row duration chain, and `resolveChip` gains the weekday index, `scope`, and §2.1's clamp; `school-core.js` gains a placement section (`blockOccursOn`, `resolveBlockSpan`, `scheduledWeekdays`, `dateExceptionFor`, plus `resolvePlacement` and `renderableRollups`); `day-ui.js`'s `blocksForChild` becomes `blocksForChildOn` at all four call sites and every block render reads the RESOLVED span off the block entry; `api.js`/`poll.js` carry the three new arrays. §8's tests 1–6 (incl. 4a, 4b, 5a) and 10; 610 green. **Corrections and additions this build made, all recorded above:** **(a)** the `CACHE_NAME` bump moves from Phase 6 to here — `sw.js` is cache-first, so without it a Phase 2+3 release changes nothing a family can see, which is the one thing that break exists to deliver (`wall-display-shell-v17`); **(b)** §9's predicted create-block flicker is closed here rather than in Phase 5, in four lines, because Phase 2's POST already answers with the weekday list it applied; **(c)** §5.3's member fix belongs to Phase 3, not Phase 5 — §9 scheduled its test here and its implementation there, and the filter has to be in the pure layer for test 10 to assert it "at the core boundary" at all; it also makes a block collapse where a phantom `checked: null` member used to hold it open; **(d)** `school-core` gains `resolvePlacement` beyond §5.2's four functions, so occurrence and span always come from the same two rows; **(e)** `resolveDurationMin` and `isOverridden` take the weekday row at its CHAIN position, and the shipped tests were updated to pass it explicitly as null — a three-argument call would have delivered the per-day row into the weekday slot and still produced the old answers, leaving the tests passing while asserting something else; **(f)** one shipped defect fixed in passing: `buildDurationSheet` called `isOverridden` with the old arity, which would have left the override marker reading only two of the three levels; **(g)** `nextFreeBlockStart` takes the date-filtered set AND resolved spans, per §5.2. **Not done, and correctly Phase 4/5:** the block WRITE paths (`moveSchoolBlock`, the block sheet) still address `block.start_min` directly. That is §7.1's "write the level that is winning" rule, and there is no live divergence today because nothing yet creates a weekday or date row with a non-null span — `createSchoolBlock`'s Mon–Fri rows are all NULL/NULL, which resolve to the block's own span. |
+| 2026-08-23 (Phase 2 build) | **The Worker API.** Six new routes (`PUT`/`DELETE /api/wall/slots/weekday`, `PUT`/`DELETE /api/wall/school-blocks/:id/weekdays`, `PUT`/`DELETE /api/wall/school-blocks/:id/dates`), four widened (`GET /api/wall/slots` gains `slotWeekdays`; `PUT /api/wall/slots/day` gains `startMin` under §4.1's full-row contract; `GET /api/wall/school-blocks` gains `blockWeekdays` and `blockDates`; `POST /api/wall/school-blocks` takes a `weekdays` list and writes the block with its schedule in one `batch()`, defaulting to Mon–Fri server-side), and §3.4's cleanup on the block side. §8's test 9 plus 22 route tests; 598 tests green. **§11.6 and §11.7 were put to Ray and answered before any of it was written**, per §9's gate. §11.6: un-placing a chore is **standing-scoped and non-destructive** — it deletes the `wall_slots` row and nothing else, having *stopped* sweeping `wall_slot_days` too. Two findings decided it, neither visible from the design alone: **(a)** this item's own recommended "third shape" cannot be built, because `DELETE /api/wall/slots` has exactly one caller in the wall app and the wall is never told a chore was deleted — there is no subject-disappeared event to move the cleanup to, so that option would have left the override levels with no cleanup path at all; **(b)** the sweep already had no honest undo before this slice, since `revertPlacement` restores only the standing row, so every per-day override the shipped sweep destroyed was already unrecoverable behind a button promising otherwise. §11.7 is answered in the same stroke and is what makes (a) safe: §2.1 gains a **gate** — a chore is placed iff a `wall_slots` row exists, and the weekday and date levels are overrides *on* a placement, never sources of one — which is the shipped behaviour of `wall_slot_days` stated rather than a new rule. Accepted cost, recorded because §3.4 first called it a hazard: re-placing a chore restores its weekday and date times. §3.4 is rewritten around the asymmetry (a deleted **block** really is the subject disappearing, so its cleanup ships as designed; a chore is not). Also corrected: `isValidSlotDuration`'s comment claimed `wall_slot_days` never stores null, which §4.1 changes. Two Phase 4/5 loose ends, neither visible today: `applyOptimisticUnplace` (`day-ui.js:389`) still drops `slotDays` locally where the server now keeps them — invisible, since dormant rows render nothing, but it should stop; and the day view must send each level's OWN value on an override write, never the resolved one (§4.1). |
 | 2026-08-23 (Phase 1 build) | **First code.** Migrations `0015_wall_slot_weekdays`, `0016_wall_slot_days_start`, `0017_wall_school_block_scopes`, `0018_wall_school_block_weekday_backfill`, all registered; `isValidWeekday`, `isValidStartMinOverride`, `isValidBlockSpan`, `isValidOccurs`, `isValidBlockDateException` in `worker/validation.js`; §8's tests 7, 7a and 8, migration-shape tests in the repo's existing style, and a new `tests/migrations-apply.test.js` that applies every migration to a real in-memory SQLite database. Six corrections to this document, found by reading it against the shipped code before writing any of it: **(a)** §9 and §3.3a both claimed 0018 makes weekend blocks stop rendering on apply — it does not, nothing reads the new tables until Phase 3's `blocksForChildOn`, so Phase 1 is entirely silent and §0.1's fix lands in Phase 3; **(b)** §9's "Phases 1–3 are shippable on their own" hid a real hazard in the Phase 3 → 5 gap — once the day view filters on `blockOccursOn`, `createSchoolBlock` mints a block with no weekday rows and it renders nowhere, which is what makes §4.2's server-side Mon–Fri default load-bearing and Phase 2 a prerequisite for shipping Phase 3; **(c)** §3.2's comment said "0011 is not edited" where `wall_slot_days` is created in **0010**; **(d)** §4.2 said "six new, two widened" over a table listing **four** widened, which is where Phase 2's estimate came from; **(e)** §5.2 said `blocksForChild` has three call sites — there are four, the missing one being `day-ui.js:933`'s `nextFreeBlockStart`; **(f)** §11.6's heading said Phase 4 where §9 and §12 said Phase 2 — §9 was right. Also recorded: 0018's split from 0017 is not merely prudent, `Online_Revamp` §3.7.1 requires it ("a migration that adds a table and backfills it is two files"); D1 does not enforce the `REFERENCES` clauses on this database, so §3.4's explicit cleanup is the only thing keeping scope rows from orphaning; and `handleWallSlotsGet`'s `SELECT *` means 0016 alone starts returning `start_min` in the `days[]` array with no Worker change. |
 | 2026-08-23 | Written. Prompted by Ray reporting school blocks on weekends (§0.1), then asking for per-weekday times on blocks and chores alike (§0.2) and a "only this occurrence" scope for both (§0.3). Answers captured in-session: existing blocks backfill to **Mon–Fri**; per-day times are **overrides on a default span**, not seven independent spans; **design first, code next session**. Supersedes redesign slice §3.3, §5.4's no-per-day-span note, and §17.1. |
 | 2026-08-23 (third pass) | **Design review against the shipped code, before any of it is built.** Five corrections, one route widening, four new open items — no change to the model in §2. Corrections: (a) §6.1's "deletes the level it came from" would have deleted the `wall_slots` row when moving *standing → only today*, unplacing the chore on every other day — `start_min` is `NOT NULL` and the row's presence IS the placement, so only levels 1–2 are ever cleared, now stated as a six-row table; (b) §4.1's "it already holds both numbers" would have written the **resolved** duration into a new override row, freezing a chip against the parent's `expected_duration_min` and lighting the override marker on a chip nobody re-timed — the shipped standing write already says `// preserved, never guessed`, and the override levels now inherit that rule; (c) independent start/duration chains silently break `handleWallSlotPut`'s `startMin + durationMin > 1440` invariant, since no single write sees the pair — resolved by clamping in `resolveChip` rather than by a read-modify-write on every PUT; (d) `weekdayOf` already exists twice (`nav-ui.js:54`, `week-ui.js:52`) and §2.3 would have added a third — Phase 3 collapses them; (e) the Mon–Fri backfill moves out of 0017 into its own **0018**, because no migration in this repo has yet put a `CREATE TABLE` and an `INSERT` into that same table in one `env.DB.batch()`, and a browser-applied migration with no CLI behind it is the wrong place to find out. Widened: `POST /api/wall/school-blocks` takes the weekday list and writes the block and its rows in one batch — six online-required writes with no outbox have five places to stop halfway, and the halfway state is indistinguishable from a deliberate schedule. New open items §11.6–§11.9, of which **§11.6 needs Ray's answer before Phase 2 writes the delete route**: unplacing a chore is not scope-aware, and §3.4's multi-level cleanup means a tray drag on a Friday would destroy every override the chore has. Tests 4a, 4b. |

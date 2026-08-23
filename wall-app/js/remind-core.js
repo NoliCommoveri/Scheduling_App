@@ -22,12 +22,13 @@
   function chimeCandidates(state, date) {
     var slotsIdx = g.SlotsCore.indexSlots(state.slots);
     var daysIdx = g.SlotsCore.indexDays(state.slotDays);
+    var wdIdx = g.SlotsCore.indexWeekdays(state.slotWeekdays);
     var out = [];
     (state.children || []).forEach(function (child) {
       var chores = g.ChoresCore.choresForChild(state.rows, child.id, date, state.today);
       chores.forEach(function (row) {
         if (row.status !== "pending") return;
-        var chip = g.SlotsCore.resolveChip(slotsIdx, daysIdx, row, date);
+        var chip = g.SlotsCore.resolveChip(slotsIdx, wdIdx, daysIdx, row, date);
         if (chip.startMin == null) return;
         out.push({ row: row, child: child, startMin: chip.startMin });
       });

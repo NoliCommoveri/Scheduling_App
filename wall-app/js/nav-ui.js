@@ -46,14 +46,12 @@
     return target.getFullYear() + "-" + pad2(target.getMonth() + 1) + "-" + pad2(target.getDate());
   }
 
-  // Mirrors week-ui.js's own dayOfWeek/weekDates (Sunday-first) rather than
-  // re-deriving them, so the nav's idea of "this week" can never drift from
-  // the week view's.
-  function dayOfWeek(iso) {
-    var parts = iso.split("-").map(Number);
-    return new Date(parts[0], parts[1] - 1, parts[2]).getDay();
-  }
-  function weekStart(iso) { return addDays(iso, -dayOfWeek(iso)); }
+  // Placement Scopes §2.3 — was a local copy of these three lines, shared by
+  // name with week-ui.js's. Both were correct and neither was tested; the
+  // number is load-bearing now (it decides whether a school block happens),
+  // so all of it goes through TimeCore.weekdayOf and the nav's idea of "this
+  // week" still cannot drift from the week view's.
+  function weekStart(iso) { return addDays(iso, -g.TimeCore.weekdayOf(iso)); }
 
   // §11.3 — the topbar clock is one more thing the time-format setting
   // governs, through the same helper the grid and its chips use.
