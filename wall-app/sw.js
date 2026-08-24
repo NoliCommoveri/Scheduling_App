@@ -131,7 +131,25 @@
 // `slots-core.js` gains the write-shape helpers (`planScopeWrite`,
 // `levelRow`, `overrideWrite`); wall.css gains the second stepper's label,
 // the scope row and the toast's wrapping.
-const CACHE_NAME = "wall-display-shell-v20";
+// v21: code review, 2026-08-24 — three fixes from a read of the whole app,
+// none of them a design change. (1) `poll.js` armed a new cadence timeout on
+// every resolution without clearing the last, so two overlapping `pollNow()`
+// calls left both chains running and chains only ever multiplied; every nav
+// interaction polls (§10.1), so a hamburger tap followed by a view tap leaked
+// one permanently. `runTick` is now the one door to a fetch and coalesces
+// concurrent callers into one fan-out plus at most one re-run. (2) The plan
+// window was pinned to [today-7, today+6] while the nav steps a week at a
+// time, so the week view's next week was routinely half unfetched and drew as
+// empty rather than as unknown; the window now follows the rendered view
+// (`Poll.setRange`, called from app.js) with the base always included and the
+// extension capped, and day-ui.js/week-ui.js say so out loud for a date
+// outside it. (3) Chips and school blocks carry `touch-action: none` to own
+// their drag, which left most of a 2176px grid unscrollable by finger —
+// `attachGesture` now reads a flick inside DRAG_ARM_MS as a scroll and drives
+// `.day-scroll` itself, so drag-to-place is untouched. `pointercancel` also
+// stops being reported as a tap. day-ui.js, week-ui.js, poll.js, app.js and
+// wall.css change; no new files.
+const CACHE_NAME = "wall-display-shell-v21";
 
 const APP_SHELL = [
   "./",

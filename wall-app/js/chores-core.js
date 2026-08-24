@@ -18,6 +18,14 @@
 // forever. The bound that keeps this from actually being "forever" is the
 // 7-day-back fetch window (poll.js): a row due more than a week ago simply
 // isn't in `rows` any more.
+//
+// That bound is an accident of the fetch window rather than a rule stated
+// here, and poll.js now guards it as such: its window follows the rendered
+// view FORWARD but is pinned at seven days BACK (MAX_BEHIND_DAYS, 2026-08-24)
+// precisely so navigating into the past cannot quietly widen what today
+// shows. Anyone giving the roll-forward a real bound of its own should lift
+// that pin in the same change — and mirror it in planner-core.js, or the
+// wall and the child's tablet stop agreeing about what is due today.
 
 (function (g) {
   "use strict";

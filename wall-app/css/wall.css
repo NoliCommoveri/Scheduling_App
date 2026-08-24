@@ -590,7 +590,12 @@ button {
   gap: 0.4rem;
   padding: 0.2rem 0.4rem;
   border-radius: 6px;
-  touch-action: none; /* this element owns its own drag gesture (§16 Phase 5) */
+  /* Owns its own drag gesture (§16 Phase 5), so the browser must not
+     claim the vertical axis — re-timing a chore IS a vertical drag. The
+     grid is still scrollable from here: `attachGesture` (day-ui.js) reads
+     a flick inside DRAG_ARM_MS as a scroll and moves `.day-scroll` itself.
+     Code review, 2026-08-24. */
+  touch-action: none;
   user-select: none;
   cursor: grab;
   transition: opacity 150ms ease, color 150ms ease;
@@ -878,7 +883,12 @@ button {
   right: 4px;
   background: transparent;
   cursor: grab;
-  touch-action: none; /* this element owns its own drag gesture (§16 Phase 5) */
+  /* Owns its own drag gesture (§16 Phase 5), so the browser must not
+     claim the vertical axis — re-timing a chore IS a vertical drag. The
+     grid is still scrollable from here: `attachGesture` (day-ui.js) reads
+     a flick inside DRAG_ARM_MS as a scroll and moves `.day-scroll` itself.
+     Code review, 2026-08-24. */
+  touch-action: none;
   user-select: none;
 }
 
@@ -904,7 +914,12 @@ button {
   padding: 0 0.6rem;
   overflow: hidden;
   cursor: grab;
-  touch-action: none; /* this element owns its own drag gesture (§16 Phase 5) */
+  /* Owns its own drag gesture (§16 Phase 5), so the browser must not
+     claim the vertical axis — re-timing a chore IS a vertical drag. The
+     grid is still scrollable from here: `attachGesture` (day-ui.js) reads
+     a flick inside DRAG_ARM_MS as a scroll and moves `.day-scroll` itself.
+     Code review, 2026-08-24. */
+  touch-action: none;
   user-select: none;
   transition: opacity 150ms ease, border-left-color 200ms ease;
 }
@@ -1064,6 +1079,11 @@ button {
   padding: 0.35rem 0.6rem;
   overflow: hidden;
   cursor: grab;
+  /* Owns its own drag gesture (§16 Phase 5), so the browser must not
+     claim the vertical axis — re-timing a chore IS a vertical drag. The
+     grid is still scrollable from here: `attachGesture` (day-ui.js) reads
+     a flick inside DRAG_ARM_MS as a scroll and moves `.day-scroll` itself.
+     Code review, 2026-08-24. */
   touch-action: none;
   user-select: none;
   transition: opacity 150ms ease;
@@ -1805,6 +1825,17 @@ button {
 
 .week-day-events {
   margin-bottom: 0.25rem;
+}
+
+/* Code review, 2026-08-24 — a day whose rows `Poll` has not fetched. Muted
+   and italic so it reads as an absence of information rather than as an
+   answer: a blank row and a row with nothing on it looked identical, which
+   is what let the week view's next week draw as an empty week. */
+.week-day-unloaded {
+  color: var(--text-dim);
+  font-style: italic;
+  font-size: 0.95rem;
+  margin-top: 0.4rem;
 }
 
 .week-day-tokens {

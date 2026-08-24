@@ -73,9 +73,12 @@
 
   // §7.2 — the household-wide, server-deduped events feed the month grid
   // runs on, and the ONE read in this app that is not part of `Poll`'s
-  // fan-out. The poll's window is a fortnight ([today-7, today+6],
-  // poll.js); a month grid draws 42 days, and §7.2 exists precisely so
-  // that is one query rather than a per-child plan call per month.
+  // fan-out. The poll's window is a fortnight around today, widened forward
+  // only by what the day and week views ask for (poll.js `setRange`); a month
+  // grid draws 42 days of a month that may be nowhere near today, and §7.2
+  // exists precisely so that is one query rather than a per-child plan call
+  // per month — which is also why the month view asks for no window of its
+  // own (app.js `neededRange`).
   //
   // Its projection is `{ id, source_id, date, title, payload }`: the route
   // selected `kind = 'event'` in SQL and then dropped the column from what

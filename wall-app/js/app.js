@@ -131,6 +131,31 @@
     if (remindTimer) { clearInterval(remindTimer); remindTimer = null; }
   }
 
+  // The dates the rendered view actually needs in `Poll`'s window
+  // (poll.js's setRange). Code review, 2026-08-24: the window used to be
+  // pinned to today and nothing widened it for a nav that steps a week at a
+  // time, so the week view's next week was routinely half unfetched and drew
+  // as empty rather than as unknown.
+  //
+  // Month returns null on purpose, and it is not an oversight: the month
+  // grid draws EVENTS ONLY (§7.1 — chores recur near-daily and say nothing
+  // on a month grid) and month-ui.js fetches those itself through §7.2's
+  // household-wide route. It needs no assignment row, so it asks for no
+  // window and the base one stands.
+  function neededRange(navState) {
+    if (navState.view === "week") {
+      var sunday = g.Poll.addDays(navState.date, -g.TimeCore.weekdayOf(navState.date));
+      return { from: sunday, to: g.Poll.addDays(sunday, 6) };
+    }
+    if (navState.view === "month") return null;
+    return { from: navState.date, to: navState.date };
+  }
+
+  function applyRange(navState) {
+    var range = neededRange(navState);
+    g.Poll.setRange(range && range.from, range && range.to);
+  }
+
   function startAmbient(root) {
     teardownAmbient();
 
@@ -138,7 +163,11 @@
     var firstLoadRetried = false;
 
     navCtrl = g.NavUi.mount(root, {
-      onStateChange: function () { renderContent(); },
+      // The range goes in BEFORE the render: `setRange` notifies
+      // synchronously when the window moves, so the render below already
+      // knows the dates it is about to draw are not loaded yet and says
+      // "Loading…" rather than drawing an empty day.
+      onStateChange: function (navState) { applyRange(navState); renderContent(); },
       onRefresh: function () { g.Poll.pollNow(); },
       onSettings: function () { openSettings(root); },
     });
@@ -217,6 +246,10 @@
     });
 
     g.Poll.start();
+    // The nav mounts on day/today, which the base window already covers, so
+    // this asks for no extra fetch — it is here so the need is stated from
+    // the first render rather than only from the first nav interaction.
+    applyRange(navCtrl.getState());
     startRemindLoop();
     scheduleMidnightRollover();
   }

@@ -253,10 +253,29 @@
     if (currentRoot && current.state) render(currentRoot, current.state, current.date, current.opts);
   }
 
+  // Mirrors day-ui.js's own check (mirroring is not sharing, CLAUDE.md
+  // §I.A) — is this date one `Poll` has fetched rows for? Asked per ROW
+  // here rather than per view: `Poll`'s window follows the nav (poll.js
+  // setRange) so a whole week is normally covered, but the cap can leave the
+  // far end of a distant week out, and the moment right after a step has
+  // none of it loaded yet. A row that says nothing is indistinguishable from
+  // a row with nothing on it, which is the bug this closes.
+  function outsideLoadedRange(state, date) {
+    if (!state.rangeFrom || !state.rangeTo) return true;
+    return date < state.rangeFrom || date > state.rangeTo;
+  }
+
   function buildDayRow(state, date, today) {
     var row = el('<div class="week-day-row"></div>');
     if (date === today) row.classList.add("today");
     row.appendChild(el('<div class="week-day-header">' + escapeHtml(dayHeaderLabel(date)) + "</div>"));
+
+    if (outsideLoadedRange(state, date)) {
+      var note = el('<div class="week-day-unloaded"></div>');
+      note.textContent = state.rangeReady ? "Not loaded" : "Loading…";
+      row.appendChild(note);
+      return row;
+    }
 
     var events = g.EventsCore.eventsOn(state.rows, date);
     if (events.length) {

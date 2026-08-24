@@ -128,6 +128,25 @@
   function touchDragSlopPx() {
     return Math.max(TOUCH_DRAG_SLOP_PX, rowHeightPx() + 8);
   }
+  // Code review, 2026-08-24 — how far a finger travels before a pre-drag
+  // flick is read as SCROLLING the grid rather than picking a chore up.
+  //
+  // The grid is (1020/15) * rowH tall — 2176px at the default zoom, several
+  // screens on a wall tablet — and `.day-chip`, `.day-chip-hit`,
+  // `.school-block-chip` and the tray items all carry `touch-action: none`
+  // so they can own their drag. That is correct and it had a cost nobody had
+  // measured: a hit area spans the full column width, and a school block
+  // spanning a morning is 400+px of it, so a finger landing anywhere on a
+  // busy column could not scroll the day at all. It just did nothing.
+  //
+  // `touch-action: pan-y` is not the fix: re-timing a chore IS a vertical
+  // drag, so handing vertical gestures to the browser would take
+  // drag-to-place away entirely on the one device this app runs on. The
+  // distinction is not direction, it is TIME — which DRAG_ARM_MS already
+  // encodes ("no drag may begin before this"). A flick inside that window
+  // was previously dead; it now scrolls. A press that pauses a beat and then
+  // moves is still a drag, exactly as before.
+  var SCROLL_TAKEOVER_PX = 10;
   var LONG_PRESS_MS = 550; // held this long with no movement opens the duration sheet (§16 Phase 5b)
   var MAX_ADJUST_MIN = 8 * 60; // stepper ceiling; the Worker enforces no max besides "positive multiple of 15"
 
@@ -1074,10 +1093,38 @@
       var armTimer = null; // while this is pending, no drag may begin (touch only)
       var bodyEl = currentRoot.querySelector(".day-grid-body");
       var trayRowEl = currentRoot.querySelector(".day-tray-row");
+      // The day view's scroller, and where it stood when the finger landed —
+      // this element owns `touch-action: none`, so a pre-drag flick has to be
+      // applied here by hand or it goes nowhere at all.
+      var scrollEl = currentRoot.querySelector(".day-scroll");
+      var scrollTop0 = scrollEl ? scrollEl.scrollTop : 0;
+      var scrolling = false;
 
       function clearLongPress() {
         if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
         itemEl.classList.remove("pressing");
+      }
+
+      // Once the gesture is a scroll it is only ever a scroll: no drag, no
+      // long-press, and no tap on release. Handing a scroll back as a tap
+      // would open the completion sheet for a chore nobody meant to touch.
+      function beginScroll() {
+        scrolling = true;
+        clearLongPress();
+        if (armTimer) { clearTimeout(armTimer); armTimer = null; }
+      }
+
+      function applyScroll(y) {
+        scrollEl.scrollTop = scrollTop0 - (y - startY);
+      }
+
+      // Vertical, past the takeover distance, and still inside the arm
+      // window — the three together are what separate a flick from a
+      // deliberate pick-up.
+      function isScrollFlick(x, y) {
+        if (!touch || !armTimer || !scrollEl) return false;
+        var dy = y - startY;
+        return Math.abs(dy) > SCROLL_TAKEOVER_PX && Math.abs(dy) > Math.abs(x - startX);
       }
 
       function distanceFromStart(x, y) {
@@ -1106,7 +1153,13 @@
       function onMove(mv) {
         lastX = mv.clientX;
         lastY = mv.clientY;
+        if (scrolling) { applyScroll(lastY); return; }
         if (!moved) {
+          if (isScrollFlick(lastX, lastY)) {
+            beginScroll();
+            applyScroll(lastY);
+            return;
+          }
           if (distanceFromStart(lastX, lastY) < dragSlop) return;
           // Past the slop but still inside the arm delay: hold the gesture
           // open rather than committing to a drag. If the finger is still
@@ -1132,9 +1185,17 @@
 
       function onUp(up) {
         var wasDragging = moved;
+        var wasScrolling = scrolling;
         cleanup();
         itemEl.classList.remove("drag-source");
         if (ghost) ghost.remove();
+
+        if (wasScrolling) return; // the grid was scrolled — never a tap, never a drop
+
+        // `pointercancel` arrives here too, and it is not a lift: the system
+        // took the gesture away (palm rejection, a system edge swipe). Reading
+        // it as a tap would tick a chore off that nobody released a finger on.
+        if (up.type === "pointercancel") return;
 
         if (!wasDragging) {
           // Never armed a drag. A tap out to `tapRoll`; past that the
@@ -2780,6 +2841,14 @@
   var addSchoolSheetState = null; // "+ School" fork: {child} while open, or null (Placement Scopes §6.3)
   var overflowSheetState = null; // same-slot overflow list: {items, child, opts} while open, or null (§9 display correction)
 
+  // Is this date one `Poll` has actually fetched rows for? Before the first
+  // tick the window is null and nothing is loaded yet, which is the same
+  // answer. Mirrored (not shared) in week-ui.js, which asks it per day-row.
+  function outsideLoadedRange(state, date) {
+    if (!state.rangeFrom || !state.rangeTo) return true;
+    return date < state.rangeFrom || date > state.rangeTo;
+  }
+
   function setMode(mode) {
     dayMode = mode;
     if (currentRoot && current.state) render(currentRoot, current.state, current.date, current.opts);
@@ -2830,6 +2899,27 @@
       root.appendChild(el(
         '<div class="day-empty">No active children yet. Add one in the Management App — ' +
         "it appears here automatically.</div>"
+      ));
+      return;
+    }
+
+    // Code review, 2026-08-24 — a date with no rows fetched for it must not
+    // draw as a day with nothing on it. `Poll`'s window follows the nav
+    // (poll.js setRange), so this is reached in exactly two cases, and they
+    // are worded differently because they are different answers: the fetch
+    // for a just-stepped-to date has not landed yet (`rangeReady === false`,
+    // a moment away), or the date is past the window's cap and never will
+    // (a settled answer). Drawing the grid either way would be a lie the
+    // family acts on — school blocks resolve from weekday rows with no
+    // window behind them, so an unfetched day renders its school blocks and
+    // none of its chores, which reads as an authoritative empty day.
+    if (outsideLoadedRange(state, date)) {
+      root.appendChild(el(
+        '<div class="wall-placeholder">' +
+          (state.rangeReady
+            ? "This day is outside the range the wall keeps loaded. Tap Today to come back."
+            : "Loading…") +
+        "</div>"
       ));
       return;
     }
