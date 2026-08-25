@@ -131,8 +131,17 @@
   // sort left, not a per-group choice between two.
   function byCourseThenLesson(items) {
     var pos = byPosition();
+    // Subject Order slice §2.7 — sort before grouping, on a copy. groupByKey
+    // orders its groups by first appearance, and the list this is handed comes
+    // out of IndexedDB in opaque-UUID key order (db.js `getAll`), so without
+    // this the *course headings* were arbitrary while the cards inside them
+    // were right. Sorting the input first makes first-appearance order mean
+    // "lowest effective key first", which is the parent's committed sort_order
+    // until the child overrides it. The per-lesson sort below is now redundant
+    // for a single pass but is kept: it is what guarantees the order inside a
+    // lesson run regardless of how this function is reached.
     var out = [];
-    groupByKey(items, function (r) { return r.course_name; }).forEach(function (courseGrp) {
+    groupByKey((items || []).slice().sort(pos), function (r) { return r.course_name; }).forEach(function (courseGrp) {
       groupByKey(courseGrp.items, function (r) { return r.lessonTitle; }).forEach(function (lessonGrp) {
         lessonGrp.items.sort(pos);
         out = out.concat(lessonGrp.items);
@@ -279,8 +288,13 @@
     var pos = byPosition();
     var groups = [];
     var index = Object.create(null);
+    // Subject Order slice §2.7 — sorted before grouping for the same reason
+    // byCourseThenLesson is: the group order below is first-appearance order,
+    // and the caller's rows arrive in opaque-UUID key order. `.filter` already
+    // returns a fresh array; `.slice()` says so at the call site.
     ofKind(rows, "activity")
       .filter(function (r) { return onToday(r, today, isResolved); })
+      .slice().sort(pos)
       .forEach(function (r) {
         var name = r.course_name;
         if (!(name in index)) {

@@ -110,7 +110,14 @@
 // A device left on v17 would keep POSTing to /api/grading/page, the route
 // §12 Phase A renamed without an alias — every capture attempt would 404
 // with no working fallback, not merely miss the new pages-list UI.
-const CACHE_NAME = "daily-plan-shell-v18";
+// v19: Subject Order slice §2.7 Phase 4 — byCourseThenLesson and subjectsView
+// sort their input before grouping, so a day's course headings follow the
+// parent's committed order instead of the opaque-UUID order `getAll` returns.
+// No file added or removed; planner-core.js changed contents only. A device
+// left on v18 keeps the arbitrary heading order — the cards inside a course
+// were always right, so this is a wrong-looking screen rather than a broken
+// one, but it is the whole of what the phase delivers and it is cache-first.
+const CACHE_NAME = "daily-plan-shell-v19";
 
 const APP_SHELL = [
   "./",
