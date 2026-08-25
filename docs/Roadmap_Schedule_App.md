@@ -190,7 +190,7 @@ the standing order needs neither a store nor a schema change.
 | Phase | Contents | Est. | Status |
 |---|---|---|---|
 | **0** | The slice; Module 08 FR-17 (+ the FR-14 note); Module 11 FR-9; the Revamp §9 pointer; this entry. No code. | ~45 min | ✅ Done 2026-08-25 |
-| **1** | `subject-order-core.js` + `node --test` file; `meta['subjectOrder']`; Settings → Subject order; **the three views that already group by subject adopt it** (Course Templates, Assigned Courses, Weekly — absorbed from the old optional Phase 4 by the review, slice §1.6). | ~1.25 h | ⬜ |
+| **1** | `subject-order-core.js` + `node --test` file; `meta['subjectOrder']`; Settings → Subject order; **the three views that already group by subject adopt it** (Course Templates, Assigned Courses, Weekly — absorbed from the old optional Phase 4 by the review, slice §1.6). | ~1.25 h | ✅ Done 2026-08-25 |
 | **2** | Generate: the canonical day sort, subject/course/chore/event groups, Expand-all/Collapse-all, Lesson titles on review and remainder rows. Reports 1–3. | ~1.5–2 h | ⬜ |
 | **3** | Assignments: batches behind a collapse with a preview cap, subject/course/chore/event groups, Lesson titles from `payload`. Report 4. | ~1–1.5 h | ⬜ |
 | **3b** | Assignments: a sibling-claimed chore reads as resolved (`isClaimedElsewhere` folded into `isResolved`, a `Sam did it` label); rescinded rows hidden behind a checkbox that carries their count. **Plus the one Worker change** — the rescind claim guard (§3.5a), its own scope and its own commit. Reports 5–6. | ~1 h | ⬜ |

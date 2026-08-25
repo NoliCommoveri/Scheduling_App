@@ -97,6 +97,7 @@ const Settings = (() => {
     root.appendChild(buildSection('Database', Migrations.renderPanel));
     root.appendChild(buildSection('Devices', Devices.render));
     root.appendChild(buildSection('Grading defaults', renderGradingDefaultsForm));
+    root.appendChild(buildSection('Subject order', renderSubjectOrderForm));
   }
 
   // Grading Assistant §2.1 — the household layer of the three-layer rubric
@@ -177,6 +178,165 @@ const Settings = (() => {
   // convention as .course-subject-group (courses.js) and the other list/panel
   // groupings — so opening Settings isn't one long scroll through Cloud
   // backup, Database, and Devices to reach the one you came for.
+  // Module 11 FR-9 / TDS_Slice_Subject_Order_Grouped_Review.md §1.3 — the
+  // household's standing subject order, one record in `meta` under
+  // `subjectOrder`. `meta` and not `appSettings`: the latter is device-local by
+  // design and never mirrored (storage.js SYNC_EXCLUDED), so an order entered
+  // here would evaporate on the other laptop. `gradingDefaults` above is the
+  // same class of household preference stored the same way (§1.1).
+  //
+  // The list shown is the *effective* order — stored entries in their stored
+  // positions, then every subject in use on a Course that the stored list does
+  // not mention. Save writes the whole array: the record is the list, and there
+  // is no per-row write to get out of step with it.
+  function renderSubjectOrderForm(root) {
+    root.innerHTML = `
+      <p>Sets the order subjects appear in wherever Courses are grouped by subject —
+         the Course Template Library, Assigned Courses and the weekly view today,
+         and the Generate and Assignments screens as they adopt it. Subjects not
+         listed here sort alphabetically after the ones that are, so a Course given
+         a brand-new subject shows up without a visit to this screen.</p>
+      <div class="subject-order-list"><p>Loading…</p></div>
+      <p class="error" hidden></p>
+      <p class="success" hidden></p>
+      <button type="button" class="subject-order-save" disabled>Save order</button>
+    `;
+
+    const listEl = root.querySelector('.subject-order-list');
+    const errorEl = root.querySelector('.error');
+    const successEl = root.querySelector('.success');
+    const saveBtn = root.querySelector('.subject-order-save');
+
+    // `rows` is the working list — merge()'s output, reordered in place by the
+    // arrows. `inUse` is kept so a save can re-derive the markers without
+    // re-reading every Course record.
+    let rows = [];
+    let inUse = [];
+
+    function draw() {
+      listEl.innerHTML = '';
+      if (rows.length === 0) {
+        const empty = document.createElement('p');
+        empty.textContent =
+          'No subjects yet. Give a Course a subject and it will appear here.';
+        listEl.appendChild(empty);
+        return;
+      }
+
+      const list = document.createElement('ul');
+      list.className = 'subject-order';
+      rows.forEach((row, i) => {
+        const li = document.createElement('li');
+        li.className = 'list-row';
+
+        const text = document.createElement('div');
+        text.className = 'row-text';
+        const name = document.createElement('span');
+        name.className = 'row-title';
+        name.textContent = row.subject;
+        text.appendChild(name);
+        if (!row.listed || !row.inUse) {
+          const note = document.createElement('span');
+          note.className = 'row-meta';
+          note.textContent = row.listed ? 'no Course uses this any more' : 'not yet ordered';
+          text.appendChild(note);
+        }
+        li.appendChild(text);
+
+        const actions = document.createElement('div');
+        actions.className = 'row-actions';
+        // Buttons, not drag-and-drop: a handful of rows, and a pair of arrows is
+        // less code and fewer ways to lose a list — and works on a touchscreen
+        // and a keyboard without either being a special case (§1.3).
+        const up = document.createElement('button');
+        up.type = 'button';
+        up.className = 'secondary';
+        up.textContent = '↑';
+        up.title = `Move ${row.subject} up`;
+        up.disabled = i === 0;
+        up.addEventListener('click', () => moveRow(i, -1));
+        actions.appendChild(up);
+
+        const down = document.createElement('button');
+        down.type = 'button';
+        down.className = 'secondary';
+        down.textContent = '↓';
+        down.title = `Move ${row.subject} down`;
+        down.disabled = i === rows.length - 1;
+        down.addEventListener('click', () => moveRow(i, 1));
+        actions.appendChild(down);
+
+        // Only a stored entry nothing uses can be removed. An in-use subject is
+        // removed by editing the Courses that carry it, not from here — this
+        // screen never writes a Course record (FR-9).
+        if (row.listed && !row.inUse) {
+          const remove = document.createElement('button');
+          remove.type = 'button';
+          remove.className = 'secondary';
+          remove.textContent = 'Remove';
+          remove.addEventListener('click', () => {
+            rows.splice(i, 1);
+            markDirty();
+            draw();
+          });
+          actions.appendChild(remove);
+        }
+
+        li.appendChild(actions);
+        list.appendChild(li);
+      });
+      listEl.appendChild(list);
+    }
+
+    function markDirty() {
+      successEl.hidden = true;
+      errorEl.hidden = true;
+    }
+
+    function moveRow(i, delta) {
+      const to = i + delta;
+      if (to < 0 || to >= rows.length) return;
+      const [row] = rows.splice(i, 1);
+      rows.splice(to, 0, row);
+      markDirty();
+      draw();
+    }
+
+    Promise.all([Storage.get('meta', 'subjectOrder'), Storage.getAll('courses')])
+      .then(([stored, courses]) => {
+        inUse = courses.map((c) => c.subject);
+        rows = SubjectOrderCore.merge((stored && stored.order) || [], inUse);
+        saveBtn.disabled = false;
+        draw();
+      })
+      .catch((err) => {
+        listEl.innerHTML = '';
+        errorEl.hidden = false;
+        errorEl.textContent = `Could not load subjects: ${err.message}`;
+      });
+
+    saveBtn.addEventListener('click', async () => {
+      markDirty();
+      const order = rows.map((r) => r.subject);
+      try {
+        await Storage.put('meta', { order, updatedAt: Date.now() }, 'subjectOrder');
+      } catch (err) {
+        errorEl.hidden = false;
+        errorEl.textContent = `Could not save: ${err.message}`;
+        return;
+      }
+      // Everything on screen is now stored, so the "not yet ordered" markers
+      // clear — re-derived rather than assumed, so what is drawn is what a
+      // reload would draw.
+      rows = SubjectOrderCore.merge(order, inUse);
+      draw();
+      successEl.hidden = false;
+      successEl.textContent = order.length === 0
+        ? 'Saved — no standing order, so subjects sort alphabetically.'
+        : 'Saved.';
+    });
+  }
+
   function buildSection(title, renderer) {
     const details = document.createElement('details');
     details.className = 'settings-section';

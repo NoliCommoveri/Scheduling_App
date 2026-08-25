@@ -30,7 +30,7 @@ const Weekly = (() => {
     Sun: 'Sunday', Mon: 'Monday', Tue: 'Tuesday', Wed: 'Wednesday',
     Thu: 'Thursday', Fri: 'Friday', Sat: 'Saturday',
   };
-  const NO_SUBJECT = 'No subject'; // same fallback courses.js's subject grouping uses
+  const NO_SUBJECT = SubjectOrderCore.NO_SUBJECT; // same fallback courses.js's subject grouping uses
 
   // Open/closed state for the day buckets and the subject/type buckets
   // nested inside them — kept outside the DOM, same convention as openTypes
@@ -48,13 +48,15 @@ const Weekly = (() => {
     return div.innerHTML;
   }
 
-  // Same sort as the Course Template Library: alphabetical, "No subject" trailing.
+  // Same sort as the Course Template Library: the household's standing order
+  // (Module 11 FR-9), unlisted subjects alphabetical after it, "No subject"
+  // trailing. Held module-level because `buildCourseGroups` is sync and is
+  // called once per weekday — `renderInto` loads it once, before any day is
+  // drawn, and every day of one render therefore sorts by one snapshot.
+  let subjectOrder = [];
+
   function sortSubjects(subjects) {
-    return subjects.sort((a, b) => {
-      if (a === NO_SUBJECT) return 1;
-      if (b === NO_SUBJECT) return -1;
-      return a.localeCompare(b);
-    });
+    return SubjectOrderCore.sortSubjects(subjects, subjectOrder);
   }
 
   // One Map entry per weekday, each holding the Course Instances paced for
@@ -176,6 +178,9 @@ const Weekly = (() => {
       'week\'s generated plan. Courses group by subject, Chores by type, the same as their ' +
       'own pages.';
     container.appendChild(intro);
+
+    const storedOrder = await Storage.get('meta', 'subjectOrder');
+    subjectOrder = (storedOrder && storedOrder.order) || [];
 
     const week = await buildWeek(childId);
 

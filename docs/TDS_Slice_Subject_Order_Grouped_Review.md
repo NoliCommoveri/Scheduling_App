@@ -1,8 +1,8 @@
 # TDS Slice — Subject Order, Grouped Review & Assignment Visibility (Generate + Assignments)
 
-**Status:** Authored 2026-08-25, **unbuilt**; **amended the same day** after a design review
-read the slice against the shipped code. Six findings, all folded in — see §8, which lists what
-each one changed and where.
+**Status:** Authored 2026-08-25 and **amended the same day** after a design review read the slice
+against the shipped code — six findings, all folded in; §8 lists what each one changed and where.
+**Phase 1 built 2026-08-25**; Phases 2, 3, 3b and 4 unbuilt.
 **Scope:** Management App, plus **one Worker guard** (§3.5a) and **one Child App ordering fix**
 (§2.7). Each of those is its own build scope under CLAUDE.md §I.A and is phased separately (§5);
 no session edits two apps at once. Files: `management-app/js/subject-order-core.js` (new),
@@ -683,7 +683,13 @@ documented at `styles.css:265-299`:
 Both reuse the existing summary chevron (`::before` on `summary`, rotated under `[open]`),
 `-webkit-details-marker: none`, and the count-in-summary styling. Nested groups indent one step;
 `.assign-batches` picks up the `.settings-section` collapsed-panel look it should have had from
-the start. Bump `styles.css?v=9` → `?v=10` in `index.html`.
+the start. Bump `styles.css?v=9` → `?v=10` in `index.html` — **in whichever of Phases 2 or 3 lands
+first**, not before.
+
+**Phase 1 needed no CSS and did not bump the version.** The Settings editor is `.list-row` inside
+a `.settings-section`, both of which already exist and are already global, and the `ul` reset at
+`styles.css:244` handles the list. Its rows carry the same trailing border the Devices panel's do,
+which is a consistency to keep rather than a gap to patch.
 
 ---
 
@@ -700,6 +706,10 @@ gate is why this is not one build.
 | **3** | Assignments: batches behind a collapse with the preview cap; subject/course/chore/event groups; the `payload.lessonTitle` prefix; the local `course_name → subject` map. Report 4. | ~1–1.5 h |
 | **3b** | Assignments: `isClaimedElsewhere` folded into `isResolved`, the `Sam did it` label, and the `Show rescinded` checkbox with its count (read-side); **plus the one Worker guard in §3.5a**, which is its own scope declaration and its own commit within the phase. Reports 5 and 6. | ~1 h |
 | **4** | **Child App scope — a separate session.** `byCourseThenLesson` and `subjectsView` sort their input before grouping, so the child's course headings follow the parent's order (§2.7). Two lines, two `child-cores.test.js` cases. | ~30 min |
+
+**Built so far:** Phase 1 (2026-08-25) — `subject-order-core.js` with 17 `node --test` cases, the
+`meta['subjectOrder']` record, the Settings → Subject order editor, and the three views of §1.6
+sorting through the comparator. The order is inert on Generate and Assignments until Phase 2.
 
 Phase 3b is independent of everything above it and is the cheapest fix in the slice — if the
 Assignments tab is what is hurting most, land 3b first and the rest after. Its Worker half is
