@@ -152,28 +152,49 @@ still outstanding. A day becomes subject → course → items, each level collap
 Lesson titles appear on the review rows and the pending-remainder rows; the Assignments batch list
 moves behind a collapse; and the parent gets a **standing subject order**, stored as one record in
 `meta` and mirrored to D1 like any other authored record. Authored 2026-08-25 from Ray's four
-reports; **design only, unbuilt.**
+reports; **design only, unbuilt**, and **amended the same day** by a design review that read it
+against the shipped code (slice §8, six findings).
 
 The load-bearing part is not the grouping — it is that a day's Activities get a **canonical order**
 for the first time (subject → course → walk position). Today the order is whatever the build
 sequence produced, which is why reproduced items lead, why courses interleave, and why a
 pulled-forward Activity lands at the bottom of the day instead of in its course. One sort fixes all
-three, and because `sortOrder` has always come from array position, the child's day inherits the
-parent's subject order at no extra cost.
+three, and because `sortOrder` has always come from array position, the order the parent sees is
+the order the child's rows carry.
 
-**No `CLAUDE.md` amendment.** Nothing is narrowed or widened: no Worker change, no migration, no
-new route, no new table, no credential change, no cross-app sharing, and no `assignments` column
-added or written differently. `meta` already exists, already takes out-of-line keys, and is already
-mirrored, so the standing order needs neither a store nor a schema change.
+**The review's sharpest finding is that the last half of that sentence used to say more.** The
+slice claimed the child's *screen* would inherit the order for free; it will not. The Child App
+never sorts its plan before grouping it — `loadState` is a `getAll`, which returns rows in
+assignment-id order — so its course headings are in an arbitrary order today and Phase 2 does not
+change that. The fix is two lines in `planner-core.js` and is now Phase 4, a Child App session of
+its own (slice §2.7). Four other findings tightened the design rather than changing it; the sixth
+found a live defect, below.
+
+**A live defect the review found, and Ray's call on it.** `/api/assignments/rescind` sweeps every
+`pending` row in a batch — including the **losing** row of a shared-chore claim, which is `pending`
+by construction. Shared Chores §5.5's release then skips that row for its `rescinded_at IS NULL`
+clause, so undoing the claim hands the chore back to the winner alone and locks the sibling out
+permanently. This is exactly the state slice §3.6 argues an auto-rescind must not create, reached
+today by a different door. Ray, in-session 2026-08-25: fix it, do not defer it. The rescind
+statement gains `(claimed_by IS NULL OR claimed_by = child_id)` — the SQL spelling of Reporting's
+`isClaimedElsewhere` — on all three of its selector branches, and it ships with Phase 3b (slice
+§3.5a; Revamp §6.3 and Shared Chores §13.7 amended).
+
+**Still no `CLAUDE.md` amendment.** Nothing is narrowed or widened in the sense §V.A means: no
+migration, no new route, no new table, no credential change, no cross-app sharing, and no
+`assignments` column added or written differently. The one Worker change *narrows* an existing
+route's reach by one row class; the one Child App change sorts a list with a comparator that file
+already owns. `meta` already exists, already takes out-of-line keys, and is already mirrored, so
+the standing order needs neither a store nor a schema change.
 
 | Phase | Contents | Est. | Status |
 |---|---|---|---|
 | **0** | The slice; Module 08 FR-17 (+ the FR-14 note); Module 11 FR-9; the Revamp §9 pointer; this entry. No code. | ~45 min | ✅ Done 2026-08-25 |
-| **1** | `subject-order-core.js` + `node --test` file; `meta['subjectOrder']`; Settings → Subject order. Inert until Phase 2. | ~1 h | ⬜ |
+| **1** | `subject-order-core.js` + `node --test` file; `meta['subjectOrder']`; Settings → Subject order; **the three views that already group by subject adopt it** (Course Templates, Assigned Courses, Weekly — absorbed from the old optional Phase 4 by the review, slice §1.6). | ~1.25 h | ⬜ |
 | **2** | Generate: the canonical day sort, subject/course/chore/event groups, Expand-all/Collapse-all, Lesson titles on review and remainder rows. Reports 1–3. | ~1.5–2 h | ⬜ |
 | **3** | Assignments: batches behind a collapse with a preview cap, subject/course/chore/event groups, Lesson titles from `payload`. Report 4. | ~1–1.5 h | ⬜ |
-| **3b** | Assignments, read-side only: a sibling-claimed chore reads as resolved (`isClaimedElsewhere` folded into `isResolved`, a `Sam did it` label); rescinded rows hidden behind a checkbox that carries their count. Reports 5–6. | ~45 min | ⬜ |
-| **4** | *Optional* — the other three subject-grouped views (Course Templates, Assigned Courses, Weekly) adopt the standing order. One line each. | ~20 min | ⬜ Ray's call |
+| **3b** | Assignments: a sibling-claimed chore reads as resolved (`isClaimedElsewhere` folded into `isResolved`, a `Sam did it` label); rescinded rows hidden behind a checkbox that carries their count. **Plus the one Worker change** — the rescind claim guard (§3.5a), its own scope and its own commit. Reports 5–6. | ~1 h | ⬜ |
+| **4** | **Child App scope, a separate session.** `byCourseThenLesson` and `subjectsView` sort before grouping, so the child's course sections follow the parent's order instead of assignment-id order (slice §2.7; Child Module 03 FR-13). | ~30 min | ⬜ |
 
 **The one place the slice does not do what was asked.** Ray asked for the losing rows of a shared
 "either kid can claim" chore to **auto-rescind** once the day passed, so they stop reading as
@@ -186,8 +207,11 @@ unreleasable, and would hang a permanent state change on a day boundary three cl
 about. Slice §3.6 carries the argument and the `[DECISION]`; §7.8 records what a real "missed"
 state would take, if the eternally-pending backlog ever becomes the complaint.
 
-**Two more decisions flagged rather than assumed** (slice §7.2, §2.6): groups default **open** on
-Generate and **closed** on Assignments, one constant each; and a day committed across two passes
+**Three more decisions flagged rather than assumed** (slice §7.2, §2.5, §2.7): groups default
+**open** on Generate and **closed** on Assignments, one constant each; the child's course sections
+are ordered by the key the child's own reorder writes, so a child dragging a card to the front of
+its course can move that course up — the parent's order is a starting order, not a lock; and a day
+committed across two passes
 can still carry a `sort_order` that disagrees with the review screen, because Revamp §6.6 leaves
 live rows' numbers alone — the fix, if it is ever wanted, is Commit renumbering live rows, which
 this slice deliberately does not do.
