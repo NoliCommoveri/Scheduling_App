@@ -20,6 +20,29 @@ const Assignments = (() => {
   const WINDOW_BACK_DAYS = 7;
   const WINDOW_FORWARD_DAYS = 21;
 
+  // How many batches the collapsed Batches panel shows before "Show N older"
+  // lifts the cap — the same shape REMAINDER_PREVIEW has in packet.js, for the
+  // same reason (§3.1).
+  const BATCH_PREVIEW = 10;
+
+  // ---- view state that must survive reload() ----
+  //
+  // `reload()` rebuilds the whole results container on every action — an edit,
+  // a single rescind, a batch rescind (`:217-249`). So none of this can live on
+  // the DOM: a parent who opened the Batches panel, pressed Rescind inside it
+  // and watched it slam shut has been given a worse screen than the flat list
+  // it replaced. Module-level rather than per-render for the same reason
+  // packet.js keeps its group state on `session`.
+  //
+  // Default CLOSED here, the opposite of the Generate view's default (§7.2).
+  // Review is "look at all of it before committing"; this page is "find the one
+  // thing I am looking for", and Ray's own words for it were "hide them behind"
+  // and "I rarely need to interact with them". Expand all / Collapse all makes
+  // either default cheap to overrule for a session.
+  let batchesOpen = false;
+  let batchesExpanded = false;
+  const openGroups = new Set();
+
   // Parent-owned columns this view may edit, in form order. Keys are the
   // camelCase names PATCH expects (worker/index.js ASSIGNMENT_PATCH_FIELDS);
   // `column` is the snake_case name a GET row comes back with. The two
@@ -68,6 +91,54 @@ const Assignments = (() => {
 
   function plural(n, one, many) {
     return `${n} ${n === 1 ? one : many}`;
+  }
+
+  // ---- subject resolution (§3.4) ----
+  //
+  // A row carries `course_name`, a string snapshotted at assign time, and no
+  // subject: there is no `assignments.subject` column and this slice does not
+  // add one (§1.4). It does not need one, because this view runs inside the app
+  // that OWNS the Course records — so the subject is a local lookup at render
+  // time, at the cost of one `Storage.getAll('courses')` per render.
+  //
+  // Instance records for the child on screen win, because they are the records
+  // that actually produced these rows; any other Course record with the same
+  // name (a template, or another child's instance) then fills gaps.
+  //
+  // A RENAMED COURSE SPLITS INTO TWO HEADERS, AND THAT IS CORRECT. `course_name`
+  // is snapshotted on purpose (CLAUDE.md §III.B — "a completed assignment
+  // records what it *was*"), so a course renamed mid-term genuinely has rows
+  // under both names. This view groups what the rows say, never what the
+  // current record says. The lookup simply misses for the old name, which puts
+  // those rows under `No subject` — visible, honest, and self-explaining the
+  // moment the parent sees the old name in the header.
+  function subjectMap(courses, childId) {
+    const map = new Map();
+    const add = (course) => {
+      const name = course && course.name;
+      if (!name || map.has(name)) return;
+      map.set(name, SubjectOrderCore.label(course.subject));
+    };
+    (courses || []).filter((c) => c.state === 'instance' && c.childId === childId).forEach(add);
+    (courses || []).forEach(add);
+    return map;
+  }
+
+  // The row's course as this view groups it. An activity row with no
+  // `course_name` at all lands in an `Uncategorised` course group under
+  // `No subject` (§3.2) rather than vanishing or getting a group of its own per
+  // row.
+  const UNCATEGORISED = 'Uncategorised';
+
+  function courseNameOf(row) {
+    const name = (row.course_name || '').trim();
+    return name === '' ? UNCATEGORISED : name;
+  }
+
+  function subjectOf(row, subjects) {
+    const name = (row.course_name || '').trim();
+    if (name === '') return SubjectOrderCore.NO_SUBJECT;
+    return subjects.get(name) || SubjectOrderCore.NO_SUBJECT;
   }
 
   // ---- row predicates ----
@@ -180,10 +251,26 @@ const Assignments = (() => {
     }
 
     let children;
+    let courses;
+    let subjectOrder;
     try {
-      children = await Storage.getAll('children');
+      // `courses` is what resolves a row's snapshotted `course_name` to a
+      // subject (§3.4); `meta['subjectOrder']` is the household's standing
+      // order (Module 11 FR-9). Both are read once per render and held for
+      // every reload, so switching child or date range costs no extra
+      // IndexedDB work — and, as on the Generate view, the order cannot shift
+      // under the parent mid-session because Settings was edited in another
+      // tab.
+      const stored = await Promise.all([
+        Storage.getAll('children'),
+        Storage.getAll('courses'),
+        Storage.get('meta', 'subjectOrder'),
+      ]);
+      children = stored[0];
+      courses = stored[1];
+      subjectOrder = (stored[2] && stored[2].order) || [];
     } catch (err) {
-      statusEl.textContent = `Could not load children: ${err.message}`;
+      statusEl.textContent = `Could not load children, courses or the subject order: ${err.message}`;
       return;
     }
     if (children.length === 0) {
@@ -235,6 +322,10 @@ const Assignments = (() => {
         renderResults(results, {
           rows: data.assignments || [],
           childName, from, to, reload,
+          // Resolved against the child actually on screen (§3.4) — an instance
+          // belonging to some other child must not win the name.
+          subjects: subjectMap(courses, childId),
+          subjectOrder,
           // A capped answer must never be presented as the whole range — a
           // parent rescinding "everything shown" would leave rows behind.
           notice: data.truncated
@@ -261,6 +352,13 @@ const Assignments = (() => {
   function renderResults(container, ctx) {
     const { rows, childName, from, to, notice } = ctx;
     container.innerHTML = '';
+
+    // Redraw from the rows already in hand. Every *action* on this page goes
+    // through `reload()` so that an edit or a rescind re-reads D1 rather than
+    // patching the DOM from a response body — but a presentation toggle
+    // (lifting the batch preview cap, Expand all, Collapse all) changes nothing
+    // in the database and must not cost a round trip to apply.
+    ctx.redraw = () => renderResults(container, ctx);
 
     if (notice) {
       const banner = document.createElement('p');
@@ -292,7 +390,38 @@ const Assignments = (() => {
     container.appendChild(summary);
 
     container.appendChild(batchSection(rows, ctx));
-    container.appendChild(daySection(rows, ctx));
+
+    // Filled by every groupBox drawn below, then read by the two buttons — so
+    // they act on exactly the groups this render produced, not on a stale set
+    // left over from another child or another date range.
+    ctx.groupKeys = [];
+    const days = daySection(rows, ctx);
+
+    if (ctx.groupKeys.length) {
+      const bar = document.createElement('div');
+      bar.className = 'assign-group-bar';
+      const expand = document.createElement('button');
+      expand.type = 'button';
+      expand.className = 'secondary';
+      expand.textContent = 'Expand all';
+      expand.addEventListener('click', () => {
+        ctx.groupKeys.forEach((k) => openGroups.add(k));
+        ctx.redraw();
+      });
+      const collapse = document.createElement('button');
+      collapse.type = 'button';
+      collapse.className = 'secondary';
+      collapse.textContent = 'Collapse all';
+      collapse.addEventListener('click', () => {
+        ctx.groupKeys.forEach((k) => openGroups.delete(k));
+        ctx.redraw();
+      });
+      bar.appendChild(expand);
+      bar.appendChild(collapse);
+      container.appendChild(bar);
+    }
+
+    container.appendChild(days);
   }
 
   // ---- batches (§6.2) ----
@@ -317,15 +446,32 @@ const Assignments = (() => {
   }
 
   function batchSection(rows, ctx) {
-    const section = document.createElement('section');
-    section.className = 'assign-batches';
-    section.innerHTML = '<h3>Batches</h3>';
-
     const groups = groupByBatch(rows);
+    const withOutstanding = groups.filter((g) => g.rows.some(isRescindable)).length;
+
+    // Report 4a: "the batch list is getting long — hide it behind a collapse, I
+    // rarely interact with it." The section is hidden, not weakened — every
+    // Rescind button below is untouched, and the summary still names how many
+    // batches there are and how many still hold something to pull back, so the
+    // panel does not have to be opened to know whether it is worth opening.
+    const section = document.createElement('details');
+    section.className = 'assign-batches';
+    section.open = batchesOpen;
+    section.addEventListener('toggle', () => { batchesOpen = section.open; });
+    const summary = document.createElement('summary');
+    summary.textContent = `Batches — ${plural(groups.length, 'batch', 'batches')}` +
+      (withOutstanding ? ` · ${withOutstanding} with outstanding rows` : '');
+    section.appendChild(summary);
+
     const list = document.createElement('ul');
     list.className = 'batch-list';
 
-    for (const group of groups) {
+    // Already newest-first out of groupByBatch. The cap and its lifted state
+    // are module-level for the same reason `batchesOpen` is: rescinding a batch
+    // from inside the panel calls reload(), which rebuilds this whole subtree.
+    const shown = batchesExpanded ? groups : groups.slice(0, BATCH_PREVIEW);
+
+    for (const group of shown) {
       const rescindable = group.rows.filter(isRescindable);
       const locked = group.rows.filter((r) => !isRescinded(r) && isResolved(r));
       const already = group.rows.filter(isRescinded);
@@ -361,10 +507,100 @@ const Assignments = (() => {
     }
 
     section.appendChild(list);
+
+    if (groups.length > BATCH_PREVIEW) {
+      const more = document.createElement('button');
+      more.type = 'button';
+      more.className = 'secondary';
+      more.textContent = batchesExpanded
+        ? 'Show fewer'
+        : `Show ${groups.length - BATCH_PREVIEW} older`;
+      more.addEventListener('click', () => {
+        batchesExpanded = !batchesExpanded;
+        batchesOpen = true; // the parent is working in here; do not shut it
+        ctx.redraw();
+      });
+      section.appendChild(more);
+    }
+
     return section;
   }
 
   // ---- days and rows ----
+
+  // Within a course the existing sort is kept verbatim: `sort_order`, then
+  // title. This screen shows what D1 actually holds — re-sorting it by anything
+  // the parent's local Course records merely imply would be lying about the row.
+  function byStoredOrder(a, b) {
+    const orderA = a.sort_order == null ? Number.MAX_SAFE_INTEGER : a.sort_order;
+    const orderB = b.sort_order == null ? Number.MAX_SAFE_INTEGER : b.sort_order;
+    return orderA - orderB || String(a.title).localeCompare(String(b.title));
+  }
+
+  // One <details> per group, closed by default (§3.2/§7.2), state in the
+  // module-level `openGroups` so `reload()` cannot slam it shut. Keys are
+  // date-scoped — the same course appears on fourteen days and they are not one
+  // thing (§2.6) — and are recorded in `ctx.groupKeys` on the way past so
+  // Expand all / Collapse all reach exactly what is on screen.
+  function groupBox(className, key, label, rows, ctx) {
+    ctx.groupKeys.push(key);
+    const outstanding = rows.filter(isRescindable).length;
+
+    const box = document.createElement('details');
+    box.className = className;
+    box.open = openGroups.has(key);
+    box.addEventListener('toggle', () => {
+      if (box.open) openGroups.add(key);
+      else openGroups.delete(key);
+    });
+
+    const summary = document.createElement('summary');
+    summary.textContent = `${label} (${rows.length})` +
+      (outstanding ? ` · ${outstanding} outstanding` : '');
+    box.appendChild(summary);
+
+    return box;
+  }
+
+  function rowList(rows, ctx) {
+    const list = document.createElement('ul');
+    for (const row of rows.slice().sort(byStoredOrder)) list.appendChild(rowItem(row, ctx));
+    return list;
+  }
+
+  // Report 4b: a day stops being one flat <ul> and becomes subject → course →
+  // rows, with chores and events in groups of their own. Subjects follow the
+  // household's standing order; courses are alphabetical within a subject,
+  // which is the only order available here — a row carries a course *name*, not
+  // an instance id, so there is no walk position to sort by the way the Generate
+  // view can (§2.1).
+  function activityGroups(dayRows, date, ctx) {
+    const { subjects, subjectOrder } = ctx;
+    const bySubject = new Map();
+    for (const row of dayRows) {
+      const subject = subjectOf(row, subjects);
+      if (!bySubject.has(subject)) bySubject.set(subject, new Map());
+      const byCourse = bySubject.get(subject);
+      const course = courseNameOf(row);
+      if (!byCourse.has(course)) byCourse.set(course, []);
+      byCourse.get(course).push(row);
+    }
+
+    const out = [];
+    for (const subject of SubjectOrderCore.sortSubjects([...bySubject.keys()], subjectOrder)) {
+      const byCourse = bySubject.get(subject);
+      const subjectRows = [...byCourse.values()].flat();
+      const box = groupBox('assign-subject-group', `${date}::subject::${subject}`, subject, subjectRows, ctx);
+      for (const course of [...byCourse.keys()].sort((a, b) => a.localeCompare(b))) {
+        const courseRows = byCourse.get(course);
+        const courseBox = groupBox('assign-course-group', `${date}::course::${subject}::${course}`, course, courseRows, ctx);
+        courseBox.appendChild(rowList(courseRows, ctx));
+        box.appendChild(courseBox);
+      }
+      out.push(box);
+    }
+    return out;
+  }
 
   function daySection(rows, ctx) {
     const section = document.createElement('section');
@@ -378,20 +614,44 @@ const Assignments = (() => {
 
     const dates = [...byDate.keys()].sort();
     for (const date of dates) {
-      const dayRows = byDate.get(date).slice().sort((a, b) => {
-        const orderA = a.sort_order == null ? Number.MAX_SAFE_INTEGER : a.sort_order;
-        const orderB = b.sort_order == null ? Number.MAX_SAFE_INTEGER : b.sort_order;
-        return orderA - orderB || String(a.title).localeCompare(String(b.title));
-      });
+      const dayRows = byDate.get(date);
+      // A day with nothing left to show renders no header at all. Nothing
+      // filters rows out yet, so this cannot fire today — it is here because
+      // §3.7's `Show rescinded` toggle is what will make it fire, and an empty
+      // date heading with a count of zero is the failure it has to avoid.
+      if (dayRows.length === 0) continue;
 
       const day = document.createElement('div');
       day.className = 'day-section';
       const outstanding = dayRows.filter(isRescindable).length;
       day.innerHTML = `<h3>${escapeHtml(date)} <em>${plural(dayRows.length, 'row', 'rows')}, ${outstanding} outstanding</em></h3>`;
 
-      const list = document.createElement('ul');
-      for (const row of dayRows) list.appendChild(rowItem(row, ctx));
-      day.appendChild(list);
+      // Same fixed order the Generate view and FR-14 use: School, then Chores,
+      // then Family events. Grouping happens within the School half only.
+      activityGroups(dayRows.filter((r) => r.kind === 'activity'), date, ctx)
+        .forEach((box) => day.appendChild(box));
+
+      // One group per day for each, at the bottom (§3.2). A day with twelve
+      // chore occurrences on it has the same wall of rows the school half had.
+      const chores = dayRows.filter((r) => r.kind === 'chore');
+      if (chores.length) {
+        const box = groupBox('assign-subject-group', `${date}::chores`, 'Chores', chores, ctx);
+        box.appendChild(rowList(chores, ctx));
+        day.appendChild(box);
+      }
+      const events = dayRows.filter((r) => r.kind === 'event');
+      if (events.length) {
+        const box = groupBox('assign-subject-group', `${date}::events`, 'Family events', events, ctx);
+        box.appendChild(rowList(events, ctx));
+        day.appendChild(box);
+      }
+
+      // Anything whose `kind` is none of the three still has to reach the
+      // screen. Ungrouped rather than invented into a group: a kind this view
+      // does not know about is a fact worth seeing plainly, not one to file.
+      const other = dayRows.filter((r) => !['activity', 'chore', 'event'].includes(r.kind));
+      if (other.length) day.appendChild(rowList(other, ctx));
+
       section.appendChild(day);
     }
 
@@ -406,6 +666,28 @@ const Assignments = (() => {
     // and the parent's pull still happened. Both facts, neither overwritten.
     const suffix = isRescinded(row) ? ' <em>(rescinded after completion)</em>' : '';
     return `<span class="status-${escapeHtml(status(row))}">${escapeHtml(status(row))}</span>${suffix}`;
+  }
+
+  // The lesson an activity row belongs to (§3.3). No Worker change is needed
+  // for this: `GET /api/assignments` is `SELECT *` (`worker/index.js:1427`), so
+  // `payload` already arrives — as a JSON *string*, D1's TEXT column, unparsed.
+  // packet.js has written `lessonTitle` into it at Commit since the Lesson
+  // Recipe slice; it has simply never been shown here.
+  //
+  // A malformed or absent payload yields no prefix and no error. That is not
+  // defensiveness for its own sake: `payload` is parent-authored TEXT that the
+  // edit form below lets a parent type into by hand, so this view has to
+  // tolerate what it itself allows to be saved.
+  function lessonPrefix(row) {
+    if (row.kind !== 'activity' || row.payload == null) return '';
+    let payload;
+    try {
+      payload = JSON.parse(row.payload);
+    } catch {
+      return '';
+    }
+    const title = payload && payload.lessonTitle;
+    return title ? `${escapeHtml(title)} &mdash; ` : '';
   }
 
   function rowItem(row, ctx) {
@@ -424,7 +706,7 @@ const Assignments = (() => {
     const head = document.createElement('div');
     head.className = 'assign-row-head';
     head.innerHTML = `
-      <span class="assign-title">${escapeHtml(row.title)}</span>
+      <span class="assign-title">${lessonPrefix(row)}${escapeHtml(row.title)}</span>
       <span class="assign-detail">${escapeHtml(detail)}</span>
       <span class="assign-state">${statusLabel(row)}</span>
     `;

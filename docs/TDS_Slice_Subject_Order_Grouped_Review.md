@@ -2,7 +2,7 @@
 
 **Status:** Authored 2026-08-25 and **amended the same day** after a design review read the slice
 against the shipped code — six findings, all folded in; §8 lists what each one changed and where.
-**Phase 1 built 2026-08-25**; Phases 2, 3, 3b and 4 unbuilt.
+**Phases 1, 2 and 3 built 2026-08-25**; Phases 3b and 4 unbuilt.
 **Scope:** Management App, plus **one Worker guard** (§3.5a) and **one Child App ordering fix**
 (§2.7). Each of those is its own build scope under CLAUDE.md §I.A and is phased separately (§5);
 no session edits two apps at once. Files: `management-app/js/subject-order-core.js` (new),
@@ -449,6 +449,15 @@ Inside, the newest `BATCH_PREVIEW = 10` batches (they are already sorted newest-
 `packet.js`. Open state and the lifted cap are module-level (`let batchesOpen = false`), because
 `reload()` rebuilds the results container on every action (`:217-249`).
 
+**This paragraph and acceptance check 16 contradicted each other, and Phase 3 resolved it in
+favour of this paragraph.** Check 16 asked that rescinding a batch from inside the panel leave
+"the view reloads with the section closed again", which is what a plain `<details>` does with no
+state at all — and would make the module-level `batchesOpen` this paragraph specifies dead code.
+The mechanism is the design and the check was the looser sentence, so the panel **stays open**
+across the reload a rescind triggers, matching §3.2's group state, §2.6's `openGroups` and Phase
+2's acceptance check 11. Check 16 is reworded below. If Ray would rather it shut itself once the
+rescind is done, that is `batchesOpen = false` in `rescindBatch`'s success path and nothing else.
+
 Rescind buttons are untouched. The section is hidden, not weakened.
 
 ### 3.2 Course and chore expanders (report 4b)
@@ -684,7 +693,13 @@ Both reuse the existing summary chevron (`::before` on `summary`, rotated under 
 `-webkit-details-marker: none`, and the count-in-summary styling. Nested groups indent one step;
 `.assign-batches` picks up the `.settings-section` collapsed-panel look it should have had from
 the start. Bump `styles.css?v=9` → `?v=10` in `index.html` — **in whichever of Phases 2 or 3 lands
-first**, not before.
+first**, not before. **Phase 2 landed first and did the bump**, so Phase 3 added its two classes to
+the same stylesheet and left the version alone, as planned.
+
+Phase 2 added two small classes beyond the pair named above, both scoped to the Generate view and
+neither a layout system: `.review-order-hint` for the one-line pointer to Settings → Subject order
+(`.hint` is scoped to the Include fieldset, so it could not be reused), and `.day-count` for the
+`14 items · 5 already assigned` counter in the day heading.
 
 **Phase 1 needed no CSS and did not bump the version.** The Settings editor is `.list-row` inside
 a `.settings-section`, both of which already exist and are already global, and the `ul` reset at
@@ -707,9 +722,40 @@ gate is why this is not one build.
 | **3b** | Assignments: `isClaimedElsewhere` folded into `isResolved`, the `Sam did it` label, and the `Show rescinded` checkbox with its count (read-side); **plus the one Worker guard in §3.5a**, which is its own scope declaration and its own commit within the phase. Reports 5 and 6. | ~1 h |
 | **4** | **Child App scope — a separate session.** `byCourseThenLesson` and `subjectsView` sort their input before grouping, so the child's course headings follow the parent's order (§2.7). Two lines, two `child-cores.test.js` cases. | ~30 min |
 
-**Built so far:** Phase 1 (2026-08-25) — `subject-order-core.js` with 17 `node --test` cases, the
-`meta['subjectOrder']` record, the Settings → Subject order editor, and the three views of §1.6
-sorting through the comparator. The order is inert on Generate and Assignments until Phase 2.
+**Built so far:**
+
+- **Phase 1** (2026-08-25) — `subject-order-core.js` with 17 `node --test` cases, the
+  `meta['subjectOrder']` record, the Settings → Subject order editor, and the three views of §1.6
+  sorting through the comparator.
+- **Phase 2** (2026-08-25) — `packet.js`: `sortDayActivities` and its `sortDay(date)` wrapper,
+  `session.walkIndex` and `session.subjectOrder`, the sort called at the end of Propose and after
+  `relocate` / `pullForward` / `excludeActivity` / `deferActivity`; the subject → course groups
+  and the Chores / Family events groups, `session.openGroups` + `session.knownGroups` with
+  Expand-all / Collapse-all in the proposal bar; the lesson-title prefix on the review rows **and**
+  the pending-remainder rows; the remainder boxes ordered by subject then course name; the
+  standing-order pointer under the proposal bar. `.review-subject-group` / `.review-course-group`
+  (plus `.review-order-hint` and `.day-count`) in `styles.css`, and the `?v=9` → `?v=10` bump §4
+  assigned to whichever of Phases 2 or 3 landed first. No new test file: the comparator this phase
+  calls is Phase 1's, already covered, and the sort's callers are view code, which stays manual-check
+  territory per §0.2.
+
+- **Phase 3** (2026-08-25) — `assignments.js`: the Batches panel as a closed `<details>` with the
+  `BATCH_PREVIEW = 10` cap and its `Show N older` toggle; day sections as subject → course groups
+  with Chores and Family events groups of their own, closed by default, with Expand all /
+  Collapse all above the day list; the `payload.lessonTitle` prefix on activity rows; the local
+  `course_name → subject` map, resolved against the child on screen. `courses` and
+  `meta['subjectOrder']` are read once per render alongside `children`; view state
+  (`batchesOpen`, `batchesExpanded`, `openGroups`) is module-level so `reload()` cannot reset it.
+  `.assign-subject-group` / `.assign-course-group` and the `.settings-section` look for
+  `.assign-batches` in `styles.css`; **no `?v=` bump** — Phase 2 already made it `?v=10`.
+
+  One thing this phase added that §3.1 did not name: a `ctx.redraw()` that re-renders from the
+  rows already in hand. Every *action* still goes through `reload()` and re-reads D1, but the
+  three presentation toggles (`Show N older`, Expand all, Collapse all) change nothing in the
+  database, and §3.7 already argues that such a toggle must be instant with no refetch. It is the
+  same helper §3.7's `Show rescinded` checkbox will use.
+
+The order does not reach the child's course *headings* until Phase 4 (§2.7).
 
 Phase 3b is independent of everything above it and is the cheapest fix in the slice — if the
 Assignments tab is what is hurting most, land 3b first and the rest after. Its Worker half is
@@ -770,7 +816,9 @@ subjects, two courses in one subject, and chores on most days.
 
 **Phase 3**
 16. Assignments opens with the batch list collapsed; the summary counts match; opening it and
-    rescinding a batch still works and the view reloads with the section closed again.
+    rescinding a batch still works, and the view reloads with the section **still open** — see the
+    note in §3.1, which this check originally contradicted. Switching child or date range redraws
+    it in whatever state it was left in; it is only closed again by pressing its own summary.
 17. With more than ten batches in range, `Show N older` reveals the rest.
 18. Day sections render subject → course groups, closed, with counts; chores and events each in
     their own group.
