@@ -38,7 +38,7 @@ function makeEnv(respond = () => ({})) {
     const answer = respond(sql, args) || {};
     const fail = async () => { throw answer.throws; };
     return {
-      sql, args,
+      sql, args, answer,
       first: answer.throws ? fail : async () => (answer.first === undefined ? null : answer.first),
       all: answer.throws ? fail : async () => ({ results: answer.results || [] }),
       run: answer.throws ? fail : async () => ({ meta: answer.meta || { changes: 1 } }),
@@ -55,7 +55,17 @@ function makeEnv(respond = () => ({})) {
     batch: async (list) => {
       DB.batched.push(list);
       if (DB.batchError) throw DB.batchError;
-      return list.map(() => ({ meta: { changes: 1 } }));
+      // D1 returns one result per statement, in order, each carrying `results`
+      // as well as `meta` — which is how a batched SELECT is read back, and
+      // what a handler that chunks an `IN (...)` list across several statements
+      // depends on. Answered from the same `respond` the statement was
+      // recorded with, so a test writes the answer once whether the statement
+      // ends up run alone or in a batch.
+      return list.map((s) => {
+        const answer = (s && s.answer) || {};
+        if (answer.throws) throw answer.throws;
+        return { success: true, meta: answer.meta || { changes: 1 }, results: answer.results || [] };
+      });
     },
     batchError: null,
     exec: async () => ({}),
@@ -803,6 +813,13 @@ function messageEnv(extra = () => ({})) {
   }));
 }
 
+// The insert batch, addressed by what it contains rather than by position. The
+// ownership lookup rides in a batch() of its own now — chunked at D1's
+// bound-parameter cap — so DB.batched[0] is the lookup, not the inserts.
+function messageInserts(DB) {
+  return DB.batched.find((list) => list.some((st) => st.sql.includes('INSERT INTO assignment_messages'))) || [];
+}
+
 test('a message batch inserts idempotently and takes child_id from the token', async () => {
   const { env, DB } = messageEnv();
   const res = await call(env, '/api/messages', {
@@ -817,7 +834,7 @@ test('a message batch inserts idempotently and takes child_id from the token', a
   assert.equal(out.applied, 1);
   assert.deepEqual(out.rejected, []);
 
-  const insert = DB.batched[0][0];
+  const insert = messageInserts(DB)[0];
   assert.match(insert.sql.replace(/\s+/g, ' '), /ON CONFLICT \(id\) DO NOTHING/);
   assert.ok(insert.args.includes('CH-1'), "the token's child is what is bound");
   assert.ok(!insert.args.includes('CH-SOMEONE-ELSE'), 'the body value must be ignored');
@@ -840,7 +857,7 @@ test('a message naming another child\'s assignment is rejected, not written', as
   assert.equal(out.applied, 1);
   assert.deepEqual(out.rejected.map((r) => r.id), ['m2']);
   assert.match(out.rejected[0].error, /Not found for this child/);
-  assert.equal(DB.batched[0].length, 1, 'only the owned message may be inserted');
+  assert.equal(messageInserts(DB).length, 1, 'only the owned message may be inserted');
 });
 
 test('a malformed message is rejected per row and never reaches the batch', async () => {
@@ -860,7 +877,7 @@ test('a malformed message is rejected per row and never reaches the batch', asyn
   assert.equal(res.status, 200, 'one bad row must not take the batch with it');
   assert.equal(out.applied, 1);
   assert.equal(out.rejected.length, 3);
-  assert.equal(DB.batched[0].length, 1);
+  assert.equal(messageInserts(DB).length, 1);
 });
 
 test('a message body is stored trimmed', async () => {
@@ -869,12 +886,17 @@ test('a message body is stored trimmed', async () => {
     method: 'POST', token: DEVICE_TOKEN, outboxProtocol: 2,
     body: { messages: [{ id: 'm1', assignmentId: 'a1', body: '  why?  ' }] },
   });
-  assert.ok(DB.batched[0][0].args.includes('why?'));
+  assert.ok(messageInserts(DB)[0].args.includes('why?'));
 });
 
 test('§11.7: a failed message batch defers rather than dropping the questions', async () => {
-  const { env, DB } = messageEnv();
-  DB.batchError = new Error('D1_ERROR: no such table: assignment_messages');
+  // Fails the insert specifically. The ownership lookup batches too now, so a
+  // blanket DB.batchError would trip that first and prove the wrong thing.
+  const { env } = messageEnv((sql) => (
+    sql.includes('INSERT INTO assignment_messages')
+      ? { throws: new Error('D1_ERROR: no such table: assignment_messages') }
+      : {}
+  ));
   const res = await call(env, '/api/messages', {
     method: 'POST', token: DEVICE_TOKEN, outboxProtocol: 2,
     body: { messages: [{ id: 'm1', assignmentId: 'a1', body: 'why?' }] },
@@ -1166,13 +1188,16 @@ test('§5.3: a shared assignment row is grouped, keyed by the resolved claim_gro
   assert.equal(res.status, 200);
   assert.equal(out.applied, 1);
 
-  // Two batches: the claim_groups resolution, then the assignment insert.
-  assert.equal(DB.batched.length, 2);
+  // Three batches: the claim_groups insert, the read-back that resolves the
+  // id, then the assignment insert. The read-back is a batch because it splits
+  // at D1's bound-parameter cap.
+  assert.equal(DB.batched.length, 3);
   const groupInserts = DB.batched[0];
   assert.ok(groupInserts[0].sql.includes('INSERT INTO claim_groups'));
   assert.ok(groupInserts[0].sql.includes('ON CONFLICT'));
+  assert.ok(DB.batched[1][0].sql.includes('SELECT source_id, date, instance_key, id FROM claim_groups'));
 
-  const insert = DB.batched[1].find((s) => s.sql.includes('INSERT INTO assignments'));
+  const insert = DB.batched[2].find((s) => s.sql.includes('INSERT INTO assignments'));
   assert.ok(insert.sql.includes('claim_group'), 'claim_group is in the column list');
   assert.equal(insert.args.at(-2), 'GRP-9', 'bound from the resolved group id');
 });
@@ -1183,7 +1208,7 @@ test('§5.3: an unshared chunk never touches claim_groups', async () => {
     method: 'POST', token: PARENT_TOKEN,
     body: { batchId: 'B3', chunkIndex: 0, childId: 'CH-1', assignments: [choreRow] },
   });
-  assert.equal(DB.batched.length, 1, 'no claim_groups resolution batch when nothing is shared');
+  assert.equal(DB.batched.length, 1, 'no claim_groups resolution batches when nothing is shared');
 });
 
 test('§5.3: a shared row with no sourceId is rejected — it has no identity to group on', async () => {
@@ -1197,6 +1222,148 @@ test('§5.3: a shared row with no sourceId is rejected — it has no identity to
   });
   assert.equal(res.status, 400);
   assert.match((await res.json()).error, /needs a sourceId to group on/);
+});
+
+// ==============================  D1's bound-parameter cap (100 per statement)
+//
+// The failure these cover, in Ray's words on 2026-08-23: "Commit blocked —
+// D1_ERROR: too many SQL variables at offset 481". A chores-only Commit for one
+// child over seven days, refused whole, nothing written. Offset 481 is the
+// character position of the 101st `?` in the claim_groups read-back, which binds
+// three parameters per shared occurrence and so ran out at the 34th.
+//
+// Nothing bounded what a route *bound*, so every route building an `IN (...)`
+// from a caller-supplied array had the same defect waiting. These assert the
+// property directly — no statement may bind past the cap — because a test that
+// only counted statements would pass against a build that had merely moved the
+// list around.
+
+// The number of values a statement binds. `args.length` is the honest count:
+// SQLite sizes a bind list by the highest `?n` it sees, and every statement here
+// numbers its parameters densely from ?1.
+function overCap(statements) {
+  return statements.filter((s) => s.args.length > 100);
+}
+
+test('a Commit of 40 shared chores splits the claim_groups read-back at the cap', async () => {
+  // 34 was the real-world breaking point. 40 is past it and still one Commit a
+  // parent would plausibly press.
+  const { env, DB, statements } = makeEnv((sql) => {
+    if (sql.includes('FROM commit_chunks')) return { first: null };
+    return {};
+  });
+  const shared = Array.from({ length: 40 }, (_, i) => ({
+    date: '2026-08-11', kind: 'chore', sourceId: `CHR-${i}`, title: 'Dishes', shared: true,
+  }));
+
+  const res = await call(env, '/api/assignments', {
+    method: 'POST', token: PARENT_TOKEN,
+    body: { batchId: 'B-CAP', chunkIndex: 0, childId: 'CH-1', assignments: shared },
+  });
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).applied, 40);
+
+  assert.deepEqual(overCap(statements), [], 'no statement may bind past 100 values');
+  const readBacks = DB.batched[1];
+  assert.equal(readBacks.length, 2, '40 triples at three parameters each is two statements');
+  assert.deepEqual(readBacks.map((r) => r.args.length), [99, 21]);
+});
+
+test('a Commit of 40 shared chores still resolves every group id', async () => {
+  // Splitting the read-back must not lose the rows that came back in the
+  // second statement — the failure mode a cap-only assertion would miss.
+  const { env, statements } = makeEnv((sql, args) => {
+    if (sql.includes('FROM commit_chunks')) return { first: null };
+    if (sql.includes('SELECT source_id, date, instance_key, id FROM claim_groups')) {
+      // Answer from the triples this statement actually asked about.
+      const results = [];
+      for (let i = 0; i < args.length; i += 3) {
+        results.push({ source_id: args[i], date: args[i + 1], instance_key: args[i + 2], id: `GRP-${args[i]}` });
+      }
+      return { results };
+    }
+    return {};
+  });
+  const shared = Array.from({ length: 40 }, (_, i) => ({
+    date: '2026-08-11', kind: 'chore', sourceId: `CHR-${i}`, title: 'Dishes', shared: true,
+  }));
+  await call(env, '/api/assignments', {
+    method: 'POST', token: PARENT_TOKEN,
+    body: { batchId: 'B-CAP', chunkIndex: 0, childId: 'CH-1', assignments: shared },
+  });
+
+  const inserts = statements.filter((st) => st.sql.includes('INSERT INTO assignments'));
+  assert.equal(inserts.length, 40);
+  for (const insert of inserts) {
+    // claim_group is the second-to-last bound value (§5.3).
+    assert.match(String(insert.args.at(-2)), /^GRP-CHR-\d+$/, 'every row carries a resolved group');
+  }
+});
+
+test('a 250-id rescind splits into statements that each bind under the cap', async () => {
+  const { env, statements } = makeEnv(() => ({ meta: { changes: 99 } }));
+  const ids = Array.from({ length: 250 }, (_, i) => `a${i}`);
+  const res = await call(env, '/api/assignments/rescind', {
+    method: 'POST', token: PARENT_TOKEN, body: { ids },
+  });
+  assert.equal(res.status, 200);
+
+  const updates = statements.filter((s) => s.sql.startsWith('UPDATE assignments'));
+  assert.deepEqual(overCap(updates), []);
+  assert.deepEqual(updates.map((u) => u.args.length), [100, 100, 53], 'now holds ?1 in each');
+  // Every id is asked for exactly once, and none is dropped at a seam.
+  assert.deepEqual(updates.flatMap((u) => u.args.slice(1)), ids);
+  // The count is summed across the statements, not taken from the last one.
+  assert.equal((await res.json()).rescinded, 297);
+});
+
+test('a single-selector rescind is still one statement', async () => {
+  // The chunking must not turn the common case into a fan-out.
+  const { env, statements } = makeEnv();
+  await call(env, '/api/assignments/rescind', {
+    method: 'POST', token: PARENT_TOKEN, body: { batchId: 'B1' },
+  });
+  assert.equal(statements.filter((s) => s.sql.startsWith('UPDATE assignments')).length, 1);
+});
+
+test('a 250-id mark-read splits at the cap and sums what it changed', async () => {
+  const { env, statements } = makeEnv(() => ({ meta: { changes: 10 } }));
+  const ids = Array.from({ length: 250 }, (_, i) => `m${i}`);
+  const res = await call(env, '/api/messages/read', {
+    method: 'POST', token: PARENT_TOKEN, body: { ids },
+  });
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).read, 30, 'three statements at ten rows each');
+
+  const updates = statements.filter((s) => s.sql.startsWith('UPDATE assignment_messages'));
+  assert.deepEqual(overCap(updates), []);
+  assert.deepEqual(updates.flatMap((u) => u.args.slice(1)), ids);
+});
+
+test('a message drain naming 150 assignments splits the ownership lookup', async () => {
+  // MAX_BATCH allows 500 messages, so the lookup that guards §6.2 was one long
+  // drain away from the same refusal — and a refused lookup defers every
+  // question in the batch.
+  const ids = Array.from({ length: 150 }, (_, i) => `a${i}`);
+  const { env, statements } = makeEnv(deviceResolver((sql, args) => {
+    if (sql.includes('SELECT id FROM assignments')) {
+      return { results: args.slice(1).map((id) => ({ id })) };
+    }
+    return {};
+  }));
+
+  const res = await call(env, '/api/messages', {
+    method: 'POST', token: DEVICE_TOKEN, outboxProtocol: 2,
+    body: { messages: ids.map((id, i) => ({ id: `m${i}`, assignmentId: id, body: 'why?' })) },
+  });
+  const out = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(out.applied, 150, 'every message is owned, so every one is written');
+  assert.deepEqual(out.rejected, [], 'a split lookup must not read as unowned');
+
+  const lookups = statements.filter((s) => s.sql.includes('SELECT id FROM assignments'));
+  assert.deepEqual(overCap(lookups), []);
+  assert.deepEqual(lookups.map((l) => l.args.length), [100, 52]);
 });
 
 // ==========================================  Wall Display App §8 (Phase 1)
