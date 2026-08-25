@@ -792,7 +792,25 @@ gate is why this is not one build.
   `.report-controls .assign-toggle` in `styles.css`, with the `?v=11` bump noted in §4. Three cases
   added to `tests/management-reporting.test.js` for the predicate and the two lock tests; 653 pass.
 
-The order does not reach the child's course *headings* until Phase 4 (§2.7).
+- **Phase 4** (2026-08-25) — Child App scope. `planner-core.js`: `byCourseThenLesson` groups
+  `(items || []).slice().sort(pos)` instead of `items`, and `subjectsView` sorts its filtered
+  activity list before the grouping loop. Both keep their existing within-group sorts — redundant
+  for a single pass, but they are what guarantees the order inside a lesson run however the
+  function is reached. `groupByCourse` is untouched, per §2.7.
+
+  Two things this phase did that §2.7 did not name. First, `child-app/sw.js` goes to
+  `daily-plan-shell-v19`: the shell handler is cache-first, so a device left on v18 keeps the
+  arbitrary heading order and the phase reaches nobody. Second, two existing cases in
+  `child-cores.test.js` asserted the old rule in as many words — `'course group order is
+  first-seen, not position'` on `assembleToday`, and a `filterView` case whose fixture had the
+  child drag a Rivers row to `child_sort_order: -1`. Both are rewritten rather than deleted: the
+  first now expects position order, and the second now pins the §2.7 [DECISION]'s accepted drift
+  — pulling a card to the front of its run pulls the run's group earlier with it. The two new
+  cases §5 asked for reach `byCourseThenLesson` through `filterView`, as the rest of that file
+  does; the function stays unexported. 655 pass.
+
+The order does not reach the child's course *headings* until Phase 4 (§2.7) — which has now
+landed.
 
 Phase 3b is independent of everything above it and is the cheapest fix in the slice — if the
 Assignments tab is what is hurting most, land 3b first and the rest after. Its Worker half is

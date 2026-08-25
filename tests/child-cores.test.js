@@ -529,7 +529,13 @@ test('filterView (school) groups by block, then course, then lesson, then effect
   );
 });
 
-test('filterView (school) keeps two lessons of the same course in first-seen order, each sorted on its own', () => {
+// Subject Order slice §2.7 — this case used to assert that the *array* order
+// decided which lesson group came first. It now asserts the replacement rule:
+// the input is sorted by effective key before grouping, so a group's position
+// is its lowest key. a3 is a Rivers row the child dragged to -1, which is
+// exactly the drift the §2.7 [DECISION] accepts: pulling a card to the front
+// of its run can pull the run's group earlier too.
+test('filterView (school) orders lesson groups by their lowest effective key, each sorted on its own', () => {
   const lessonA = JSON.stringify({ lessonTitle: 'Rivers' });
   const lessonB = JSON.stringify({ lessonTitle: 'Mountains' });
   const rows = plan(
@@ -540,8 +546,8 @@ test('filterView (school) keeps two lessons of the same course in first-seen ord
   );
   assert.deepEqual(
     ids(PlannerCore.filterView(rows, TODAY, nothingResolved, 'school')),
-    ['a1', 'a3', 'a2', 'a4'],
-    'Mountains group first (first-seen), Rivers group sorted by effective key within itself, lesson-less items trail'
+    ['a3', 'a2', 'a1', 'a4'],
+    'Rivers first because a3 holds the lowest key, its own run sorted within, Mountains after, lesson-less items trail'
   );
 });
 
@@ -677,8 +683,45 @@ test('assembleToday groups School by course within each block; Chores stay posit
     row({ id: 'c2', kind: 'chore', course_name: 'Aaa', sort_order: 0 })
   ), TODAY, nothingResolved);
 
-  assert.deepEqual(ids(today.blocks[0].school), ['a1', 'a2'], 'course group order is first-seen, not position');
+  // Subject Order slice §2.7 — was 'first-seen, not position'. The course
+  // headings now follow position too, which is what carries the parent's
+  // standing subject order onto the child's screen: History (0) before
+  // Maths (5), whatever order IndexedDB handed the rows over in.
+  assert.deepEqual(ids(today.blocks[0].school), ['a2', 'a1'], 'course group order follows effective key');
   assert.deepEqual(ids(today.blocks[0].chores), ['c2', 'c1'], 'chores keep plain position order');
+});
+
+// Subject Order slice §2.7, Phase 4 — the two cases the slice asks for. The
+// bug they pin: `DB.loadState()` is `getAll("assignments")`, which returns
+// rows in opaque-UUID key order (CLAUDE.md §III.B), so a course's heading
+// position used to be decided by a UUID. Both fixtures are therefore written
+// with ids that sort *against* the plan order.
+test('filterView (school) orders course groups by lowest effective key, not by array order', () => {
+  // byCourseThenLesson is internal; filterView is how the rest of this file
+  // reaches it.
+  const rows = plan(
+    row({ id: 'a1', course_name: 'Maths', sort_order: 20 }),
+    row({ id: 'a2', course_name: 'History', sort_order: 10 }),
+    row({ id: 'a3', course_name: 'Maths', sort_order: 21 }),
+    row({ id: 'a4', course_name: 'History', sort_order: 11 })
+  );
+  const frozen = ids(rows);
+  assert.deepEqual(
+    ids(PlannerCore.filterView(rows, TODAY, nothingResolved, 'school')),
+    ['a2', 'a4', 'a1', 'a3'],
+    'History (10) leads Maths (20) although Maths appeared first in the array'
+  );
+  assert.deepEqual(ids(rows), frozen, 'the caller\'s array is not reordered under it');
+});
+
+test('subjectsView orders its course groups by lowest effective key too', () => {
+  const groups = PlannerCore.subjectsView(plan(
+    row({ id: 'a1', course_name: 'Maths', sort_order: 20 }),
+    row({ id: 'a2', course_name: 'History', sort_order: 10 }),
+    row({ id: 'a3', course_name: 'Science', sort_order: 15 })
+  ), TODAY, nothingResolved);
+
+  assert.deepEqual(groups.map((g) => g.course_name), ['History', 'Science', 'Maths']);
 });
 
 // Lesson Recipe slice §9.2 — byCourseThenLesson sub-groups each course by
