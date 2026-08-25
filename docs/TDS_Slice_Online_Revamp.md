@@ -1004,6 +1004,9 @@ indefinitely. Required change: cache-first for the precached shell, **network-on
 - `packet.js` — Commit posts rows; Propose and Review untouched.
 - New **Assignments** view: browse by child and date range, rescind a batch, edit or move
   a single assignment.
+  *(Presentation amended 2026-08-25 by `TDS_Slice_Subject_Order_Grouped_Review.md` §3 — the batch
+  list moves behind a collapse, and a day's rows group subject → course with chores and events in
+  groups of their own. Design only, unbuilt; no route, column or write path changes.)*
 - New **Reporting** reads `GET /api/assignments` and `GET /api/rewards` directly. Module 10
   keeps its analysis; only its input changes.
 - Module 09 (Completion Import) is deleted, not ported.

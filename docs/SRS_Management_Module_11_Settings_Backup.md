@@ -55,6 +55,15 @@ Owns two device-level, app-wide concerns that don't belong to any Course/Child/C
 
 **FR-8 — No additional PIN beyond the app-launch gate.** Backup export, and restore's own destructive path, both rely on FR-6's confirmation rather than a second credential check, consistent with every other Management SRS module's Permissions section.
 
+**FR-9 — Standing subject order.** *(Added 2026-08-25 by `TDS_Slice_Subject_Order_Grouped_Review.md`. Design only — unbuilt at the time of writing.)* Settings offers an editor for the order the household's **subjects** appear in on every screen that groups by subject — starting with Generate (Module 08 FR-17) and the Assignments view.
+
+- The stored value is a single record, one array of subject names, most-important first. It is a **household preference, not a device one**: it lives with the other authored records (alongside the grading defaults), so it mirrors to D1 and comes back with a restore. It is never part of `appSettings`, which holds device-local credentials and is deliberately never mirrored (§2.3).
+- The editor lists the **effective** order — stored entries in their stored positions, then every subject in use on a Course record that the stored list does not mention, alphabetically and visibly marked as not yet ordered. Moving an entry and saving rewrites the whole array; there is no per-entry record.
+- **A subject need not be listed to be usable.** An unlisted subject sorts alphabetically after every listed one, so a Course given a brand-new subject appears everywhere immediately, without a visit to this screen. An absent or empty list means every consumer sorts alphabetically — the behaviour before this FR existed.
+- Matching is on the trimmed, case-insensitive subject text; the Course record's own text is what is ever displayed. An entry no Course uses any more may be removed, and matches nothing until then.
+- This FR stores and edits an ordering. It does not create a subject entity, does not constrain what may be typed into a Course's subject field, and does not write to any Course record.
+
+
 ## 5. Validation rules
 
 | Rule | Detail |
@@ -65,6 +74,7 @@ Owns two device-level, app-wide concerns that don't belong to any Course/Child/C
 | Restore scope | Every entity in §2.2's scope is replaced; App Settings/`launchPin` is never included or touched (FR-7/§2.3). |
 | Restore confirmation | Required, explicit, and worded to describe full replacement — restore never proceeds silently or on an ambiguous click (FR-6). |
 | Pre-restore snapshot | Always generated and offered before a restore is applied, with no way to skip it (FR-5). |
+| Subject order entries | Free text matching a Course's subject, trimmed and compared case-insensitively; an unlisted or unmatched subject is legal and sorts alphabetically after the listed ones (FR-9). |
 
 ## 6. Permissions
 

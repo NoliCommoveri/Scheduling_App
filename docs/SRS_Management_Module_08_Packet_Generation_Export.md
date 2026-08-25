@@ -131,11 +131,20 @@ The map is keyed by the canonical Activity Type, **not** derivable from `structu
 - `sequenceNumber` present whenever `payload.kind` is `reference` or `none` (schema-invisible — the schema marks it optional — so this pass is the only thing that catches its absence).
 - Every `eventEntry` overlaps `[coversFrom, coversTo]`.
 
-**FR-14 — Fixed merge order.** Within each day, content is ordered School Activities, then Chores, then Family Events — never reordered or interleaved differently, regardless of counts. The order is carried as an explicit `sortOrder` per emitted row, and each kind numbers **within its own band** (School from 0, Chores from 1000, Events from 2000) so that a row's position depends only on its own kind. Under FR-1a a run may place one kind and not another, and a single counter across all three would otherwise give the same item a different number depending on which kinds shared its pass.
+**FR-14 — Fixed merge order.** Within each day, content is ordered School Activities, then Chores, then Family Events — never reordered or interleaved differently, regardless of counts. FR-17's grouping orders Activities **within** the School band and changes neither this order nor the bands below. The order is carried as an explicit `sortOrder` per emitted row, and each kind numbers **within its own band** (School from 0, Chores from 1000, Events from 2000) so that a row's position depends only on its own kind. Under FR-1a a run may place one kind and not another, and a single counter across all three would otherwise give the same item a different number depending on which kinds shared its pass.
 
 **FR-15 — Empty-source rule.** A valid Packet is produced whenever at least one source (paced Activities, Chores, in-range Events) yields content for the (child, range) — a child with active Chores but zero currently-paced Instances still receives a normal packet, not an error or empty-packet warning.
 
 **FR-16 — No Reward Ledger visibility.** This module never reads or writes Reward Ledger data (Architecture Evaluation §5/§11 guardrail 6). Nothing about proposing, reviewing, committing, or exporting depends on or reports reward balances. `rewardCategoryId` is a category definition flowing *to* the child, not ledger data.
+
+**FR-17 — Review presentation: canonical day order, subject grouping, and the lesson title.** *(Added 2026-08-25 by `TDS_Slice_Subject_Order_Grouped_Review.md`. Design only — unbuilt at the time of writing.)*
+
+- **Every day's proposed Activities have one canonical order**, and it is the array's own order, not a render-time decision: **subject** (by the household's standing subject order — Management Module 11 FR-9 — with unlisted subjects alphabetical after the listed ones and `No subject` last), then **Course** (`name`, tie-broken on instance id), then **walk position** within that Course (lesson `order`, then Activity `order`), then Activity id. Every action that places or moves an Activity — reproduction, the pacing walk, **relocate**, and **pull-forward** — leaves the day in that order. Before this, order was whatever the build sequence produced, which put reproduced items ahead of walked ones and every pulled-forward item at the bottom of the day regardless of its Course.
+- **`sortOrder` is unchanged in definition and follows the order above**, because it has always been derived from position within the kind's band (FR-14). One consequence is intended: a day's Courses now reach the child in the parent's standing subject order. One is a known limit: on a day committed across two passes, an already-live row keeps the number D1 gave it (Revamp §6.6), so a row inserted ahead of it on a later pass can carry a number that disagrees with the review screen's ordering. The Assignments view's Sort order field is the manual correction; nothing renumbers a live row automatically.
+- **Review renders a day as subject → Course → items**, each level a collapsible group carrying its item count, with Chores and Family Events in one group each, in FR-14's order. Group state survives the re-render every Review action triggers.
+- **Every Activity row names its Lesson**, on the review row and on the pending-remainder row that Pull-forward is chosen from. The Lesson title is already resolved at Propose (it rides to the child as `payload.lessonTitle`); an Activity title alone — "Practice level 3" — does not identify the work being placed.
+- **Nothing here changes what is proposed, what is committed, or the shape of an emitted row.** No `subject` is written to an assignment row: the Management App resolves it from the Course record it already owns.
+
 
 ## 5. Validation rules
 
@@ -151,6 +160,7 @@ The map is keyed by the canonical Activity Type, **not** derivable from `structu
 | Relocate target | A date within `[coversFrom, coversTo]`; may lie outside `daysOfWeek[]` (FR-7). |
 | Family Event inclusion | `[startDate, endDate]` overlaps the range **and** the Child's `id` is in `childIds[]` (FR-4). |
 | Merge order | School, then Chores, then Events — fixed (FR-14). |
+| Day order within School | Subject (standing order; unlisted alphabetical after listed; `No subject` last), then Course, then walk position, then Activity id (FR-17). |
 | Empty-source | Zero content from all three sources is the only no-packet condition (FR-15). |
 | Log identity | One row per `(childId, itemId)`; relocate/re-commit updates in place (FR-9). |
 | Structural emit rules | The full FR-13 list is verified before any Packet is written. |
@@ -186,3 +196,5 @@ No *additional* per-action PIN. The Management App's `launchPin` (Domain Model �
 13. Committing a run of 5 Activities and 2 Chore occurrences writes 7 `sent` Generation Log rows, each with the correct `itemId` and `assignedDate` — not one summary row.
 14. No Reward Ledger data of any kind is read, referenced, or written anywhere in this module.
 15. Reordering an Instance's Activities between two runs changes only the order in which its still-pending Activities are proposed next — never which Activities have already gone out, and never a duplicate or a skip.
+16. Within any proposed day, Activities appear grouped by subject in the standing order, then by Course, then in walk order — and an Activity **pulled forward** or **relocated** onto that day appears inside its own Course group at its walk position, never appended below everything else (FR-17).
+17. Every proposed Activity row, and every pending-remainder row, shows its Lesson title alongside the Activity title (FR-17).
