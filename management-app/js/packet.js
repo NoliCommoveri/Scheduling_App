@@ -206,6 +206,73 @@ const Packet = (() => {
     return { keys, source: 'log' };
   }
 
+  // ---- The canonical order of a day's activities (§2.1) ----
+  //
+  // The order a day's `activities` array is in IS the order the review screen
+  // shows it in, and IS the order `projectAssignments` numbers `sort_order`
+  // from. Nothing ever defined that order: Propose builds the array in three
+  // appends — reproduced log rows first, in log order and therefore mixed
+  // across courses; then the school walk, per instance; then anything pulled
+  // forward — so the display order was whatever the build sequence happened
+  // to produce, and a pulled-forward item landed at the bottom of the day
+  // instead of with the rest of its course. Both symptoms are the same defect
+  // (§0.1 reports 1 and 2), and defining the order in one place is the fix
+  // for both.
+  //
+  // Sorting the array itself rather than a render-time copy is deliberate:
+  // `projectAssignments` derives `sortOrder` from array position
+  // (`:672-684`), so this way the parent's screen and the child's plan agree
+  // with no change to the projection at all.
+  //
+  // `ctx` is `{ coursesById, walkIndex, subjectOrder }`. Propose passes a
+  // local one because `session` does not exist yet at the point it sorts;
+  // every Review action passes `session` itself, which carries all three for
+  // exactly this reason — `relocate` and `pullForward` hold no other handle
+  // on the proposal, and a sort that only worked inside Propose's closure
+  // would silently mis-sort on precisely the two actions report 2 is about.
+  function sortDayActivities(dayObj, ctx) {
+    if (!dayObj || !dayObj.activities || dayObj.activities.length < 2) return;
+    const bySubject = SubjectOrderCore.compare(ctx.subjectOrder || []);
+    const courseOf = (it) => ctx.coursesById.get(it.instanceId);
+    const subjectOf = (it) => {
+      const inst = courseOf(it);
+      return SubjectOrderCore.label(inst && inst.subject);
+    };
+    // An activity the walk does not know — its lesson was deleted since the
+    // log row that reproduced it was written — sorts after every known one.
+    // An absent index would otherwise read as 0 and put it first.
+    const walkPos = (it) => {
+      const m = ctx.walkIndex && ctx.walkIndex.get(it.instanceId);
+      const i = m && m.get(it.id);
+      return i == null ? Infinity : i;
+    };
+    dayObj.activities.sort((a, b) => {
+      const s = bySubject(subjectOf(a), subjectOf(b));
+      if (s !== 0) return s;
+      // Course by name, tie-broken on instanceId: two instances stamped from
+      // one template for one child legitimately share a name
+      // (`storage.js:116-119`), and the tie-break is what keeps their
+      // activities from interleaving under one heading.
+      const na = (courseOf(a) && courseOf(a).name) || '';
+      const nb = (courseOf(b) && courseOf(b).name) || '';
+      if (na !== nb) return na.localeCompare(nb);
+      if (a.instanceId !== b.instanceId) return String(a.instanceId).localeCompare(String(b.instanceId));
+      // Walk index within the course — lesson `order` then activity `order`
+      // (`pacing.js:38-50`). Compared rather than subtracted so two unknowns
+      // (Infinity - Infinity) fall through to the id tie-break instead of NaN.
+      const wa = walkPos(a);
+      const wb = walkPos(b);
+      if (wa !== wb) return wa < wb ? -1 : 1;
+      return String(a.id).localeCompare(String(b.id));
+    });
+  }
+
+  // Chores and events keep the order they are built in. Their bands and their
+  // numbering are unchanged (§2.1), and nothing about them was reported.
+  function sortDay(date) {
+    sortDayActivities(session.days.get(date), session);
+  }
+
   // ---- Propose (FR-1–FR-6) — writes nothing ----
 
   async function propose(childId, semesterLabel, coversFrom, coversTo, include) {
@@ -216,14 +283,21 @@ const Packet = (() => {
     const child = await Storage.get('children', childId);
     if (!child) return { error: 'Select an existing child.' };
 
-    const [activityTypes, tiers, allCourses, allChores, allEvents, allLessons] = await Promise.all([
+    const [activityTypes, tiers, allCourses, allChores, allEvents, allLessons, storedSubjectOrder] = await Promise.all([
       Storage.getAll('activityTypes'),
       Storage.getAll('tiers'),
       Storage.getAll('courses'),
       Storage.getAll('chores'),
       Storage.getAll('familyEvents'),
       Storage.getAll('lessons'),
+      // The household's standing subject order (Module 11 FR-9), read ONCE per
+      // proposal rather than once per render (§2.1). A proposal that re-sorted
+      // itself mid-review because the parent edited Settings in another tab
+      // would move rows under the parent's hands while they were deciding
+      // about them.
+      Storage.get('meta', 'subjectOrder'),
     ]);
+    const subjectOrder = (storedSubjectOrder && storedSubjectOrder.order) || [];
 
     const maps = {
       typeLabel: new Map(activityTypes.map((t) => [t.activityTypeKey, t.label])),
@@ -392,9 +466,23 @@ const Packet = (() => {
       }
     }
 
+    // Step 7 — put every day into canonical order (§2.1). Last, so it sees
+    // reproduced rows, walked rows and re-derived events alike, and so a
+    // freshly-marked `committed` flag rides along with the item it belongs to.
+    const sortCtx = { coursesById, walkIndex, subjectOrder };
+    for (const dayObj of days.values()) sortDayActivities(dayObj, sortCtx);
+
     session = {
       childId, childName: child.name, semesterLabel: (semesterLabel || '').trim(),
       coversFrom, coversTo, days, maps, coursesById,
+      // The two things `sortDayActivities` reads that were not on `session`
+      // before (§2.1). `walkIndex` is the Map built above and previously
+      // thrown away with Propose's closure — stored rather than rebuilt,
+      // because rebuilding it would re-walk every instance on every Review
+      // action. `subjectOrder` is the snapshot read at the top of this
+      // function. Neither is new state in any meaningful sense: one is a
+      // local promoted, the other one more read in a Promise.all.
+      walkIndex, subjectOrder,
       // What this pass was asked to place (FR-1a). Read by the proposal heading
       // and by both empty-source messages, which have to say "chores only"
       // rather than imply the range itself is bare. The Pull-forward buckets
@@ -415,6 +503,11 @@ const Packet = (() => {
       // not the DOM, so it survives the full re-render every Review action
       // triggers.
       openRemainders: new Set(), expandedRemainders: new Set(),
+      // Subject/course/chore/event group state (§2.6), on the session for the
+      // same reason `openRemainders` is. `knownGroups` is what makes "default
+      // open" and "the parent closed this one" distinguishable — see
+      // `groupBox`.
+      openGroups: new Set(), knownGroups: new Set(),
     };
     return { session };
   }
@@ -479,6 +572,13 @@ const Packet = (() => {
     item.assignedDate = toDate;
     if (!session.days.has(toDate)) session.days.set(toDate, { activities: [], chores: [], events: [] });
     (kind === 'activity' ? session.days.get(toDate).activities : session.days.get(toDate).chores).push(item);
+    // The item still appends; the sort then puts it at its walk position
+    // inside its own course group, which is where the parent expected it
+    // (§2.4). Both days: the source cannot have been disturbed by a removal,
+    // but re-running it there costs nothing and means no caller has to know
+    // which of the two mutated.
+    sortDay(fromDate);
+    sortDay(toDate);
     return { ok: true };
   }
 
@@ -490,6 +590,7 @@ const Packet = (() => {
     const live = committedGuard(found.item);
     if (live) return live;
     found.arr.splice(found.i, 1);
+    sortDay(fromDate); // a removal cannot disturb the order; re-running costs nothing (§2.1)
     session.excluded.add(id); // excludeFromGeneration persisted at Commit
     return { ok: true };
   }
@@ -502,6 +603,7 @@ const Packet = (() => {
     const live = committedGuard(found.item);
     if (live) return live;
     found.arr.splice(found.i, 1); // absence keeps it pending; no write at Commit
+    sortDay(fromDate);
     return { ok: true };
   }
 
@@ -531,6 +633,9 @@ const Packet = (() => {
     const inst = session.coursesById.get(instanceId);
     void inst;
     session.days.get(toDate).activities.push(item);
+    // Report 2, exactly: "append" was "bottom of the day" because array
+    // position IS display order. Same one-line fix `relocate` gets (§2.4).
+    sortDay(toDate);
     return { ok: true };
   }
 
@@ -1058,7 +1163,35 @@ const Packet = (() => {
     });
     bar.appendChild(commitBtn);
     bar.appendChild(abandonBtn);
+
+    // What actually makes a 300-row fortnight workable, more than the
+    // individual toggles do (§2.2). Both act on `knownGroups`, which the day
+    // loop below fills on every render — so they reach exactly the groups that
+    // are on screen, including ones created since the last press.
+    const expandBtn = document.createElement('button');
+    expandBtn.className = 'secondary';
+    expandBtn.textContent = 'Expand all';
+    expandBtn.addEventListener('click', () => {
+      session.knownGroups.forEach((k) => session.openGroups.add(k));
+      render(root);
+    });
+    const collapseBtn = document.createElement('button');
+    collapseBtn.className = 'secondary';
+    collapseBtn.textContent = 'Collapse all';
+    collapseBtn.addEventListener('click', () => {
+      session.openGroups.clear();
+      render(root);
+    });
+    bar.appendChild(expandBtn);
+    bar.appendChild(collapseBtn);
     root.appendChild(bar);
+
+    // Discoverability for the setting that motivated the grouping, from the
+    // screen it shows up on, without duplicating the editor here (§1.3).
+    const orderHint = document.createElement('p');
+    orderHint.className = 'review-order-hint';
+    orderHint.textContent = 'Subjects follow your standing order (Settings → Subject order).';
+    root.appendChild(orderHint);
 
     if (session.committedCount) {
       const note = document.createElement('p');
@@ -1092,8 +1225,20 @@ const Packet = (() => {
     // re-renders the whole proposal — doesn't collapse the bucket the parent
     // is actively working in.
     const REMAINDER_PREVIEW = 5;
-    for (const [instanceId, remainder] of session.pendingByInstance) {
-      if (!remainder.length) continue;
+    // Same comparator as the day groups, instead of `pendingByInstance`'s Map
+    // insertion order — which is the school walk's order, i.e. arbitrary to
+    // the parent reading it (§2.3).
+    const remainderSubject = SubjectOrderCore.compare(session.subjectOrder || []);
+    const remainderBoxes = [...session.pendingByInstance.entries()]
+      .filter(([, remainder]) => remainder.length)
+      .sort(([aId], [bId]) => {
+        const ca = session.coursesById.get(aId);
+        const cb = session.coursesById.get(bId);
+        const s = remainderSubject(SubjectOrderCore.label(ca && ca.subject), SubjectOrderCore.label(cb && cb.subject));
+        if (s !== 0) return s;
+        return String((ca && ca.name) || aId).localeCompare(String((cb && cb.name) || bId));
+      });
+    for (const [instanceId, remainder] of remainderBoxes) {
       const inst = session.coursesById.get(instanceId);
       const expanded = session.expandedRemainders.has(instanceId);
       const shown = expanded ? remainder : remainder.slice(0, REMAINDER_PREVIEW);
@@ -1113,7 +1258,11 @@ const Packet = (() => {
       shown.forEach((a) => {
         const row = document.createElement('div');
         const typeLabel = session.maps.typeLabel.get(a.activityType) || a.activityType;
-        row.innerHTML = `<span>${escapeHtml(typeLabel)} &middot; ${escapeHtml(a.title)} <code>${escapeHtml(a.id)}</code></span> `;
+        // The more important of the two rows the lesson title reaches (§2.3):
+        // this is where Pull-forward is actually chosen, and "Practice level 3"
+        // appearing four times in a bucket of thirty is unusable when the
+        // parent is being asked to pick one of them by name.
+        row.innerHTML = `<span>${lessonPrefix(a)}${escapeHtml(a.title)} <code>${escapeHtml(a.id)}</code> <em>${escapeHtml(typeLabel)}</em></span> `;
         const btn = document.createElement('button');
         btn.textContent = 'Pull forward →';
         btn.addEventListener('click', () => {
@@ -1165,16 +1314,120 @@ const Packet = (() => {
       const o = session.days.get(date);
       const section = document.createElement('section');
       section.className = 'day-section';
-      section.innerHTML = `<h3>${date} <em>(${weekday(date)})</em></h3>`;
 
-      // Fixed merge order: activities, then chores, then events (FR-6).
-      const ul = document.createElement('ul');
-      o.activities.forEach((it) => ul.appendChild(activityRow(root, date, it)));
-      o.chores.forEach((it) => ul.appendChild(choreRow(root, date, it)));
-      o.events.forEach((it) => ul.appendChild(eventRow(it)));
-      section.appendChild(ul);
+      const total = o.activities.length + o.chores.length + o.events.length;
+      const live = [o.activities, o.chores, o.events]
+        .reduce((n, list) => n + list.filter((it) => it.committed).length, 0);
+      section.innerHTML = `<h3>${escapeHtml(date)} <em>(${weekday(date)})</em> ` +
+        `<span class="day-count">${total} item${total === 1 ? '' : 's'}` +
+        `${live ? ` &middot; ${live} already assigned` : ''}</span></h3>`;
+
+      // Fixed merge order — School, then Chores, then Family events (FR-14) —
+      // unchanged. Grouping happens *within* the School band; the bands
+      // themselves and the 0/1000/2000 numbering are untouched (§0).
+      for (const group of subjectGroups(o.activities)) {
+        const subjectBox = groupBox(
+          'review-subject-group', `${date}::subject::${group.subject}`, `${group.subject} (${group.count})`
+        );
+        for (const course of group.courses) {
+          const courseBox = groupBox(
+            'review-course-group', `${date}::course::${course.instanceId}`, `${course.name} (${course.items.length})`
+          );
+          const ul = document.createElement('ul');
+          course.items.forEach((it) => ul.appendChild(activityRow(root, date, it)));
+          courseBox.appendChild(ul);
+          subjectBox.appendChild(courseBox);
+        }
+        section.appendChild(subjectBox);
+      }
+
+      // One group each, at the bottom. Not reported as a problem, but a day
+      // with twelve chore occurrences on it has the same wall of rows the
+      // school half had, and the group costs one <details> (§2.2).
+      if (o.chores.length) {
+        const box = groupBox('review-subject-group', `${date}::chores`, `Chores (${o.chores.length})`);
+        const ul = document.createElement('ul');
+        o.chores.forEach((it) => ul.appendChild(choreRow(root, date, it)));
+        box.appendChild(ul);
+        section.appendChild(box);
+      }
+      if (o.events.length) {
+        const box = groupBox('review-subject-group', `${date}::events`, `Family events (${o.events.length})`);
+        const ul = document.createElement('ul');
+        o.events.forEach((it) => ul.appendChild(eventRow(it)));
+        box.appendChild(ul);
+        section.appendChild(box);
+      }
+
       root.appendChild(section);
     }
+  }
+
+  // Group open/closed state lives on the session, not the DOM, for the reason
+  // `openRemainders` already does: every Review action re-renders the whole
+  // proposal, and a group that collapsed itself under the parent mid-edit is
+  // worse than no collapse at all. Keys are date-scoped — the same course
+  // appears on fourteen days and they are not one thing (§2.6).
+  //
+  // Default is OPEN on this screen (§7.2): review is "look at all of it before
+  // committing", so nothing hides itself and collapsing is how the parent marks
+  // a part as cleared. `knownGroups` is what tells the two states apart — a key
+  // drawn for the first time is opened; one drawn before and absent from
+  // `openGroups` was closed on purpose and stays closed across the re-render.
+  // (Contrast the Assignments view, §3.2, which defaults closed for the
+  // opposite reason. One constant in each file if either reads wrong.)
+  function groupBox(className, key, summaryText) {
+    const details = document.createElement('details');
+    details.className = className;
+    if (!session.knownGroups.has(key)) {
+      session.knownGroups.add(key);
+      session.openGroups.add(key);
+    }
+    details.open = session.openGroups.has(key);
+    details.addEventListener('toggle', () => {
+      if (details.open) session.openGroups.add(key);
+      else session.openGroups.delete(key);
+    });
+    const summary = document.createElement('summary');
+    summary.textContent = summaryText;
+    details.appendChild(summary);
+    return details;
+  }
+
+  // The array is already in canonical order (§2.1), so each subject and each
+  // course is a contiguous run and gathering them is a walk, not a second
+  // sort. That is the point of sorting the array rather than a render-time
+  // copy: one definition of the order, read by both this screen and
+  // `projectAssignments`.
+  function subjectGroups(activities) {
+    const groups = [];
+    for (const it of activities) {
+      const inst = session.coursesById.get(it.instanceId);
+      const subject = SubjectOrderCore.label(inst && inst.subject);
+      let group = groups[groups.length - 1];
+      if (!group || group.subject !== subject) {
+        group = { subject, count: 0, courses: [] };
+        groups.push(group);
+      }
+      let course = group.courses[group.courses.length - 1];
+      if (!course || course.instanceId !== it.instanceId) {
+        course = { instanceId: it.instanceId, name: (inst && inst.name) || it.instanceId, items: [] };
+        group.courses.push(course);
+      }
+      course.items.push(it);
+      group.count++;
+    }
+    return groups;
+  }
+
+  // The lesson an activity belongs to, for the row prefix (§2.3). Already in
+  // hand — `maps.lessonTitle` is built at Propose and rides into
+  // `payload.lessonTitle` at Commit; it simply was never shown to the parent
+  // who is deciding. An activity whose `lessonId` resolves to nothing gets no
+  // prefix, exactly as before.
+  function lessonPrefix(activity) {
+    const title = activity && session.maps.lessonTitle.get(activity.lessonId);
+    return title ? `${escapeHtml(title)} &mdash; ` : '';
   }
 
   // An item already live in D1 renders without its action buttons rather than
@@ -1188,7 +1441,11 @@ const Packet = (() => {
     const li = document.createElement('li');
     li.className = it.committed ? 'item-activity is-committed' : 'item-activity';
     const typeLabel = session.maps.typeLabel.get(it.record.activityType) || it.record.activityType;
-    li.innerHTML = `<span>📘 ${escapeHtml(typeLabel)} &middot; ${escapeHtml(it.record.title)} <code>${escapeHtml(it.id)}</code> <em>${it.origin}${it.blockHint ? ' · ' + it.blockHint : ''}</em>${committedTag(it)}</span> `;
+    // Lesson title first, then the activity title, then the type label and the
+    // existing tags (§2.3). "Practice level 3" on its own was what Ray
+    // reported as not enough to decide on; the lesson is the context that
+    // makes it a decision.
+    li.innerHTML = `<span>📘 ${lessonPrefix(it.record)}${escapeHtml(it.record.title)} <code>${escapeHtml(it.id)}</code> <em>${escapeHtml(typeLabel)} · ${it.origin}${it.blockHint ? ' · ' + it.blockHint : ''}</em>${committedTag(it)}</span> `;
     if (it.committed) return li;
     li.appendChild(makeBtn('Relocate', () => {
       const to = window.prompt('Relocate to date (YYYY-MM-DD):', date);

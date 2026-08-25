@@ -886,6 +886,84 @@ button.secondary {
   color: #888;
 }
 
+/* ---- Generate review: subject -> course groups (TDS_Slice_Subject_Order_
+   Grouped_Review.md §2.2, §4) ----
+   Same convention as .course-subject-group above — plain <details>/<summary>,
+   the chevron on ::before rotated under [open], no webkit marker. The
+   difference is the default: these are drawn OPEN (packet.js sets the
+   attribute from session.openGroups), because review is "look at all of it
+   before committing" and collapsing is how the parent marks a part as
+   cleared. */
+.review-subject-group,
+.review-course-group {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.review-course-group {
+  margin-left: 1rem;
+  border-bottom: none;
+}
+
+.review-subject-group > summary,
+.review-course-group > summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 0.5rem 0;
+  list-style: none;
+}
+
+.review-course-group > summary {
+  font-weight: 500;
+  font-size: 0.92rem;
+  color: #555;
+}
+
+.review-subject-group > summary::-webkit-details-marker,
+.review-course-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.review-subject-group > summary::before,
+.review-course-group > summary::before {
+  content: "\25B6";
+  display: inline-block;
+  margin-right: 0.5rem;
+  font-size: 0.7em;
+  transition: transform 0.1s ease;
+}
+
+.review-subject-group[open] > summary::before,
+.review-course-group[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+/* The day's own <ul> margin belongs to the day, not to each group inside it. */
+.review-subject-group ul,
+.review-course-group ul {
+  margin-bottom: 0.25rem;
+}
+
+.review-course-group li:last-child,
+.review-subject-group > ul li:last-child {
+  border-bottom: none;
+}
+
+/* The pointer to Settings -> Subject order, under the proposal bar (§1.3).
+   `.hint` is scoped to the Include fieldset, so this line carries its own. */
+.review-order-hint {
+  margin: 0.25rem 0 0.75rem;
+  font-size: 0.8rem;
+  color: #555;
+}
+
+/* "14 items · 5 already assigned" beside the date (§2.2). */
+.day-section h3 .day-count {
+  float: right;
+  font-weight: 400;
+  font-size: 0.8rem;
+  color: #888;
+}
+
 .item-activity, .item-chore, .item-event {
   border-left: 3px solid transparent;
   padding-left: 0.5rem;

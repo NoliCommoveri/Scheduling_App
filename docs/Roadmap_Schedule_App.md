@@ -152,8 +152,9 @@ still outstanding. A day becomes subject → course → items, each level collap
 Lesson titles appear on the review rows and the pending-remainder rows; the Assignments batch list
 moves behind a collapse; and the parent gets a **standing subject order**, stored as one record in
 `meta` and mirrored to D1 like any other authored record. Authored 2026-08-25 from Ray's four
-reports; **design only, unbuilt**, and **amended the same day** by a design review that read it
-against the shipped code (slice §8, six findings).
+reports, **amended the same day** by a design review that read it against the shipped code (slice
+§8, six findings), and **built from Phase 1 onward the same day** — Phases 1 and 2 are in, 3, 3b
+and 4 are not.
 
 The load-bearing part is not the grouping — it is that a day's Activities get a **canonical order**
 for the first time (subject → course → walk position). Today the order is whatever the build
@@ -191,7 +192,7 @@ the standing order needs neither a store nor a schema change.
 |---|---|---|---|
 | **0** | The slice; Module 08 FR-17 (+ the FR-14 note); Module 11 FR-9; the Revamp §9 pointer; this entry. No code. | ~45 min | ✅ Done 2026-08-25 |
 | **1** | `subject-order-core.js` + `node --test` file; `meta['subjectOrder']`; Settings → Subject order; **the three views that already group by subject adopt it** (Course Templates, Assigned Courses, Weekly — absorbed from the old optional Phase 4 by the review, slice §1.6). | ~1.25 h | ✅ Done 2026-08-25 |
-| **2** | Generate: the canonical day sort, subject/course/chore/event groups, Expand-all/Collapse-all, Lesson titles on review and remainder rows. Reports 1–3. | ~1.5–2 h | ⬜ |
+| **2** | Generate: the canonical day sort, subject/course/chore/event groups, Expand-all/Collapse-all, Lesson titles on review and remainder rows. Reports 1–3. | ~1.5–2 h | ✅ Done 2026-08-25 |
 | **3** | Assignments: batches behind a collapse with a preview cap, subject/course/chore/event groups, Lesson titles from `payload`. Report 4. | ~1–1.5 h | ⬜ |
 | **3b** | Assignments: a sibling-claimed chore reads as resolved (`isClaimedElsewhere` folded into `isResolved`, a `Sam did it` label); rescinded rows hidden behind a checkbox that carries their count. **Plus the one Worker change** — the rescind claim guard (§3.5a), its own scope and its own commit. Reports 5–6. | ~1 h | ⬜ |
 | **4** | **Child App scope, a separate session.** `byCourseThenLesson` and `subjectsView` sort before grouping, so the child's course sections follow the parent's order instead of assignment-id order (slice §2.7; Child Module 03 FR-13). | ~30 min | ⬜ |
