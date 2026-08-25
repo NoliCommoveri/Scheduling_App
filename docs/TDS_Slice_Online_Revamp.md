@@ -764,8 +764,8 @@ an explicit `includeCompleted: true` and is surfaced in the UI as a separate, co
 action.
 
 *(The claim guard is an amendment of 2026-08-25 —
-`TDS_Slice_Subject_Order_Grouped_Review.md` §3.5a, design only, unbuilt at the time of
-writing, landing with that slice's Phase 3b. Without it, rescinding a batch sweeps the
+`TDS_Slice_Subject_Order_Grouped_Review.md` §3.5a, **built the same day** as the first of
+that slice's two Phase 3b commits. Without it, rescinding a batch sweeps the
 **losing** rows of a shared-chore claim, which are `pending` by construction; Shared Chores
 §5.5's release then skips them for their `rescinded_at IS NULL` clause, and a chore either
 child could have done comes back to one of them permanently. The clause is the exact
@@ -1019,7 +1019,8 @@ indefinitely. Required change: cache-first for the precached shell, **network-on
   list moves behind a collapse; a day's rows group subject → course with chores and events in
   groups of their own; a chore a sibling claimed reads as resolved rather than outstanding (§3.5,
   from `claimed_by` — no sweep and no auto-rescind, §3.6); and rescinded rows are hidden behind a
-  checkbox, still fetched so the count stays honest (§3.7). Design only, unbuilt. §3.5 and §3.7
+  checkbox, still fetched so the count stays honest (§3.7). **Built 2026-08-25**, §3 in Phase 3 and
+§3.5/§3.7 in Phase 3b. §3.5 and §3.7
   are read-side only and no column or route changes; the slice's one write-path change is §3.5a,
   a narrowing clause on the rescind statement in §6.3 above, which stops a batch rescind sweeping
   a shared chore's losing rows.)*

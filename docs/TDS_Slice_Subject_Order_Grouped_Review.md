@@ -2,14 +2,15 @@
 
 **Status:** Authored 2026-08-25 and **amended the same day** after a design review read the slice
 against the shipped code — six findings, all folded in; §8 lists what each one changed and where.
-**Phases 1, 2 and 3 built 2026-08-25**; Phases 3b and 4 unbuilt.
+**Phases 1, 2, 3 and 3b built 2026-08-25**; Phase 4 unbuilt.
 **Scope:** Management App, plus **one Worker guard** (§3.5a) and **one Child App ordering fix**
 (§2.7). Each of those is its own build scope under CLAUDE.md §I.A and is phased separately (§5);
 no session edits two apps at once. Files: `management-app/js/subject-order-core.js` (new),
 `packet.js`, `assignments.js`, `settings.js`, `courses.js`, `instances.js`, `weekly.js`,
 `index.html` (one script tag), `styles/styles.css`,
-`tests/management-subject-order-core.test.js` (new); `management-app/worker/index.js` (Phase 3b
-only, §3.5a); `child-app/js/planner-core.js` and `tests/child-cores.test.js` (Phase 4 only, §2.7).
+`tests/management-subject-order-core.test.js` (new); `management-app/worker/index.js` and
+`tests/worker-routes.test.js` (Phase 3b only, §3.5a); `child-app/js/planner-core.js` and
+`tests/child-cores.test.js` (Phase 4 only, §2.7).
 **Not in scope:** no migration, no D1 schema change, no new route, no credential change, no
 change to **which columns** any client may write, no Wall App change, no IndexedDB version bump.
 **Amends:** `SRS_Management_Module_08_Packet_Generation_Export.md` (note on FR-14, new FR-17),
@@ -701,6 +702,13 @@ neither a layout system: `.review-order-hint` for the one-line pointer to Settin
 (`.hint` is scoped to the Include fieldset, so it could not be reused), and `.day-count` for the
 `14 items · 5 already assigned` counter in the day heading.
 
+**Phase 3b bumped `?v=10` → `?v=11`.** §4's rule above was written for whichever of Phases 2 and
+3 landed first, when neither had shipped; by Phase 3b `?v=10` was on `main` and in browsers, so its
+two new rules — `.status-claimed` for the `Sam did it` label and `.report-controls .assign-toggle`
+for the `Show rescinded` checkbox — would not have reached a cached stylesheet without one. A new
+rule after a version has shipped needs its own bump; that is the rule §4 was expressing, not a
+one-per-slice allowance.
+
 **Phase 1 needed no CSS and did not bump the version.** The Settings editor is `.list-row` inside
 a `.settings-section`, both of which already exist and are already global, and the `ul` reset at
 `styles.css:244` handles the list. Its rows carry the same trailing border the Devices panel's do,
@@ -754,6 +762,35 @@ gate is why this is not one build.
   three presentation toggles (`Show N older`, Expand all, Collapse all) change nothing in the
   database, and §3.7 already argues that such a toggle must be instant with no refetch. It is the
   same helper §3.7's `Show rescinded` checkbox will use.
+
+- **Phase 3b** (2026-08-25) — two commits, two scopes, in the order §5 recommends.
+
+  *Worker scope*: `handleAssignmentsRescind` gains `claimClause` —
+  `(claimed_by IS NULL OR claimed_by = child_id)` — on the shared clause, so all three selector
+  branches (`batchId`, `ids[]`, `childId` + range) carry it. Three cases in
+  `tests/worker-routes.test.js`: the guard on every selector, its survival under
+  `includeCompleted`, and that it binds no parameters so the `?n` numbering is unmoved.
+
+  *Management App scope*: `assignments.js` gains `isClaimedElsewhere` (mirrored from
+  `reporting.js:83`, with the comment naming what it mirrors), folded into `isResolved` — which is
+  the one line that drops a losing row out of the summary's outstanding count, the day header, every
+  group header, `isEditable` and `isRescindable`. `statusLabel` takes `ctx` and reads the claim
+  **first**, because a losing row's `status` is `pending`; its rescinded branch now tests
+  `status(row) === 'pending'` explicitly rather than `!isResolved(row)`, which had widened under it.
+  `claimantName`/`claimedLabel` resolve `Sam did it` from the `children` list now passed on `ctx`,
+  falling back to `claimed by a sibling`. The locked-reason line gains a claim branch pointing at
+  the child's device for undo, and `rescindBatch`'s confirm counts claimed rows apart from completed
+  ones so the button, the dialog and the server's `Rescinded N` describe one set.
+
+  `showRescinded` is module-level and **off** by default; `includeRescinded=1` stays on the query
+  and the filter is at render, so the toggle redraws through the `ctx.redraw()` Phase 3 added and
+  never refetches. The checkbox's label carries the count (`Show rescinded (12)`) via an `onCounts`
+  hook on `ctx`; the summary line names the count either way, and gains a `N done by a sibling`
+  segment when there is one. The Batches panel deliberately keeps every row — reversing a Commit is
+  what it is for — while the day list gets the filtered set, so a day, subject, course or chore
+  group with nothing visible renders nothing at all. `.status-claimed` and
+  `.report-controls .assign-toggle` in `styles.css`, with the `?v=11` bump noted in §4. Three cases
+  added to `tests/management-reporting.test.js` for the predicate and the two lock tests; 653 pass.
 
 The order does not reach the child's course *headings* until Phase 4 (§2.7).
 
