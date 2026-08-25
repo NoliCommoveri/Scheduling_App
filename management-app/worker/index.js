@@ -20,6 +20,7 @@ import {
   capRows,
   MAX_QUERY_ROWS,
   clampInt,
+  chunkForBinding,
   randomPairCode,
   timingSafeEqual,
   validateMessage,
@@ -1280,19 +1281,31 @@ async function resolveClaimGroups(env, assignments) {
     )
   );
 
-  // One read-back for the whole chunk — a composite-key IN via row values,
+  // The read-back for the whole chunk — a composite-key IN via row values,
   // which reads whichever id won the insert above, this device's or a
   // sibling Commit's that raced it.
-  const values = [...triples.values()];
-  const placeholders = values.map(() => '(?, ?, ?)').join(', ');
-  const params = values.flatMap(({ sourceId, date, instanceKey }) => [sourceId, date, instanceKey]);
-  const { results } = await env.DB.prepare(
-    `SELECT source_id, date, instance_key, id FROM claim_groups
-      WHERE (source_id, date, instance_key) IN (VALUES ${placeholders})`
-  ).bind(...params).all();
+  //
+  // Split at D1's bound-parameter cap rather than sent as one statement. Three
+  // parameters per triple means the 34th shared occurrence is the 101st
+  // variable, and D1 rejects the statement outright — which took the entire
+  // Commit down with it, every row of it, because this resolution runs before
+  // the first assignment statement is built. One week of one child's chores was
+  // enough to reach it. The sub-queries ride in a single batch(), so this stays
+  // one round trip however many groups it splits into.
+  const groups = chunkForBinding([...triples.values()], 3);
+  const reads = groups.map((group) => {
+    const placeholders = group.map(() => '(?, ?, ?)').join(', ');
+    const params = group.flatMap(({ sourceId, date, instanceKey }) => [sourceId, date, instanceKey]);
+    return env.DB.prepare(
+      `SELECT source_id, date, instance_key, id FROM claim_groups
+        WHERE (source_id, date, instance_key) IN (VALUES ${placeholders})`
+    ).bind(...params);
+  });
 
-  for (const row of results || []) {
-    resolved.set(claimGroupKey(row.date, row.source_id, row.instance_key), row.id);
+  for (const read of await env.DB.batch(reads)) {
+    for (const row of read.results || []) {
+      resolved.set(claimGroupKey(row.date, row.source_id, row.instance_key), row.id);
+    }
   }
   return resolved;
 }
@@ -1364,26 +1377,42 @@ async function handleAssignmentsRescind(request, env) {
   // since SQLite sizes a bind list by the highest index it sees, but a trap for
   // anyone adding a clause.)
   const selectorBase = 2;
-  let where, params;
+  // A list of selectors rather than one, because an `ids` rescind is the only
+  // branch whose parameter count is caller-controlled: MAX_BATCH allows 500,
+  // and D1 refuses a statement past 100 bound values. Chunked at 99 — `now`
+  // holds ?1 in every statement — the other two branches produce a single
+  // selector and read exactly as they did.
+  let selectors;
   if (body && typeof body.batchId === 'string' && body.batchId) {
-    where = `batch_id = ?${selectorBase}`;
-    params = [body.batchId];
+    selectors = [{ where: `batch_id = ?${selectorBase}`, params: [body.batchId] }];
   } else if (body && Array.isArray(body.ids) && body.ids.length > 0) {
     if (body.ids.length > MAX_BATCH) return json({ error: `At most ${MAX_BATCH} ids per rescind.` }, 413);
-    where = `id IN (${body.ids.map((_, i) => `?${i + selectorBase}`).join(',')})`;
-    params = body.ids;
+    selectors = chunkForBinding(body.ids, 1, 1).map((group) => ({
+      where: `id IN (${group.map((_, i) => `?${i + selectorBase}`).join(',')})`,
+      params: group,
+    }));
   } else if (body && typeof body.childId === 'string' && body.childId && isValidDate(body.from) && isValidDate(body.to)) {
-    where = `child_id = ?${selectorBase} AND date BETWEEN ?${selectorBase + 1} AND ?${selectorBase + 2}`;
-    params = [body.childId, body.from, body.to];
+    selectors = [{
+      where: `child_id = ?${selectorBase} AND date BETWEEN ?${selectorBase + 1} AND ?${selectorBase + 2}`,
+      params: [body.childId, body.from, body.to],
+    }];
   } else {
     return json({ error: 'Provide batchId, ids[], or childId with from/to.' }, 400);
   }
 
-  const sql = `UPDATE assignments SET rescinded_at = ?1, updated_at = ?1, updated_by = 'parent'
-               WHERE rescinded_at IS NULL AND ${statusClause} AND ${where}`;
-  const result = await env.DB.prepare(sql).bind(now, ...params).run();
+  // One batch, so a multi-statement rescind is still the one transaction a
+  // single statement was (§3.7.4). A partial rescind is not a state §6.3 has an
+  // answer for — the parent asked for a set of rows to come back, not a prefix
+  // of one.
+  const results = await env.DB.batch(selectors.map(({ where, params }) =>
+    env.DB.prepare(
+      `UPDATE assignments SET rescinded_at = ?1, updated_at = ?1, updated_by = 'parent'
+        WHERE rescinded_at IS NULL AND ${statusClause} AND ${where}`
+    ).bind(now, ...params)
+  ));
 
-  return json({ rescinded: (result.meta && result.meta.changes) || 0 });
+  const rescinded = results.reduce((n, r) => n + ((r && r.meta && r.meta.changes) || 0), 0);
+  return json({ rescinded });
 }
 
 async function handleAssignmentsQuery(url, env) {
@@ -2718,11 +2747,19 @@ async function handleMessages(request, env, device) {
   if (shaped.length > 0) {
     const ids = [...new Set(shaped.map((r) => r.assignmentId))];
     try {
-      const { results } = await env.DB.prepare(
-        `SELECT id FROM assignments
-         WHERE child_id = ?1 AND id IN (${ids.map((_, i) => `?${i + 2}`).join(',')})`
-      ).bind(device.childId, ...ids).all();
-      for (const r of results || []) owned.add(r.id);
+      // Chunked at 99 ids — `child_id` holds ?1 — because a drain carrying
+      // MAX_BATCH messages names up to 500 assignments, and D1 refuses a
+      // statement past 100 bound values. Still one round trip: the reads ride
+      // in one batch().
+      const lookups = chunkForBinding(ids, 1, 1).map((group) =>
+        env.DB.prepare(
+          `SELECT id FROM assignments
+            WHERE child_id = ?1 AND id IN (${group.map((_, i) => `?${i + 2}`).join(',')})`
+        ).bind(device.childId, ...group)
+      );
+      for (const lookup of await env.DB.batch(lookups)) {
+        for (const r of lookup.results || []) owned.add(r.id);
+      }
     } catch (err) {
       // §11.7: the lookup itself failed, so ownership is unknown for every row.
       // Unknown is not "not owned" — deferring is the only answer that neither
@@ -2827,13 +2864,20 @@ async function handleMessagesRead(request, env) {
   // original timestamp rather than having it bumped by a second click. There
   // is no route that clears it: Module 13 FR-4 has no mark-unread in v1, and
   // omitting the path is how that stays true.
+  //
+  // Chunked at 99 ids — `now` holds ?1 — because this route accepts MAX_BATCH
+  // of them and D1 refuses a statement past 100 bound values. One batch, so
+  // marking an inbox read stays the single transaction it was.
   const now = Date.now();
-  const result = await env.DB.prepare(
-    `UPDATE assignment_messages SET read_at = ?1
-     WHERE read_at IS NULL AND id IN (${ids.map((_, i) => `?${i + 2}`).join(',')})`
-  ).bind(now, ...ids).run();
+  const results = await env.DB.batch(chunkForBinding(ids, 1, 1).map((group) =>
+    env.DB.prepare(
+      `UPDATE assignment_messages SET read_at = ?1
+        WHERE read_at IS NULL AND id IN (${group.map((_, i) => `?${i + 2}`).join(',')})`
+    ).bind(now, ...group)
+  ));
 
-  return json({ read: (result.meta && result.meta.changes) || 0, readAt: now });
+  const read = results.reduce((n, r) => n + ((r && r.meta && r.meta.changes) || 0), 0);
+  return json({ read, readAt: now });
 }
 
 // ============================================================================

@@ -20,6 +20,8 @@ import {
   MAX_MESSAGE_LEN,
   validateMessage,
   clampInt,
+  chunkForBinding,
+  D1_MAX_BOUND_PARAMS,
   randomPairCode,
   PAIR_CODE_ALPHABET,
   timingSafeEqual,
@@ -501,4 +503,50 @@ test('validateMessage accepts an absent createdAt but not a malformed one', () =
   assert.equal(validateMessage({ id: 'm1', assignmentId: 'a1', body: 'why?', createdAt: 1754870400000 }), null);
   assert.match(validateMessage({ id: 'm1', assignmentId: 'a1', body: 'why?', createdAt: 'now' }), /millisecond timestamp/);
   assert.match(validateMessage({ id: 'm1', assignmentId: 'a1', body: 'why?', createdAt: -1 }), /millisecond timestamp/);
+});
+
+
+// ------------------------------------------------------  bound-parameter cap
+
+test('chunkForBinding keeps a group under D1\'s bound-parameter cap', () => {
+  // Three parameters per row is the claim_groups read-back, which is where this
+  // was found: 33 triples bind 99 variables and pass, 34 bind 102 and D1
+  // refuses the statement.
+  const rows = Array.from({ length: 100 }, (_, i) => i);
+  for (const [perRow, fixed] of [[3, 0], [1, 1], [1, 0], [9, 2], [50, 0]]) {
+    for (const group of chunkForBinding(rows, perRow, fixed)) {
+      assert.ok(group.length >= 1, 'no empty groups');
+      assert.ok(
+        fixed + group.length * perRow <= D1_MAX_BOUND_PARAMS,
+        `${group.length} rows of ${perRow} plus ${fixed} fixed exceeds the cap`
+      );
+    }
+  }
+});
+
+test('chunkForBinding fills each group before opening the next, and loses nothing', () => {
+  const rows = Array.from({ length: 250 }, (_, i) => i);
+  const groups = chunkForBinding(rows, 1, 1); // 99 per group
+  assert.deepEqual(groups.map((g) => g.length), [99, 99, 52]);
+  assert.deepEqual(groups.flat(), rows, 'every row appears once, in order');
+});
+
+test('chunkForBinding on a list that already fits returns one group', () => {
+  assert.deepEqual(chunkForBinding([1, 2, 3], 3), [[1, 2, 3]]);
+});
+
+test('chunkForBinding on an empty list returns no groups, not one empty one', () => {
+  // The callers build one statement per group; an empty group would be an
+  // `IN ()`, which is a syntax error rather than a query that matches nothing.
+  assert.deepEqual(chunkForBinding([], 3), []);
+});
+
+test('chunkForBinding refuses a row that cannot fit beside its fixed parameters', () => {
+  // Silently returning single-row groups would move the same failure to D1,
+  // where the stack no longer names the caller.
+  assert.throws(() => chunkForBinding([1], 60, 50), RangeError);
+  assert.throws(() => chunkForBinding([1], 101), RangeError);
+  assert.throws(() => chunkForBinding([1], 0), RangeError);
+  assert.throws(() => chunkForBinding([1], 1.5), RangeError);
+  assert.throws(() => chunkForBinding([1], 1, -1), RangeError);
 });

@@ -335,6 +335,53 @@ export function clampInt(raw, fallback, min, max) {
   return Math.min(Math.max(n, min), max);
 }
 
+// ---- bound-parameter bounds ----
+
+// D1 refuses any single statement carrying more than 100 bound parameters:
+// `D1_ERROR: too many SQL variables at offset N: SQLITE_ERROR`, where N is a
+// character offset into the SQL text pointing at the 101st `?`. It bounds one
+// statement, not a batch — a DB.batch() of fifty statements binding a hundred
+// each is fine, which is what makes chunking the fix rather than a smaller
+// MAX_BATCH.
+//
+// This is not a theoretical ceiling. MAX_QUERY_ROWS bounds what a route
+// returns; nothing bounded what a route *binds*, and every `IN (...)` list
+// built from a caller-supplied array was one busy week from the cap. Ray hit it
+// on 2026-08-23: a chores-only Commit for one child over seven days resolved 34
+// shared-chore occurrences, three bound parameters each, and D1 rejected the
+// read-back at offset 481 — the 101st `?`. The Commit wrote nothing at all,
+// because that resolution runs before the first assignment statement is built.
+export const D1_MAX_BOUND_PARAMS = 100;
+
+// Splits `rows` into groups small enough that one statement per group stays
+// under the cap. `paramsPerRow` is how many `?`s each row contributes;
+// `fixedParams` is what the statement binds however long the list gets — a
+// timestamp, a child_id.
+//
+// A caller whose fixed cost plus a single row already exceeds the cap has a
+// statement that cannot be chunked into existence. Returning single-row groups
+// would only move the same failure to D1, so it throws here, where the stack
+// still names the caller.
+export function chunkForBinding(rows, paramsPerRow, fixedParams = 0) {
+  if (!Number.isInteger(paramsPerRow) || paramsPerRow < 1) {
+    throw new RangeError('paramsPerRow must be a positive integer.');
+  }
+  if (!Number.isInteger(fixedParams) || fixedParams < 0) {
+    throw new RangeError('fixedParams must be a non-negative integer.');
+  }
+  const perChunk = Math.floor((D1_MAX_BOUND_PARAMS - fixedParams) / paramsPerRow);
+  if (perChunk < 1) {
+    throw new RangeError(
+      `A statement binding ${fixedParams} fixed parameters cannot also carry a row of ${paramsPerRow}.`
+    );
+  }
+  const chunks = [];
+  for (let i = 0; i < rows.length; i += perChunk) {
+    chunks.push(rows.slice(i, i + perChunk));
+  }
+  return chunks;
+}
+
 // ---- pairing codes (§4.3) ----
 
 export const PAIR_CODE_ALPHABET = '23456789ABCDEFGHJKMNPQRSTVWXYZ'; // Crockford32, minus 0/1 too
