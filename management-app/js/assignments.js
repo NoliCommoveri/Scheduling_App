@@ -43,6 +43,14 @@ const Assignments = (() => {
   let batchesExpanded = false;
   const openGroups = new Set();
 
+  // Report 6 / §3.7. Off by default: a range's rescinded rows are history, not
+  // work. They keep being FETCHED (`includeRescinded=1` stays on the query, and
+  // the comment above it still holds — a parent who cannot see what they pulled
+  // back will pull it back again) and are filtered at render instead, which is
+  // what makes the toggle instant with no refetch and keeps the count available
+  // for the label and the summary line.
+  let showRescinded = false;
+
   // Parent-owned columns this view may edit, in form order. Keys are the
   // camelCase names PATCH expects (worker/index.js ASSIGNMENT_PATCH_FIELDS);
   // `column` is the snake_case name a GET row comes back with. The two
@@ -155,14 +163,56 @@ const Assignments = (() => {
     return row.rescinded_at != null;
   }
 
+  // Shared Chores §9, mirrored from reporting.js:83 — a `claim` row a sibling
+  // won. Every row here arrives from /api/assignments?childId=… carrying its
+  // own child_id (§5.2's SELECT *), so the row answers the question with no
+  // child id passed in. Copied rather than imported for the same reason the
+  // date helpers above are: two view modules sharing a runtime file is not
+  // worth it.
+  //
+  // The loser's row staying `pending` is not an oversight — it is what makes
+  // release possible (worker/index.js handleAssignmentClaimRelease). The
+  // Child App planner, the child's Completed list and Management Reporting all
+  // read `claimed_by` and treat such a row as resolved; this view was the only
+  // consumer that never learned to, which is the whole of report 5.
+  function isClaimedElsewhere(row) {
+    return row.claimed_by != null && row.claimed_by !== row.child_id;
+  }
+
+  // The sibling who did it, by name. `render()` already loads the children for
+  // the picker, so this costs nothing extra; an id that resolves to nobody
+  // (an archived child, a roster that has moved on) falls back to the fact
+  // without the name rather than printing a UUID at the parent.
+  function claimantName(row, ctx) {
+    const child = ((ctx && ctx.children) || []).find((c) => c.id === row.claimed_by);
+    return (child && child.name) || null;
+  }
+
+  function claimedLabel(row, ctx) {
+    const name = claimantName(row, ctx);
+    return name ? `${name} did it` : 'claimed by a sibling';
+  }
+
+  // §3.5: a sibling-claimed row is resolved, not outstanding. One line carries
+  // the whole change — the row drops out of every outstanding count (the
+  // summary, the day header, every group header) and out of isEditable /
+  // isRescindable below, which is correct: there is nothing left to edit or
+  // pull back on work a sibling already did.
+  //
+  // Nothing is written to get this. It is true of every row already in D1, so
+  // a chore claimed months ago reads correctly tonight with no migration and
+  // no re-commit. §3.6 records why the auto-rescind Ray asked for is not the
+  // mechanism.
   function isResolved(row) {
-    return status(row) !== 'pending';
+    return status(row) !== 'pending' || isClaimedElsewhere(row);
   }
 
   // Editable and rescindable are the same test today, but they are separate
   // functions because they answer different questions and the server treats
   // them differently: rescind's own SQL re-checks `rescinded_at IS NULL AND
-  // status = 'pending'` (§6.3), so a stale screen can only ever under-act.
+  // status = 'pending'` (§6.3) and, since §3.5a, `(claimed_by IS NULL OR
+  // claimed_by = child_id)` — so a stale screen can only ever under-act, and
+  // the button's count and the server's `Rescinded N` agree on claim rows too.
   // PATCH has no such guard — see the note above saveEdit.
   function isEditable(row) {
     return !isRescinded(row) && !isResolved(row);
@@ -239,7 +289,9 @@ const Assignments = (() => {
       <h1>Assignments</h1>
       <p>Everything committed to a child, straight from the database. Anything
          still outstanding can be edited, moved to another day, or rescinded.
-         Work the child has already completed or waived is shown but locked.</p>
+         Work the child has already completed or waived — or that a sibling
+         claimed on a shared chore — is shown but locked. Rescinded rows are
+         hidden until you ask for them.</p>
       <p class="assign-status" role="status">Loading…</p>
     `;
     const statusEl = root.querySelector('.assign-status');
@@ -287,6 +339,8 @@ const Assignments = (() => {
       </select></label>
       <label>From<input type="date" name="from" value="${dayOffset(-WINDOW_BACK_DAYS)}"></label>
       <label>To<input type="date" name="to" value="${dayOffset(WINDOW_FORWARD_DAYS)}"></label>
+      <label class="assign-toggle"><input type="checkbox" name="showRescinded">
+        <span class="assign-toggle-text">Show rescinded</span></label>
       <button type="submit">Show assignments</button>
       <p class="error" hidden></p>
     `;
@@ -297,6 +351,22 @@ const Assignments = (() => {
     root.appendChild(results);
 
     const errorEl = form.querySelector('.error');
+
+    // The ctx of the render currently on screen, so the Show rescinded box can
+    // reach `redraw()`. Null between a failed load and the next successful one:
+    // there is nothing in hand to redraw from, and the toggle must not resurrect
+    // a stale screen over an error message.
+    let currentCtx = null;
+
+    const showRescindedBox = form.elements.showRescinded;
+    const showRescindedText = form.querySelector('.assign-toggle-text');
+    showRescindedBox.checked = showRescinded;
+    showRescindedBox.addEventListener('change', () => {
+      showRescinded = showRescindedBox.checked;
+      // §3.7: the rows are already in hand, so this is a redraw, never a
+      // refetch — the same helper the batch preview cap and Expand all use.
+      if (currentCtx) currentCtx.redraw();
+    });
 
     // One reload path for every action on the page, so an edit, a single
     // rescind and a batch rescind all land the view in the same state and
@@ -319,9 +389,20 @@ const Assignments = (() => {
         const query = `childId=${encodeURIComponent(childId)}&from=${from}&to=${to}&includeRescinded=1`;
         const data = await Sync.api(`/api/assignments?${query}`);
         const childName = (children.find((c) => c.id === childId) || {}).name || childId;
-        renderResults(results, {
+        const ctx = {
           rows: data.assignments || [],
           childName, from, to, reload,
+          // The roster, for naming the sibling who claimed a shared chore
+          // (§3.5). Already loaded for the picker above.
+          children,
+          // The checkbox's label carries the count, so the number is on screen
+          // whether or not the rows are — see the summary line, which names it
+          // either way.
+          onCounts: ({ rescinded }) => {
+            showRescindedText.textContent = rescinded
+              ? `Show rescinded (${rescinded})`
+              : 'Show rescinded';
+          },
           // Resolved against the child actually on screen (§3.4) — an instance
           // belonging to some other child must not win the name.
           subjects: subjectMap(courses, childId),
@@ -331,8 +412,11 @@ const Assignments = (() => {
           notice: data.truncated
             ? { text: `Showing the first ${data.limit} rows of a longer range — narrow the dates to see the rest.`, error: true }
             : notice,
-        });
+        };
+        currentCtx = ctx;
+        renderResults(results, ctx);
       } catch (err) {
+        currentCtx = null;
         results.innerHTML = '';
         errorEl.hidden = false;
         errorEl.textContent = err.message;
@@ -376,26 +460,46 @@ const Assignments = (() => {
       const empty = document.createElement('p');
       empty.textContent = 'Nothing assigned in this range.';
       container.appendChild(empty);
+      if (ctx.onCounts) ctx.onCounts({ rescinded: 0 });
       return;
     }
 
     const live = rows.filter((r) => !isRescinded(r));
     const outstanding = live.filter((r) => !isResolved(r));
+    // Counted apart from "completed or waived" rather than folded into it,
+    // because they are a different fact and reporting.js has kept them apart
+    // since the Shared Chores build (`claimedBySibling`, reporting.js:97).
+    const claimed = live.filter(isClaimedElsewhere).length;
+    const rescindedCount = rows.length - live.length;
+
+    // §3.7: the summary names the rescinded count whether the rows are on
+    // screen or not. That is what preserves the warning in the reload() comment
+    // above — a parent who cannot see what they already pulled back will pull
+    // it back again — without the struck-through rows in the way.
     const summary = document.createElement('p');
     summary.className = 'assign-summary';
     summary.textContent =
       `${plural(rows.length, 'row', 'rows')} · ${outstanding.length} outstanding · ` +
-      `${live.length - outstanding.length} completed or waived · ` +
-      `${rows.length - live.length} rescinded`;
+      `${live.length - outstanding.length - claimed} completed or waived · ` +
+      (claimed ? `${claimed} done by a sibling · ` : '') +
+      `${rescindedCount} rescinded`;
     container.appendChild(summary);
 
+    if (ctx.onCounts) ctx.onCounts({ rescinded: rescindedCount });
+
+    // The Batches panel keeps every row, rescinded ones included: its whole
+    // purpose is reversing a Commit, and a batch that has already been pulled
+    // back must not silently drop out of the list a parent is about to rescind
+    // from again. §3.7's toggle is about the day list.
     container.appendChild(batchSection(rows, ctx));
+
+    const visible = showRescinded ? rows : live;
 
     // Filled by every groupBox drawn below, then read by the two buttons — so
     // they act on exactly the groups this render produced, not on a stale set
     // left over from another child or another date range.
     ctx.groupKeys = [];
-    const days = daySection(rows, ctx);
+    const days = daySection(visible, ctx);
 
     if (ctx.groupKeys.length) {
       const bar = document.createElement('div');
@@ -422,6 +526,13 @@ const Assignments = (() => {
     }
 
     container.appendChild(days);
+
+    if (visible.length === 0) {
+      const note = document.createElement('p');
+      note.textContent =
+        'Every row in this range has been rescinded — tick “Show rescinded” to see them.';
+      container.appendChild(note);
+    }
   }
 
   // ---- batches (§6.2) ----
@@ -615,10 +726,11 @@ const Assignments = (() => {
     const dates = [...byDate.keys()].sort();
     for (const date of dates) {
       const dayRows = byDate.get(date);
-      // A day with nothing left to show renders no header at all. Nothing
-      // filters rows out yet, so this cannot fire today — it is here because
-      // §3.7's `Show rescinded` toggle is what will make it fire, and an empty
-      // date heading with a count of zero is the failure it has to avoid.
+      // A day with nothing left to show renders no header at all — this is
+      // what §3.7's `Show rescinded` toggle makes fire, and an empty date
+      // heading with a count of zero is the failure it exists to avoid. The
+      // subject, course, chore and event groups below get the same protection
+      // for free: each is built only from the rows it was handed.
       if (dayRows.length === 0) continue;
 
       const day = document.createElement('div');
@@ -658,8 +770,18 @@ const Assignments = (() => {
     return section;
   }
 
-  function statusLabel(row) {
-    if (isRescinded(row) && !isResolved(row)) {
+  function statusLabel(row, ctx) {
+    // §3.5, and it reads FIRST: a losing claim row's `status` is `pending`, and
+    // printing that is precisely the lie report 5 was about. The row is not
+    // outstanding — a sibling did the chore.
+    if (isClaimedElsewhere(row)) {
+      const also = isRescinded(row) ? ' <em>(rescinded)</em>' : '';
+      return `<span class="status-claimed">${escapeHtml(claimedLabel(row, ctx))}</span>${also}`;
+    }
+    // `status(row) === 'pending'` rather than `!isResolved(row)`: isResolved
+    // widened at §3.5 and this branch means what it always meant — the parent
+    // pulled back work the child had not touched.
+    if (isRescinded(row) && status(row) === 'pending') {
       return '<span class="status-rescinded">rescinded</span>';
     }
     // §6.4's race made visible: the child completed it and keeps the reward,
@@ -708,7 +830,7 @@ const Assignments = (() => {
     head.innerHTML = `
       <span class="assign-title">${lessonPrefix(row)}${escapeHtml(row.title)}</span>
       <span class="assign-detail">${escapeHtml(detail)}</span>
-      <span class="assign-state">${statusLabel(row)}</span>
+      <span class="assign-state">${statusLabel(row, ctx)}</span>
     `;
     item.appendChild(head);
 
@@ -764,9 +886,17 @@ const Assignments = (() => {
     } else {
       const why = document.createElement('p');
       why.className = 'assign-why-locked';
+      // A claimed-elsewhere row is locked for a different reason than a
+      // completed one, and saying "already pending by the child" would be
+      // nonsense. The undo pointer matters: it is the only way back, and it is
+      // on the child's device, not here (§3.5a — the parent's rescind
+      // deliberately no longer reaches this row).
       why.textContent = isRescinded(row)
         ? 'Already rescinded — it is out of the child\'s plan and stays on the record.'
-        : `Already ${status(row)} by the child. Completed work is left as it was done.`;
+        : isClaimedElsewhere(row)
+          ? `A sibling claimed this shared chore${claimantName(row, ctx) ? ` — ${claimantName(row, ctx)} did it` : ''}. ` +
+            'There is nothing to edit or pull back; undo the claim on their device if it was a mis-tap.'
+          : `Already ${status(row)} by the child. Completed work is left as it was done.`;
       item.appendChild(actions);
       item.appendChild(why);
     }
@@ -898,16 +1028,31 @@ const Assignments = (() => {
 
   async function rescindBatch(group, ctx) {
     const rescindable = group.rows.filter(isRescindable);
-    const locked = group.rows.filter((r) => !isRescinded(r) && isResolved(r));
+    // Claimed-elsewhere rows are counted apart from completed ones: they are
+    // locked for a different reason, and since §3.5a the server spares them
+    // explicitly rather than as a side effect of the `status = 'pending'`
+    // clause. Saying so is what keeps this dialog's promise true — the count
+    // above, this text and the server's `Rescinded N` now describe one set.
+    const claimed = group.rows.filter((r) => !isRescinded(r) && isClaimedElsewhere(r));
+    const locked = group.rows.filter(
+      (r) => !isRescinded(r) && isResolved(r) && !isClaimedElsewhere(r)
+    );
 
     const lockedNote = locked.length === 0
       ? ''
       : `\n\n${plural(locked.length, 'item', 'items')} in this batch ${locked.length === 1 ? 'has' : 'have'} ` +
         'already been completed or waived. Those are left exactly as they are, and the child keeps everything earned.';
 
+    const claimedNote = claimed.length === 0
+      ? ''
+      : `\n\n${plural(claimed.length, 'shared chore', 'shared chores')} in this batch ` +
+        `${claimed.length === 1 ? 'was' : 'were'} claimed by a sibling. Those are left alone — ` +
+        'rescinding them would mean undoing the claim could never give the chore back to both children.';
+
     const ok = window.confirm(
       `Rescind ${plural(rescindable.length, 'outstanding item', 'outstanding items')} from this batch?` +
       lockedNote +
+      claimedNote +
       '\n\nRescinded rows come off the child\'s plan on their next sync and stay on the record.'
     );
     if (!ok) return;
@@ -917,12 +1062,13 @@ const Assignments = (() => {
         method: 'POST',
         body: { batchId: group.batchId },
       });
-      const left = locked.length === 0 ? '' : ` ${plural(locked.length, 'completed item', 'completed items')} left alone.`;
+      const untouched = locked.length + claimed.length;
+      const left = untouched === 0 ? '' : ` ${plural(untouched, 'resolved item', 'resolved items')} left alone.`;
       await ctx.reload({ text: `Rescinded ${plural(result.rescinded, 'row', 'rows')}.${left}` });
     } catch (err) {
       await ctx.reload({ text: err.message, error: true });
     }
   }
 
-  return { render, isEditable, isRescindable, buildPatch, groupByBatch };
+  return { render, isEditable, isRescindable, isClaimedElsewhere, buildPatch, groupByBatch };
 })();

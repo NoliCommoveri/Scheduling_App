@@ -153,8 +153,8 @@ Lesson titles appear on the review rows and the pending-remainder rows; the Assi
 moves behind a collapse; and the parent gets a **standing subject order**, stored as one record in
 `meta` and mirrored to D1 like any other authored record. Authored 2026-08-25 from Ray's four
 reports, **amended the same day** by a design review that read it against the shipped code (slice
-§8, six findings), and **built from Phase 1 onward the same day** — Phases 1, 2 and 3 are in, 3b
-and 4 are not.
+§8, six findings), and **built from Phase 1 onward the same day** — Phases 1, 2, 3 and 3b are in,
+Phase 4 is not.
 
 The load-bearing part is not the grouping — it is that a day's Activities get a **canonical order**
 for the first time (subject → course → walk position). Today the order is whatever the build
@@ -179,7 +179,9 @@ permanently. This is exactly the state slice §3.6 argues an auto-rescind must n
 today by a different door. Ray, in-session 2026-08-25: fix it, do not defer it. The rescind
 statement gains `(claimed_by IS NULL OR claimed_by = child_id)` — the SQL spelling of Reporting's
 `isClaimedElsewhere` — on all three of its selector branches, and it ships with Phase 3b (slice
-§3.5a; Revamp §6.3 and Shared Chores §13.7 amended).
+§3.5a; Revamp §6.3 and Shared Chores §13.7 amended). **Shipped 2026-08-25** as the first of Phase
+3b's two commits, ahead of its client half — the stranding it prevents was live and waited on
+nothing else in the slice.
 
 **Still no `CLAUDE.md` amendment.** Nothing is narrowed or widened in the sense §V.A means: no
 migration, no new route, no new table, no credential change, no cross-app sharing, and no
@@ -194,7 +196,7 @@ the standing order needs neither a store nor a schema change.
 | **1** | `subject-order-core.js` + `node --test` file; `meta['subjectOrder']`; Settings → Subject order; **the three views that already group by subject adopt it** (Course Templates, Assigned Courses, Weekly — absorbed from the old optional Phase 4 by the review, slice §1.6). | ~1.25 h | ✅ Done 2026-08-25 |
 | **2** | Generate: the canonical day sort, subject/course/chore/event groups, Expand-all/Collapse-all, Lesson titles on review and remainder rows. Reports 1–3. | ~1.5–2 h | ✅ Done 2026-08-25 |
 | **3** | Assignments: batches behind a collapse with a preview cap, subject/course/chore/event groups, Lesson titles from `payload`. Report 4. | ~1–1.5 h | ✅ Done 2026-08-25 |
-| **3b** | Assignments: a sibling-claimed chore reads as resolved (`isClaimedElsewhere` folded into `isResolved`, a `Sam did it` label); rescinded rows hidden behind a checkbox that carries their count. **Plus the one Worker change** — the rescind claim guard (§3.5a), its own scope and its own commit. Reports 5–6. | ~1 h | ⬜ |
+| **3b** | Assignments: a sibling-claimed chore reads as resolved (`isClaimedElsewhere` folded into `isResolved`, a `Sam did it` label); rescinded rows hidden behind a checkbox that carries their count. **Plus the one Worker change** — the rescind claim guard (§3.5a), its own scope and its own commit. Reports 5–6. | ~1 h | ✅ Done 2026-08-25 |
 | **4** | **Child App scope, a separate session.** `byCourseThenLesson` and `subjectsView` sort before grouping, so the child's course sections follow the parent's order instead of assignment-id order (slice §2.7; Child Module 03 FR-13). | ~30 min | ⬜ |
 
 **The one place the slice does not do what was asked.** Ray asked for the losing rows of a shared

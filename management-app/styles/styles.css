@@ -1176,6 +1176,12 @@ button.secondary {
 .status-pending { color: #555; }
 .status-rescinded { color: var(--color-error); text-decoration: line-through; }
 
+/* A shared chore a sibling won (TDS_Slice_Subject_Order_Grouped_Review.md
+   §3.5). Resolved, so it reads like .status-complete rather than .status-pending
+   — but not the same green: nobody on this row did the work, and the row is
+   kept on screen because it is the record of who did. */
+.status-claimed { color: #4a6d8a; font-weight: 600; }
+
 /* ---- Assignments view (Revamp §9) ----
    Reuses .report-controls for the child/date-range bar and .day-section for the
    per-day grouping, so this view reads as the same app as Assign and Reporting
@@ -1326,6 +1332,16 @@ button.secondary {
 
 .assign-child-notes, .assign-why-locked {
   margin: 0.35rem 0 0;
+}
+
+/* The Show rescinded checkbox (§3.7) sits in the child/date control bar, where
+   `.report-controls label` stacks its label above its field. A checkbox and its
+   text belong on one line instead. */
+.report-controls .assign-toggle {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.35rem;
+  align-self: center;
 }
 
 /* Child-owned columns are never editable here (§4.2), so they are marked as

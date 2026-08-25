@@ -1400,6 +1400,41 @@ async function handleAssignmentsRescind(request, env) {
     return json({ error: 'Provide batchId, ids[], or childId with from/to.' }, 400);
   }
 
+  // TDS_Slice_Subject_Order_Grouped_Review.md §3.5a — the claim guard.
+  //
+  // A `claim` row a sibling *lost* stays `pending` by construction: the
+  // arbitration writes `claimed_by` to every live row in the group but
+  // `status = 'complete'` to the winner's row only (Shared Chores §5.4, and
+  // handleAssignmentClaim below). Without this clause every selector here
+  // sweeps that row up, and the sweep strands it — release is
+  // `WHERE claim_group = ?2 AND claimed_by = ?3 AND rescinded_at IS NULL`
+  // (handleAssignmentClaimRelease), which skips a rescinded row forever. So
+  // undoing the claim afterwards returns the chore to the winner alone, when
+  // it was open to either child. §3.6 argues at length that a losing row must
+  // not be rescinded; this is the one shipped path that was doing it anyway.
+  //
+  // Not a bare `claimed_by IS NULL`: that would also protect the *winner's*
+  // row, which carries `claimed_by = child_id`. A winner's row is complete, so
+  // the default status clause already excludes it — but not under
+  // `includeCompleted` (§6.3), which is a separate, separately-confirmed parent
+  // action about completed work and has nothing to do with claims. The clause
+  // below is the exact negation of `isClaimedElsewhere`, so this file,
+  // `reporting.js:83` and `assignments.js` all test one rule, written the same
+  // way in three places.
+  //
+  // On the shared clause, not the `batchId` branch: all three selectors get it.
+  // The Assignments view stops offering single-row Rescind on such a row, so
+  // the `ids[]` branch should never carry one — but a guard that holds only on
+  // the path the UI happens to take today is the kind that stops holding the
+  // next time the UI changes.
+  //
+  // This NARROWS what a parent credential may rescind, by one row class. It
+  // widens nothing: no column changes hands, no route is added or removed, no
+  // credential class gains anything, and `rescinded` still counts rows actually
+  // changed — which is what puts the client's "Rescind 5 rows" and the server's
+  // "Rescinded 7" back into agreement.
+  const claimClause = `(claimed_by IS NULL OR claimed_by = child_id)`;
+
   // One batch, so a multi-statement rescind is still the one transaction a
   // single statement was (§3.7.4). A partial rescind is not a state §6.3 has an
   // answer for — the parent asked for a set of rows to come back, not a prefix
@@ -1407,7 +1442,7 @@ async function handleAssignmentsRescind(request, env) {
   const results = await env.DB.batch(selectors.map(({ where, params }) =>
     env.DB.prepare(
       `UPDATE assignments SET rescinded_at = ?1, updated_at = ?1, updated_by = 'parent'
-        WHERE rescinded_at IS NULL AND ${statusClause} AND ${where}`
+        WHERE rescinded_at IS NULL AND ${statusClause} AND ${claimClause} AND ${where}`
     ).bind(now, ...params)
   ));
 

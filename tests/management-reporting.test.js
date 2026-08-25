@@ -218,6 +218,38 @@ test('rescindable matches the server\'s own guard', () => {
   assert.equal(Assignments.isRescindable(row({ rescinded_at: 5 })), false);
 });
 
+// §3.5: the row already carries the fact — `claimed_by` is written to every
+// live row in the group the instant the claim is arbitrated. This view was the
+// last consumer that never read it.
+test('a sibling-claimed row is claimed-elsewhere; the winner\'s own row is not', () => {
+  assert.equal(
+    Assignments.isClaimedElsewhere(row({ child_id: 'CH-2', claimed_by: 'CH-1' })),
+    true
+  );
+  assert.equal(
+    Assignments.isClaimedElsewhere(row({ child_id: 'CH-1', claimed_by: 'CH-1' })),
+    false
+  );
+  // Nobody claimed it: a shared chore neither child did is still outstanding
+  // on both rows (§7.8).
+  assert.equal(Assignments.isClaimedElsewhere(row({ child_id: 'CH-2' })), false);
+});
+
+test('a sibling-claimed row is neither editable nor rescindable', () => {
+  // There is nothing left to edit or pull back on work a sibling already did —
+  // and since §3.5a the server refuses it too, so the button count and the
+  // `Rescinded N` response agree.
+  const lost = row({ child_id: 'CH-2', claimed_by: 'CH-1', status: 'pending' });
+  assert.equal(Assignments.isEditable(lost), false);
+  assert.equal(Assignments.isRescindable(lost), false);
+});
+
+test('an unclaimed shared chore stays editable and rescindable', () => {
+  const open = row({ child_id: 'CH-2', claimed_by: null, status: 'pending' });
+  assert.equal(Assignments.isEditable(open), true);
+  assert.equal(Assignments.isRescindable(open), true);
+});
+
 test('groupByBatch orders batches newest first', () => {
   const groups = Assignments.groupByBatch([
     row({ id: '1', batch_id: 'old', assigned_at: 1000 }),

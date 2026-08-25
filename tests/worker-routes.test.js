@@ -675,6 +675,51 @@ test('rescind with includeCompleted drops the status guard', async () => {
   assert.ok(!update.sql.includes("status = 'pending'"));
 });
 
+// §3.5a: a losing claim row is `pending` by construction, so every selector
+// here would sweep it up — and a swept row can never be released, because
+// release requires `rescinded_at IS NULL`. The guard is the exact negation of
+// `isClaimedElsewhere`, which is why it is not a bare `claimed_by IS NULL`.
+test('§3.5a: every rescind selector carries the claim guard', async () => {
+  const bodies = [
+    { batchId: 'B1' },
+    { ids: ['A-1', 'A-2'] },
+    { childId: 'CH-1', from: '2026-08-01', to: '2026-08-31' },
+  ];
+  for (const body of bodies) {
+    const { env, statements } = makeEnv();
+    await call(env, '/api/assignments/rescind', { method: 'POST', token: PARENT_TOKEN, body });
+    const update = statements.find((s) => s.sql.startsWith('UPDATE assignments'));
+    assert.ok(
+      update.sql.includes('(claimed_by IS NULL OR claimed_by = child_id)'),
+      `missing claim guard for ${JSON.stringify(body)}`
+    );
+  }
+});
+
+test('§3.5a: the claim guard survives includeCompleted, so a loser is still spared', async () => {
+  // The winner's row carries `claimed_by = child_id` and is deliberately still
+  // reachable here — includeCompleted is a parent action about completed work.
+  const { env, statements } = makeEnv();
+  await call(env, '/api/assignments/rescind', {
+    method: 'POST', token: PARENT_TOKEN, body: { batchId: 'B1', includeCompleted: true },
+  });
+  const update = statements.find((s) => s.sql.startsWith('UPDATE assignments'));
+  assert.ok(!update.sql.includes("status = 'pending'"));
+  assert.ok(update.sql.includes('(claimed_by IS NULL OR claimed_by = child_id)'));
+});
+
+test('§3.5a: the guard binds no parameters — the selector numbering is unmoved', async () => {
+  const { env, statements } = makeEnv();
+  await call(env, '/api/assignments/rescind', {
+    method: 'POST', token: PARENT_TOKEN,
+    body: { childId: 'CH-1', from: '2026-08-01', to: '2026-08-31' },
+  });
+  const update = statements.find((s) => s.sql.startsWith('UPDATE assignments'));
+  const highest = Math.max(...[...update.sql.matchAll(/\?(\d+)/g)].map((m) => Number(m[1])));
+  assert.equal(update.args.length, highest, 'one bound value per placeholder index');
+  assert.deepEqual(update.args.slice(1), ['CH-1', '2026-08-01', '2026-08-31']);
+});
+
 test('rescind needs a selector', async () => {
   const { env } = makeEnv();
   const res = await call(env, '/api/assignments/rescind', {
