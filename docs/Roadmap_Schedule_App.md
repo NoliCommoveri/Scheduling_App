@@ -147,7 +147,8 @@ configurable block hours; more than four columns; a course-instance id on activi
 resize; streaks from the wall.
 
 **`TDS_Slice_Subject_Order_Grouped_Review.md`** — the Generate and Assignments screens stop
-rendering a day as one flat list. A day becomes subject → course → items, each level collapsible;
+rendering a day as one flat list, and the Assignments tab starts telling the truth about what is
+still outstanding. A day becomes subject → course → items, each level collapsible;
 Lesson titles appear on the review rows and the pending-remainder rows; the Assignments batch list
 moves behind a collapse; and the parent gets a **standing subject order**, stored as one record in
 `meta` and mirrored to D1 like any other authored record. Authored 2026-08-25 from Ray's four
@@ -171,13 +172,29 @@ mirrored, so the standing order needs neither a store nor a schema change.
 | **1** | `subject-order-core.js` + `node --test` file; `meta['subjectOrder']`; Settings → Subject order. Inert until Phase 2. | ~1 h | ⬜ |
 | **2** | Generate: the canonical day sort, subject/course/chore/event groups, Expand-all/Collapse-all, Lesson titles on review and remainder rows. Reports 1–3. | ~1.5–2 h | ⬜ |
 | **3** | Assignments: batches behind a collapse with a preview cap, subject/course/chore/event groups, Lesson titles from `payload`. Report 4. | ~1–1.5 h | ⬜ |
+| **3b** | Assignments, read-side only: a sibling-claimed chore reads as resolved (`isClaimedElsewhere` folded into `isResolved`, a `Sam did it` label); rescinded rows hidden behind a checkbox that carries their count. Reports 5–6. | ~45 min | ⬜ |
 | **4** | *Optional* — the other three subject-grouped views (Course Templates, Assigned Courses, Weekly) adopt the standing order. One line each. | ~20 min | ⬜ Ray's call |
 
-**Two decisions flagged rather than assumed** (slice §7.2, §2.6): groups default **open** on
+**The one place the slice does not do what was asked.** Ray asked for the losing rows of a shared
+"either kid can claim" chore to **auto-rescind** once the day passed, so they stop reading as
+assigned-but-incomplete. They stop reading that way — but from `claimed_by`, which the claim
+arbitration already writes to every row in the group, and which the Child App planner, the Child
+App's Completed list and Reporting all already read. The Assignments view is the only consumer that
+never learned the rule. Rescinding instead would misreport the outcome (Reporting buckets exactly
+that row shape as "the parent pulled it"), would break release/undo by leaving the sibling's row
+unreleasable, and would hang a permanent state change on a day boundary three clocks disagree
+about. Slice §3.6 carries the argument and the `[DECISION]`; §7.8 records what a real "missed"
+state would take, if the eternally-pending backlog ever becomes the complaint.
+
+**Two more decisions flagged rather than assumed** (slice §7.2, §2.6): groups default **open** on
 Generate and **closed** on Assignments, one constant each; and a day committed across two passes
 can still carry a `sort_order` that disagrees with the review screen, because Revamp §6.6 leaves
 live rows' numbers alone — the fix, if it is ever wanted, is Commit renumbering live rows, which
 this slice deliberately does not do.
+
+**Closes half of** `TDS_Slice_Shared_Chores.md` §13.7 — a parent-side view of who claimed what.
+The Assignments tab will name the claimant on the losing row; a claim *history* for a chore across
+a week still has no screen. §13.2 (rescinding a shared occurrence in one action) is untouched.
 
 **Does not close** `TDS_Slice_Child_Feedback_Loop.md` §11.1 (subject as a grouping level in the
 Child App). That item needs an `assignments.subject` column; these two screens need none, because

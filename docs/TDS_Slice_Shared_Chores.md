@@ -1011,6 +1011,12 @@ Run against a real database from the browser, per `CLAUDE.md` §IV.C.
    Whether authoring should flip it back to `each` is unresolved.
 7. **A parent-side view of who claimed what.** Reporting counts it (§9); there is no screen that
    shows a parent the claim history for a chore over a week.
+   *(Partly answered 2026-08-25 by `TDS_Slice_Subject_Order_Grouped_Review.md` §3.5 — design only,
+   unbuilt. The Assignments view stops treating a losing row as outstanding and names the claimant
+   on it, reusing §9's `isClaimedElsewhere` predicate. Ray had asked for the losing rows to
+   auto-rescind after the day passed; §3.6 declines, because a rescind would misreport the outcome
+   in §9's own buckets and would leave the sibling's row unreleasable through §5.5. A claim
+   **history** across a week still has no screen, and that half stays open.)*
 8. **Family Event cascade delete** (`children.js:115`) loses a whole event when one of its
    participants is deleted — the defect §4.4 declines to copy. It belongs to Module 07 and wants
    its own fix.

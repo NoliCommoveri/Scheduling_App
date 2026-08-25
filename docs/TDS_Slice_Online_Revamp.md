@@ -1005,8 +1005,11 @@ indefinitely. Required change: cache-first for the precached shell, **network-on
 - New **Assignments** view: browse by child and date range, rescind a batch, edit or move
   a single assignment.
   *(Presentation amended 2026-08-25 by `TDS_Slice_Subject_Order_Grouped_Review.md` §3 — the batch
-  list moves behind a collapse, and a day's rows group subject → course with chores and events in
-  groups of their own. Design only, unbuilt; no route, column or write path changes.)*
+  list moves behind a collapse; a day's rows group subject → course with chores and events in
+  groups of their own; a chore a sibling claimed reads as resolved rather than outstanding (§3.5,
+  from `claimed_by` — no sweep and no auto-rescind, §3.6); and rescinded rows are hidden behind a
+  checkbox, still fetched so the count stays honest (§3.7). Design only, unbuilt; no route, column
+  or write path changes — §3.5 and §3.7 are read-side only.)*
 - New **Reporting** reads `GET /api/assignments` and `GET /api/rewards` directly. Module 10
   keeps its analysis; only its input changes.
 - Module 09 (Completion Import) is deleted, not ported.

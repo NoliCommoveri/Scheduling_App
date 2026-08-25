@@ -1,4 +1,4 @@
-# TDS Slice — Subject Order & Grouped Review (Generate + Assignments)
+# TDS Slice — Subject Order, Grouped Review & Assignment Visibility (Generate + Assignments)
 
 **Status:** Design only — authored 2026-08-25, **unbuilt**. No code in this commit.
 **Scope:** Management App only. Files: `management-app/js/subject-order-core.js` (new),
@@ -11,6 +11,9 @@ change, no IndexedDB version bump.
 `SRS_Management_Module_11_Settings_Backup.md` (new FR-9),
 `TDS_Slice_Online_Revamp.md` §9 (the Assignments view's presentation).
 **Related:** `TDS_Slice_Generation_Scope.md` (FR-1a passes, FR-14 `sortOrder` bands),
+`TDS_Slice_Shared_Chores.md` §5.4/§9/§13.7 (the claim arbitration, Reporting's `isClaimedElsewhere`,
+and the missing parent-side view of who claimed what — §3.5 closes the half of §13.7 that is a
+defect and leaves the claim-history screen open),
 `TDS_Slice_Child_Feedback_Loop.md` §0.2 / §11.1 (subject as a grouping level — **this slice does
 not close that item**; see §1.4).
 
@@ -42,13 +45,17 @@ slice has a visible effect past the screen.
 stays fixed, and the `sortOrder` bands (0 / 1000 / 2000) are untouched. Grouping happens
 *within* the School band.
 
+**It is not an auto-rescind, a sweep, or a scheduled job.** Report 5 asked for one; §3.6 argues
+against it and §3.5 delivers the outcome from data the claim arbitration already writes. Nothing in
+this slice writes to an `assignments` row at all outside Commit's existing path.
+
 **It is not a Child App feature.** The child already groups its day by course and then by
 lesson (`child-app/js/planner-core.js:132-141`) and already renders `lessonTitle` under the card
 title (`planner-ui.js:860`). The parent's two screens are the ones that never learned to.
 
-### 0.1 The four reports, and what actually causes each
+### 0.1 The six reports, and what actually causes each
 
-Ray, in-session 2026-08-25:
+Ray, in-session 2026-08-25 — four on the screens, then two on what the Assignments tab shows:
 
 | # | Report | Cause | Fixed in |
 |---|---|---|---|
@@ -56,6 +63,12 @@ Ray, in-session 2026-08-25:
 | 2 | "Pulling forward sticks new assignments at the bottom instead of with the rest of the course." | `pullForward` ends in `session.days.get(toDate).activities.push(item)` (`packet.js:533`). Array position *is* the display order, so "append" *is* "bottom". `relocate` (`:481`) has the identical behaviour and the same fix. | §2.5 |
 | 3 | "I need to see the lesson title — 'Practice level 3' isn't enough." | The review row prints `activityType · activity.title` only (`packet.js:1191`). The lesson title is already in hand — `session.maps.lessonTitle` is built at Propose (`:234`) and rides into `payload.lessonTitle` at Commit (`:579-580`) — it simply is never shown to the parent who is deciding. The pending-remainder rows (`:1113-1118`), where Pull-forward is actually chosen, are worse off for the same reason. | §2.4 |
 | 4 | "The Assignments page needs help too. The batch list is getting long — hide it behind a collapse, I rarely interact with it. Same deal with course expanders, and chores in their own expander." | `batchSection` renders every batch in the range as an always-open `<ul>` (`assignments.js:319-364`), and `daySection` renders a day as one flat `<ul>` sorted by `sort_order` (`:369-399`). | §3 |
+| 5 | "I have a lot of 'either kid can claim' chores. I need it to auto-rescind or something from the kids who didn't complete after the day passes (to allow for undo during the same day), instead of still displaying like assigned but incomplete in the Assignments tab." | The claim arbitration writes `claimed_by` to every row in the group but `status = 'complete'` to the winner's row only (`worker/index.js:2513-2557`) — the loser's row stays `pending`, which is what makes undo possible. The Child App planner, the Child App's Completed list and Management Reporting all read `claimed_by` and treat such a row as resolved; the Assignments view is the only consumer that never learned to, because `isResolved` tests `status` alone (`assignments.js:87-89`). | §3.5, §3.6 |
+| 6 | "Rescinded rows should be hidden from view unless I explicitly check to see them." | `reload()` hardcodes `includeRescinded=1` (`assignments.js:232`) and there is no control over it. | §3.7 |
+
+Reports 5 and 6 are both about the same screen telling the truth about what is outstanding, and
+report 5 needs **no write at all** — see §3.5, which is the one place in this slice where the
+mechanism Ray named is not the mechanism proposed, and §3.6, which says why.
 
 Reports 1 and 2 are the same defect seen from two angles: **nothing defines a canonical order for
 a day's activities**, so the order is whatever the build sequence happened to produce. §2.2 gives
@@ -73,6 +86,7 @@ that order a definition, and both symptoms fall out of it.
 | No CLI (§0) | Nothing here is operable from anywhere but the browser. |
 | Free tier (§0) | No inference, no new storage surface, no new request. One extra `Storage.getAll('courses')` per Assignments render, against IndexedDB. |
 | Offline posture (§III.A) | Unchanged. The subject order is a local write that drains through the outbox like every other authored record. |
+| Shared-chore claim semantics (`TDS_Slice_Shared_Chores.md` §5.4/§5.5) | Preserved exactly. §3.5 is read-side only: `claimed_by` is never written, cleared, or swept, so the arbitration and the release/undo path behave identically before and after. §3.6 records why the auto-rescind that was asked for would break release. |
 | Testing convention (§I.B) | The comparator lands in a DOM-free, IO-free `*-core.js` with a `node --test` file beside the five that exist. The view code stays manual-check territory, as it is today. |
 | CLAUDE.md amendment needed? | **No.** Nothing is narrowed, nothing widened, no new table, no new credential class, no new route, no departure from a locked decision. §5 of this slice notes the roadmap entry instead. |
 
@@ -395,6 +409,126 @@ old name in the header.
 
 ---
 
+### 3.5 A sibling-claimed chore is resolved, not outstanding (report 5)
+
+**The report.** Ray has a lot of "either kid can claim" chores. When Sam does one, Ellie's row
+keeps showing on the Assignments tab as assigned-but-incomplete, forever. He asked for an
+auto-rescind of the losers' rows once the day has passed, with the day's grace kept so an undo
+still works.
+
+**What is actually happening.** `handleAssignmentClaim` writes `claimed_by`/`claimed_at` to
+*every* live row in the claim group — the winner's and the loser's, in one statement, so the loser
+learns the outcome at the same instant — and then writes `status = 'complete'` to the **winner's
+row only** (`worker/index.js:2513-2557`). The loser's row staying `pending` is not an oversight:
+it is what makes release possible. Undo clears the group's claim and both rows go back to being
+available (`:2576-2590`).
+
+**Every other screen already knows this. This one never learned it.**
+
+| Consumer | What it does with a losing row | Where |
+|---|---|---|
+| Child App planner | Not plannable — it leaves the sibling's plan entirely | `child-app/js/assignment-core.js:85-87` |
+| Child App "Completed today" | Listed as claimed-elsewhere, read straight off `claimed_by` | `child-app/js/planner-ui.js:781-788` |
+| Management Reporting | `isClaimedElsewhere` — counted in `claimedBySibling`, excluded from the completion-rate denominator, exported to CSV as `claimed-by-sibling` | `reporting.js:83-85`, `:97`, `:174` |
+| **Management Assignments** | **Nothing. `isResolved` tests `status` alone (`assignments.js:87-89`), so a losing row is outstanding, editable and rescindable like any pending row.** | — |
+
+So the fact Ray wants is already on the row, written the instant the claim was arbitrated. The
+defect is one predicate missing from one view.
+
+**The fix.** `assignments.js` gains the same predicate `reporting.js` has had since the Shared
+Chores build:
+
+```js
+// Shared Chores §9, mirrored from reporting.js:83 — a `claim` row a sibling
+// won. Every row here arrives from /api/assignments?childId=… carrying its own
+// child_id (§5.2's SELECT *), so the row answers the question with no child id
+// passed in. Copied rather than imported for the same reason the date helpers
+// above are: two view modules sharing a runtime file is not worth it.
+function isClaimedElsewhere(row) {
+  return row.claimed_by != null && row.claimed_by !== row.child_id;
+}
+```
+
+and then:
+
+- `isResolved(row)` becomes `status(row) !== 'pending' || isClaimedElsewhere(row)`. That one line
+  carries the whole change: the row drops out of every `outstanding` count (the summary line, the
+  day header, and §3.2's new group headers), and out of `isEditable`/`isRescindable`, which is
+  correct — there is nothing left to edit or pull back on work a sibling already did.
+- `statusLabel(row)` renders **`Sam did it`** instead of `pending`, resolved through the
+  `children` list `render()` already loads (`assignments.js:183-190`), passed down on `ctx`
+  alongside `childName`. An unresolvable id falls back to `claimed by a sibling`.
+- The row renders in the muted, locked style completed rows already use, inside its day's
+  **Chores** group (§3.2).
+
+**Nothing is written, and it works on every row already in D1.** No migration, no Worker change,
+no new route, no sweep, no scheduler, no `updated_at` touched. A range Ray looks at tonight will
+be right for chores claimed months ago.
+
+### 3.6 Why not the auto-rescind Ray asked for
+
+His instinct — that the losing rows must stop reading as outstanding, and that undo must survive —
+is exactly right, and both are delivered by §3.5. The *mechanism* is the part worth arguing with,
+in four places:
+
+1. **`rescinded_at` would be a false record.** Rescind means the parent pulled the work back
+   (CLAUDE.md §III.C, Revamp §6.3). Nobody pulled these back; the sibling did them. The lie would
+   not stay cosmetic: `reporting.js:65-67` buckets exactly `rescinded_at != null && status ==
+   'pending'` as **rescinded**, which is precisely the shape a swept loser row would have. Every
+   claimed chore would silently move out of `claimedBySibling` — the count that exists to describe
+   this — and into "the parent pulled it", quietly wrecking the one report that had this right.
+2. **It would break undo, in the worst possible direction.** Release is
+   `WHERE claim_group = ?2 AND claimed_by = ?3 AND rescinded_at IS NULL` (`worker/index.js:2576-2581`).
+   A rescinded loser row does not match, so it is skipped: the winner's row returns to `pending`
+   and the sibling's stays rescinded and off their plan **permanently**. The undo would hand the
+   chore back to nobody. The same-day grace narrows the window but does not close it — a parent
+   undoing a mis-tap on Tuesday for Monday's chore hits it.
+3. **"After the day passes" is not a fact this system has.** Three clocks disagree about it: the
+   Child App's device-local date (Feedback Loop §7), the wall's own rollover (Wall Display §5.3),
+   and the Worker's UTC `Date.now()`. Putting a permanent, unattended state change on a boundary
+   none of them agree on is how a chore disappears at 7pm for a household that is an hour off UTC.
+4. **It needs machinery that does not exist, to do work the data already did.** A sweep is either
+   a Cloudflare Cron Trigger — a new deploy surface and an unattended write path nobody is
+   watching — or a lazy sweep on a read route, i.e. a `GET` that writes. Both are real
+   infrastructure. Both are for a question `claimed_by` answered the moment the claim landed.
+
+Recorded as a decision because Ray asked for the mechanism by name:
+
+```
+[DECISION] How a losing claim row stops reading as outstanding
+Decided: presentation, from `claimed_by` — not an auto-rescind and not a scheduled sweep.
+Rationale: the fact is already on the row and every other screen already reads it. Rescinding
+  would misreport the outcome in Reporting, would break release/undo by making the sibling's
+  row unreleasable, would depend on a day boundary three clocks disagree about, and would need
+  a cron or a writing GET to do it. The presentation fix needs no write, no route and no
+  migration, and it corrects rows committed months ago.
+Locked for: this slice. Reopen only if a real "missed / expired" lifecycle state is wanted for
+  every assignment kind (§7.8), which is a different feature with a different owner.
+```
+
+### 3.7 Rescinded rows hidden by default (report 6)
+
+`reload()` hardcodes `includeRescinded=1` (`assignments.js:232`), and the comment above it argues
+the case: *"a parent looking at a range needs to see what they already pulled back, or they will
+pull it back again and wonder why nothing changed."* That reasoning survives — so the rows keep
+being **fetched**, and are filtered at render:
+
+- A **`Show rescinded`** checkbox joins the child/date controls, **off by default**, its label
+  carrying the count: `Show rescinded (12)`. State is module-level, so it survives the full
+  rebuild `reload()` does on every action.
+- The summary line always names the number, ticked or not — that is what preserves the original
+  comment's warning without the rows on screen.
+- Ticked, they render struck-through and inert exactly as they do today. Nothing else changes.
+- A day, subject, course or chore group whose rows are all hidden does not render at all. No empty
+  headers, no count of zero.
+
+**Why filter at render rather than dropping the query parameter.** One request either way; this
+one keeps the count available for the label and the summary, makes the toggle instant with no
+refetch, and keeps a single code path through `renderResults`. The cost is that rescinded rows
+still consume the `MAX_QUERY_ROWS` cap, so a range with hundreds of them could truncate sooner
+than it looks like it should — already covered by the truncation notice the view shows
+(`assignments.js:238-242`), and the narrower date range that notice asks for is the same fix.
+
 ## 4. CSS
 
 No new layout system. Two new class pairs following the `.course-subject-group` convention
@@ -421,6 +555,10 @@ gate is why this is not one build.
 | **1** | `subject-order-core.js` + its `node --test` file; `meta['subjectOrder']`; the Settings → Subject order editor; the script tag. Nothing consumes the order yet. | ~1 h |
 | **2** | Generate: `sortDayActivities`, the subject/course/chore/event groups, Expand-all/Collapse-all, the lesson-title prefix on review rows **and** remainder rows, remainder boxes ordered by subject. Reports 1, 2, 3. | ~1.5–2 h |
 | **3** | Assignments: batches behind a collapse with the preview cap; subject/course/chore/event groups; the `payload.lessonTitle` prefix; the local `course_name → subject` map. Report 4. | ~1–1.5 h |
+| **3b** | Assignments, read-side only: `isClaimedElsewhere` folded into `isResolved`, the `Sam did it` label, and the `Show rescinded` checkbox with its count. Reports 5 and 6. | ~45 min |
+
+Phase 3b is independent of everything above it and is the cheapest fix in the slice — if the
+Assignments tab is what is hurting most, land 3b first and the rest after.
 
 Phase 1 stands alone and is worth landing on its own — the order is inert until Phase 2, and
 Ray can enter it while Phase 2 is being built. Phase 3 depends only on Phase 1.
@@ -469,6 +607,25 @@ subjects, two courses in one subject, and chores on most days.
     name: both headers appear, the old one under `No subject`, and nothing errors.
 21. Edit a row's Sort order and save — unchanged behaviour, and the row re-sorts within its
     course group.
+
+**Phase 3b**
+22. Have one child claim a shared chore from the Child App. In Assignments, the sibling's row for
+    that occurrence reads `<name> did it`, is not counted in the day's or the Chores group's
+    outstanding count, is not counted in the summary's outstanding total, and offers no Edit or
+    Rescind.
+23. The winner's own row is unchanged — complete, with its reward intact.
+24. Undo the claim from the Child App. Both rows return to outstanding in Assignments, and the
+    chore is available to either child again. **This must work for a claim made on an earlier
+    day, not just today.**
+25. Look at a range containing shared chores claimed weeks ago, committed before this build: they
+    read correctly with no migration and no re-commit.
+26. A shared chore **nobody** claimed still shows as outstanding on both children's rows (§7.8).
+27. Assignments opens with no rescinded rows visible; the summary still names how many there are.
+28. Tick `Show rescinded (N)`: they appear struck-through and inert, N matches, and the toggle
+    does not refetch.
+29. Rescind a row with the box unticked: it disappears from view, the count on the label goes up
+    by one, and the summary agrees.
+30. A day whose every row is rescinded renders no day header at all while the box is unticked.
 
 ---
 
@@ -522,6 +679,37 @@ picker on the Course form) would end the casing/typo problem that §1.2 papers o
 schema change and a migration for a household with maybe eight subjects. If typos become a real
 annoyance, the cheap half-step is a `<datalist>` of subjects in use on the Course form — not this
 slice.
+
+### 7.7 Rescinding a whole shared occurrence in one action — still open
+
+`TDS_Slice_Shared_Chores.md` §13.2: two children's rows for one occurrence come from two Commits
+and therefore two batches, so pulling a shared chore back is two rescind actions. §3.5 makes the
+losing row non-rescindable once a sibling has claimed it, which is correct — there is nothing to
+pull back — but it does not close §13.2 for an **unclaimed** occurrence, where both rows are still
+live and still need two actions. Unchanged by this slice, and still worth its own answer
+(whether rescind should accept a `claim_group`).
+
+### 7.8 A real "missed" state — not proposed here
+
+A shared chore nobody did leaves both rows `pending`, and §3.5 deliberately leaves them reading as
+outstanding: nobody did the dishes is a fact worth seeing. Ray's report was about the *loser* of a
+claim, which is a different case with a different answer.
+
+If a genuine expiry is ever wanted — an assignment nobody resolved by some deadline becoming
+`missed` rather than eternally pending — it is a lifecycle change for **every** kind, not a
+shared-chore patch: it needs a new status value the Child App and the Worker both understand, a
+decision about which of the three clocks (§3.6 point 3) owns "the day passed", and a view of what
+it does to Reporting's denominator. Worth doing properly if the eternally-pending backlog becomes
+the complaint; not worth reaching through the claim mechanism to fake.
+
+### 7.9 Hiding sibling-claimed rows entirely — a one-line default
+
+§3.5 keeps a claimed-elsewhere row **visible**, styled and counted as resolved, because it is the
+record of who did the chore — the parent-side view `TDS_Slice_Shared_Chores.md` §13.7 says does
+not exist anywhere. If Ray would rather not see them at all, they ride the §3.7 checkbox (renamed
+`Show rescinded and resolved-elsewhere`) and the default flips in one line. Flagged rather than
+assumed, because "instead of still displaying like assigned but incomplete" reads as *stop looking
+outstanding*, not necessarily *disappear*.
 
 ---
 
