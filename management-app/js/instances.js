@@ -24,7 +24,7 @@
 
 const Instances = (() => {
   const RESERVED_LOWER = ['chr', 'evt', 'tpl'];
-  const NO_SUBJECT = 'No subject';
+  const NO_SUBJECT = SubjectOrderCore.NO_SUBJECT;
 
   // Drill-down + filter view state, mirrors courses.js's and pacing.js's
   // pattern: kept outside the DOM so it survives the full re-render every
@@ -607,17 +607,21 @@ const Instances = (() => {
   // Library in courses.js — a stamped Instance carries its template's subject
   // forward verbatim, so the two pages sort identically.
   async function buildSubjectGroups(root, instances) {
+    // The household's standing order (Module 11 FR-9), read here rather than
+    // passed in: this function is the only consumer, all three of its callers
+    // already await it, and one `meta` get per render is cheaper than threading
+    // the value through three call sites that have nothing else to do with it.
+    const subjectOrder = await Storage.get('meta', 'subjectOrder');
     const bySubject = new Map();
     instances.forEach((inst) => {
       const subject = (inst.subject && inst.subject.trim()) || NO_SUBJECT;
       if (!bySubject.has(subject)) bySubject.set(subject, []);
       bySubject.get(subject).push(inst);
     });
-    const subjects = Array.from(bySubject.keys()).sort((a, b) => {
-      if (a === NO_SUBJECT) return 1;
-      if (b === NO_SUBJECT) return -1;
-      return a.localeCompare(b);
-    });
+    const subjects = SubjectOrderCore.sortSubjects(
+      Array.from(bySubject.keys()),
+      (subjectOrder && subjectOrder.order) || []
+    );
 
     const groupsEl = document.createElement('div');
     groupsEl.className = 'course-subject-groups';

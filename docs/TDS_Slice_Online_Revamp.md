@@ -755,12 +755,23 @@ its deletes.
 
 ```sql
 UPDATE assignments SET rescinded_at = ?1, updated_at = ?1, updated_by = 'parent'
-WHERE batch_id = ?2 AND rescinded_at IS NULL AND status = 'pending';
+WHERE batch_id = ?2 AND rescinded_at IS NULL AND status = 'pending'
+  AND (claimed_by IS NULL OR claimed_by = child_id);
 ```
 
 Default scope is `status = 'pending'`. Rescinding work a child already completed requires
 an explicit `includeCompleted: true` and is surfaced in the UI as a separate, confirmed
 action.
+
+*(The claim guard is an amendment of 2026-08-25 —
+`TDS_Slice_Subject_Order_Grouped_Review.md` §3.5a, design only, unbuilt at the time of
+writing, landing with that slice's Phase 3b. Without it, rescinding a batch sweeps the
+**losing** rows of a shared-chore claim, which are `pending` by construction; Shared Chores
+§5.5's release then skips them for their `rescinded_at IS NULL` clause, and a chore either
+child could have done comes back to one of them permanently. The clause is the exact
+negation of Reporting's `isClaimedElsewhere`, so the winner's own row — `claimed_by =
+child_id` — stays reachable by an `includeCompleted` rescind exactly as it is today. It
+applies to all three selector branches, not only `batch_id`.)*
 
 **Rescinding never claws back earnings.** `reward_entries` is append-only; a completed
 assignment's reward row survives its assignment being rescinded. Reversing an award is a
@@ -1008,8 +1019,10 @@ indefinitely. Required change: cache-first for the precached shell, **network-on
   list moves behind a collapse; a day's rows group subject → course with chores and events in
   groups of their own; a chore a sibling claimed reads as resolved rather than outstanding (§3.5,
   from `claimed_by` — no sweep and no auto-rescind, §3.6); and rescinded rows are hidden behind a
-  checkbox, still fetched so the count stays honest (§3.7). Design only, unbuilt; no route, column
-  or write path changes — §3.5 and §3.7 are read-side only.)*
+  checkbox, still fetched so the count stays honest (§3.7). Design only, unbuilt. §3.5 and §3.7
+  are read-side only and no column or route changes; the slice's one write-path change is §3.5a,
+  a narrowing clause on the rescind statement in §6.3 above, which stops a batch rescind sweeping
+  a shared chore's losing rows.)*
 - New **Reporting** reads `GET /api/assignments` and `GET /api/rewards` directly. Module 10
   keeps its analysis; only its input changes.
 - Module 09 (Completion Import) is deleted, not ported.

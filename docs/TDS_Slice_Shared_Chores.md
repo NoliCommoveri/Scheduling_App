@@ -1016,7 +1016,12 @@ Run against a real database from the browser, per `CLAUDE.md` §IV.C.
    on it, reusing §9's `isClaimedElsewhere` predicate. Ray had asked for the losing rows to
    auto-rescind after the day passed; §3.6 declines, because a rescind would misreport the outcome
    in §9's own buckets and would leave the sibling's row unreleasable through §5.5. A claim
-   **history** across a week still has no screen, and that half stays open.)*
+   **history** across a week still has no screen, and that half stays open. **Amended the same day
+   by that slice's §3.5a**: a design review found that a *batch* rescind already reaches the state
+   §3.6 declines to create — `/api/assignments/rescind` sweeps every `pending` row in a batch, a
+   losing claim row included, which §5.5's release then skips forever. The rescind statement gains
+   `(claimed_by IS NULL OR claimed_by = child_id)` — the SQL spelling of §9's predicate — on all
+   three of its selector branches.)*
 8. **Family Event cascade delete** (`children.js:115`) loses a whole event when one of its
    participants is deleted — the defect §4.4 declines to copy. It belongs to Module 07 and wants
    its own fix.

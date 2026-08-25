@@ -1110,30 +1110,33 @@ const Courses = (() => {
 
   async function renderCourseList(root) {
     root.innerHTML = '';
-    const [courses, curricula, activityTypes] = await Promise.all([
+    const [courses, curricula, activityTypes, subjectOrder] = await Promise.all([
       listCourseTemplates(),
       Storage.getAll('curricula'),
       Storage.getAll('activityTypes'),
+      Storage.get('meta', 'subjectOrder'),
     ]);
 
     const heading = document.createElement('h1');
     heading.textContent = 'Course Template Library';
     root.appendChild(heading);
 
-    // Group by subject, subjects alphabetical, courses alphabetical within
-    // each subject. Courses with no subject land in a trailing catch-all bucket.
-    const NO_SUBJECT = 'No subject';
+    // Group by subject, subjects in the household's standing order (Module 11
+    // FR-9 — unlisted subjects alphabetical after the listed ones, so an
+    // un-configured install sorts exactly as it did before FR-9 existed), and
+    // courses alphabetical within each subject. Courses with no subject land in
+    // a trailing catch-all bucket.
+    const NO_SUBJECT = SubjectOrderCore.NO_SUBJECT;
     const bySubject = new Map();
     courses.forEach((c) => {
       const subject = (c.subject && c.subject.trim()) || NO_SUBJECT;
       if (!bySubject.has(subject)) bySubject.set(subject, []);
       bySubject.get(subject).push(c);
     });
-    const subjects = Array.from(bySubject.keys()).sort((a, b) => {
-      if (a === NO_SUBJECT) return 1;
-      if (b === NO_SUBJECT) return -1;
-      return a.localeCompare(b);
-    });
+    const subjects = SubjectOrderCore.sortSubjects(
+      Array.from(bySubject.keys()),
+      (subjectOrder && subjectOrder.order) || []
+    );
 
     const groupsEl = document.createElement('div');
     groupsEl.className = 'course-subject-groups';

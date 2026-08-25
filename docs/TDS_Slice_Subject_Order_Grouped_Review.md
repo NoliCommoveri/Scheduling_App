@@ -1,12 +1,17 @@
 # TDS Slice — Subject Order, Grouped Review & Assignment Visibility (Generate + Assignments)
 
-**Status:** Design only — authored 2026-08-25, **unbuilt**. No code in this commit.
-**Scope:** Management App only. Files: `management-app/js/subject-order-core.js` (new),
-`packet.js`, `assignments.js`, `settings.js`, `index.html` (one script tag),
-`styles/styles.css`, `tests/management-subject-order-core.test.js` (new).
-**Not in scope:** no Worker change, no migration, no D1 schema change, no new route, no
-credential change, no change to what any client may write, no Child App change, no Wall App
-change, no IndexedDB version bump.
+**Status:** Authored 2026-08-25 and **amended the same day** after a design review read the slice
+against the shipped code — six findings, all folded in; §8 lists what each one changed and where.
+**Phase 1 built 2026-08-25**; Phases 2, 3, 3b and 4 unbuilt.
+**Scope:** Management App, plus **one Worker guard** (§3.5a) and **one Child App ordering fix**
+(§2.7). Each of those is its own build scope under CLAUDE.md §I.A and is phased separately (§5);
+no session edits two apps at once. Files: `management-app/js/subject-order-core.js` (new),
+`packet.js`, `assignments.js`, `settings.js`, `courses.js`, `instances.js`, `weekly.js`,
+`index.html` (one script tag), `styles/styles.css`,
+`tests/management-subject-order-core.test.js` (new); `management-app/worker/index.js` (Phase 3b
+only, §3.5a); `child-app/js/planner-core.js` and `tests/child-cores.test.js` (Phase 4 only, §2.7).
+**Not in scope:** no migration, no D1 schema change, no new route, no credential change, no
+change to **which columns** any client may write, no Wall App change, no IndexedDB version bump.
 **Amends:** `SRS_Management_Module_08_Packet_Generation_Export.md` (note on FR-14, new FR-17),
 `SRS_Management_Module_11_Settings_Backup.md` (new FR-9),
 `TDS_Slice_Online_Revamp.md` §9 (the Assignments view's presentation).
@@ -47,7 +52,9 @@ stays fixed, and the `sortOrder` bands (0 / 1000 / 2000) are untouched. Grouping
 
 **It is not an auto-rescind, a sweep, or a scheduled job.** Report 5 asked for one; §3.6 argues
 against it and §3.5 delivers the outcome from data the claim arbitration already writes. Nothing in
-this slice writes to an `assignments` row at all outside Commit's existing path.
+this slice writes to an `assignments` row at all outside Commit's existing path. §3.5a *narrows*
+one existing write — the batch rescind stops sweeping the rows §3.6 says must not be swept — which
+is the same argument applied to the one shipped path that was quietly ignoring it.
 
 **It is not a Child App feature.** The child already groups its day by course and then by
 lesson (`child-app/js/planner-core.js:132-141`) and already renders `lessonTitle` under the card
@@ -79,10 +86,10 @@ that order a definition, and both symptoms fall out of it.
 | Constraint | Finding |
 |---|---|
 | Column ownership (CLAUDE.md §0, §III.B) | Untouched. `projectAssignments` emits the same fields for the same items; only the array position each item occupies changes, and position was already the source of `sortOrder`. No column changes hands. |
-| No new route, credential, or D1 schema | None. Zero Worker edits. `GET /api/assignments` already returns `payload` (`worker/index.js:1427` is `SELECT *`), which is all §3.3 needs. |
+| No new route, credential, or D1 schema | None of the three. `GET /api/assignments` already returns `payload` (`worker/index.js:1427` is `SELECT *`), which is all §3.3 needs. **One Worker edit** (§3.5a, Phase 3b): a clause added to the existing rescind statement, which narrows what that route touches and adds nothing. |
 | No IndexedDB version bump | None. `meta` exists since v1 (`storage.js:83`), takes out-of-line keys, and `gradingDefaults` is the exact precedent for a keyed preference record (`settings.js:151-172`). |
 | Mirrors to D1 | Yes, for free. `meta` is not in `SYNC_EXCLUDED` (`storage.js:66`), `deriveKey` already handles out-of-line keys (`:230-238`), and `/api/sync/push` takes `{store, key, op, value}` generically. The standing order survives a device loss and a `restoreFromCloud`. |
-| Cross-app code sharing (§I.A) | None. Everything lives in `management-app/`. The new core file is shared *within* one app, the same way `pacing-core.js` and `recipe-core.js` already are. |
+| Cross-app code sharing (§I.A) | None. The new core file is shared *within* the Management App, the same way `pacing-core.js` and `recipe-core.js` already are. Phase 4 touches `child-app/js/planner-core.js` and shares nothing with it — it sorts a list with a comparator that file already owns (§2.7). |
 | No CLI (§0) | Nothing here is operable from anywhere but the browser. |
 | Free tier (§0) | No inference, no new storage surface, no new request. One extra `Storage.getAll('courses')` per Assignments render, against IndexedDB. |
 | Offline posture (§III.A) | Unchanged. The subject order is a local write that drains through the outbox like every other authored record. |
@@ -205,6 +212,18 @@ management core tests. Cases: empty/absent order; listed-only; unlisted-only; mi
 whitespace; `No subject` always last; `merge` preserving stored positions; stability for two
 subjects with equal rank.
 
+### 1.6 Every subject-grouped view adopts it in the same phase
+
+Three views already group by subject and sort those groups alphabetically with `No subject`
+trailing: `courses.js` (Course Template Library), `instances.js:616-619` (Assigned Courses) and
+`weekly.js:52-56` (the weekly view). Each becomes one `SubjectOrderCore.compare(order)` call.
+
+This was written as a deferred §7.1 and the design review moved it into **Phase 1**, where the
+editor lands. The reasoning is short: a household that sets a standing order and then sees it
+honoured on two screens out of five has been handed a bug report, not a feature. The order is a
+household preference about how subjects read, not a property of the two screens that motivated
+it, and the marginal cost inside the phase that already builds the comparator is minutes.
+
 ---
 
 ## 2. The Generate view (`packet.js`)
@@ -231,6 +250,24 @@ Sort key, in order:
    lesson `order` then activity `order` (`pacing.js:38-50`). An activity the walk does not know
    (its lesson was deleted since the log row was written) sorts after every known one.
 4. **Activity id**, as a final deterministic tie-break.
+
+**Two things the sort reads are not on `session` today, and Phase 2 must put them there.**
+The design review caught this: `walkIndex` is a local of `propose()` (`packet.js:242`) and dies
+with it, and nothing loads the standing order at all. Propose could call the sort from its own
+closure, but `relocate` and `pullForward` are separate functions whose only handle on the
+proposal is `session` (`:395-418`) — so `sortDayActivities` would work at Propose and silently
+mis-sort on exactly the two actions report 2 is about. `session` gains:
+
+- **`walkIndex`** — the `Map(instanceId -> Map(activityId -> index))` already built at
+  `packet.js:242` and thrown away. Stored, not rebuilt: rebuilding it would re-walk every
+  instance on every Review action.
+- **`subjectOrder`** — the `order` array, read once in Propose's existing `Promise.all`
+  (`Storage.get('meta', 'subjectOrder')`), defaulting to `[]`. Read once per proposal, not per
+  render: a proposal that re-sorted itself mid-review because the parent edited Settings in
+  another tab would move rows under the parent's hands.
+
+Neither is new state in any meaningful sense — one is a local promoted, the other is one more
+read in a `Promise.all` that already does eight.
 
 It is called once per day at the end of Propose, and again on the affected day(s) after every
 Review mutation that moves an item — `relocate`, `pullForward`, and the removals, which cannot
@@ -305,9 +342,14 @@ has already-live items **consume** their slot without being re-emitted (`packet.
 that a second pass's new rows do not renumber on top of rows already in D1.
 
 **For a day committed in one pass** — the ordinary case — the effect is a strict improvement:
-`sort_order` now encodes subject-then-course-then-walk order, the child's day groups its courses
-in first-appearance order (`planner-core.js:119-122`), and so the child's course order becomes
-the parent's standing subject order. Nothing in the Child App changes to get this.
+`sort_order` now encodes subject-then-course-then-walk order, and every consumer that sorts by it
+inherits that.
+
+**What it does not do is reach the child's course headings on its own.** This paragraph
+originally claimed it did, "at no extra cost". The design review checked and it does not: the
+child never sorts its plan before grouping it, so its course-group order is arbitrary today and
+stays arbitrary after Phase 2. The correction, the two lines that fix it, and why it is a phase
+of its own are in **§2.7**.
 
 **For a day committed in two passes**, one limitation survives, and it is worth stating rather
 than discovering: a live row keeps the number D1 gave it on the first pass, while the second pass
@@ -336,6 +378,58 @@ proposal, and a bucket that collapsed itself under the parent mid-edit is worse 
 at all. Keys are `${date}::subject::${subjectLabel}`, `${date}::course::${instanceId}`,
 `${date}::chores`, `${date}::events` — date-scoped, because the same course appears on fourteen
 days and they are not one thing.
+
+### 2.7 The child does not inherit the order for free — two lines make it true
+
+**What was claimed.** That `sortOrder` follows array position, the child groups its courses in
+first-appearance order, and therefore the parent's subject order arrives on the child's screen
+with no Child App change.
+
+**What the code does.** The second half is true and the conclusion does not follow, because
+nothing puts the child's rows in `sort_order` order before they are grouped:
+
+- `DB.loadState()` is `getAll("assignments")` (`child-app/js/db.js:343-349`). IndexedDB returns
+  records in **key order**, and the key is the server-minted opaque UUID (CLAUDE.md §III.B) —
+  so the array arrives in an order that is stable, arbitrary, and unrelated to the plan.
+- `AssignmentCore.toState` filters and decorates. It does not sort (`assignment-core.js:148-160`).
+- `byCourseThenLesson` groups by **first appearance in the array it was handed**
+  (`planner-core.js:132-141`), sorting only *within* each lesson run. `subjectsView` (`:277-293`)
+  is the same shape. `planner-ui.js:323` and `:708` hand `d.rows` straight through.
+
+So on the child's screen today the cards inside a lesson are correctly ordered and the **course
+headings are in UUID order**. Phase 2 does not change that in either direction — it is not a
+regression this slice introduces, it is a claim this slice made that was not true.
+
+**The fix, Phase 4.** `byCourseThenLesson` and `subjectsView` sort their input with the
+`byPosition()` comparator that file already exports, on a copy rather than the caller's array:
+
+```js
+function byCourseThenLesson(items) {
+  var pos = byPosition();
+  var ordered = (items || []).slice().sort(pos);   // group order = lowest key first
+  // …unchanged from here: groupByKey(ordered, …) course, then lesson, then sort(pos)
+}
+```
+
+`groupByCourse` is deliberately **left alone**: its own comment (`planner-core.js:108-118`) says
+it is handed an unordered list by the Completed view, which joins records in completion order,
+and gathering a course into one group regardless is the point of it.
+
+It is a separate phase because CLAUDE.md §I.A makes a Child App edit its own declared scope, not
+because it is large. It is two lines and two `child-cores.test.js` cases.
+
+```
+[DECISION] Which key orders the child's course groups
+Decided: the existing effectiveSortKey — COALESCE(child_sort_order, sort_order) — via byPosition().
+Rationale: it is the key every other order on that screen already uses (revamp §3.3.3), so this
+  adds no second notion of position. The consequence is that a child who drags a card to the front
+  of its lesson run lowers that run's minimum key and can move its course group earlier: the
+  parent's subject order is the starting order, not a lock. That is consistent with the child
+  owning `child_sort_order` everywhere else. The alternative — ordering groups by the parent's
+  `sort_order` alone, so the child may reorder within a course but never move one — is the answer
+  if that drift ever reads as a bug, and costs one comparator.
+Locked for: Phase 4.
+```
 
 ---
 
@@ -461,9 +555,56 @@ and then:
 - The row renders in the muted, locked style completed rows already use, inside its day's
   **Chores** group (§3.2).
 
-**Nothing is written, and it works on every row already in D1.** No migration, no Worker change,
-no new route, no sweep, no scheduler, no `updated_at` touched. A range Ray looks at tonight will
-be right for chores claimed months ago.
+**Nothing is written, and it works on every row already in D1.** No migration, no new route, no
+sweep, no scheduler, no `updated_at` touched. A range Ray looks at tonight will be right for
+chores claimed months ago. The one Worker line that ships alongside it (§3.5a) writes nothing
+either — it stops a write that should never have reached these rows.
+
+### 3.5a The batch rescind must stop sweeping the rows §3.6 says must not be swept
+
+The design review found one shipped path that does the exact thing §3.6 spends four paragraphs
+arguing against, silently and today. `rescindBatch` posts `{ batchId }` (`assignments.js:634`),
+and the Worker rescinds **every** row in the batch matching `rescinded_at IS NULL AND
+status = 'pending'` (`worker/index.js:1372`, `:1410`). A losing claim row is `pending` by
+construction. So "Rescind this batch" strands it precisely as §3.6 point 2 describes: release's
+`rescinded_at IS NULL` clause skips it forever, and a chore that was open to either child comes
+back to one.
+
+**§3.5 also breaks the one thing that was honest about it.** Today `isRescindable` returns true
+for such a row, so the button's count matches what the server does. Once `isResolved` counts a
+claimed-elsewhere row, the button says *Rescind 5 rows* and the response says *Rescinded 7*.
+
+So **Phase 3b carries one Worker change — the only one in this slice**: the rescind statement
+gains a claim guard.
+
+```sql
+UPDATE assignments SET rescinded_at = ?1, updated_at = ?1, updated_by = 'parent'
+ WHERE rescinded_at IS NULL AND ${statusClause}
+   AND (claimed_by IS NULL OR claimed_by = child_id)
+   AND ${where}
+```
+
+**Why not a bare `claimed_by IS NULL`.** That would also protect the **winner's** row, which
+carries `claimed_by = child_id`. A winner's row is complete, so the default `status = 'pending'`
+clause already excludes it — but not under `includeCompleted: true` (revamp §6.3), which is a
+separate, separately-confirmed parent action about completed work and has nothing to do with
+claims. The clause above is the exact negation of `isClaimedElsewhere`, so the Worker,
+`reporting.js:83-85` and §3.5's copy in `assignments.js` all test one rule, written the same way
+in three places.
+
+**It goes on the shared clause, not the `batchId` branch.** All three selectors — `batchId`,
+`ids[]`, `childId`+range — get it. The UI stops offering single-row Rescind on a claimed-elsewhere
+row at §3.5, so the `ids[]` branch should never carry one; a guard that holds only on the path
+the UI happens to take today is the kind that stops holding the next time the UI changes.
+
+**This widens nothing.** It *narrows* what a parent credential may rescind, by one row class, in
+the direction §3.6 already argued for. No column changes hands, no route is added or removed, no
+credential class gains anything, and `rescinded` in the response still counts rows actually
+changed — which is what puts the client's number and the server's back into agreement.
+
+A parent who genuinely wants a claimed occurrence gone still has a path: undo the claim from the
+child's device (which is a real correction of a real fact), then rescind. That is one more step
+than before, on an action that should be deliberate.
 
 ### 3.6 Why not the auto-rescind Ray asked for
 
@@ -480,9 +621,11 @@ in four places:
 2. **It would break undo, in the worst possible direction.** Release is
    `WHERE claim_group = ?2 AND claimed_by = ?3 AND rescinded_at IS NULL` (`worker/index.js:2576-2581`).
    A rescinded loser row does not match, so it is skipped: the winner's row returns to `pending`
-   and the sibling's stays rescinded and off their plan **permanently**. The undo would hand the
-   chore back to nobody. The same-day grace narrows the window but does not close it — a parent
-   undoing a mis-tap on Tuesday for Monday's chore hits it.
+   and the sibling's stays rescinded and off their plan **permanently**. The undo hands the chore
+   back to the winner alone — a chore that was open to either child is quietly open to one, which
+   is the opposite of what release exists for. The same-day grace narrows the window but does not
+   close it — a parent undoing a mis-tap on Tuesday for Monday's chore hits it. **The batch
+   rescind reaches the same state today, by a different door; §3.5a closes it.**
 3. **"After the day passes" is not a fact this system has.** Three clocks disagree about it: the
    Child App's device-local date (Feedback Loop §7), the wall's own rollover (Wall Display §5.3),
    and the Worker's UTC `Date.now()`. Putting a permanent, unattended state change on a boundary
@@ -540,7 +683,13 @@ documented at `styles.css:265-299`:
 Both reuse the existing summary chevron (`::before` on `summary`, rotated under `[open]`),
 `-webkit-details-marker: none`, and the count-in-summary styling. Nested groups indent one step;
 `.assign-batches` picks up the `.settings-section` collapsed-panel look it should have had from
-the start. Bump `styles.css?v=9` → `?v=10` in `index.html`.
+the start. Bump `styles.css?v=9` → `?v=10` in `index.html` — **in whichever of Phases 2 or 3 lands
+first**, not before.
+
+**Phase 1 needed no CSS and did not bump the version.** The Settings editor is `.list-row` inside
+a `.settings-section`, both of which already exist and are already global, and the `ul` reset at
+`styles.css:244` handles the list. Its rows carry the same trailing border the Devices panel's do,
+which is a consistency to keep rather than a gap to patch.
 
 ---
 
@@ -552,16 +701,27 @@ gate is why this is not one build.
 | Phase | Contents | Est. |
 |---|---|---|
 | **0** | This slice; the SRS amendments (Module 08 FR-17 + FR-14 note, Module 11 FR-9); the Roadmap entry; the §9 pointer in the revamp slice. No code. | ~45 min |
-| **1** | `subject-order-core.js` + its `node --test` file; `meta['subjectOrder']`; the Settings → Subject order editor; the script tag. Nothing consumes the order yet. | ~1 h |
+| **1** | `subject-order-core.js` + its `node --test` file; `meta['subjectOrder']`; the Settings → Subject order editor; the script tag; **and the three existing subject-grouped views adopting the order** (`courses.js`, `instances.js`, `weekly.js` — §1.6). | ~1.25 h |
 | **2** | Generate: `sortDayActivities`, the subject/course/chore/event groups, Expand-all/Collapse-all, the lesson-title prefix on review rows **and** remainder rows, remainder boxes ordered by subject. Reports 1, 2, 3. | ~1.5–2 h |
 | **3** | Assignments: batches behind a collapse with the preview cap; subject/course/chore/event groups; the `payload.lessonTitle` prefix; the local `course_name → subject` map. Report 4. | ~1–1.5 h |
-| **3b** | Assignments, read-side only: `isClaimedElsewhere` folded into `isResolved`, the `Sam did it` label, and the `Show rescinded` checkbox with its count. Reports 5 and 6. | ~45 min |
+| **3b** | Assignments: `isClaimedElsewhere` folded into `isResolved`, the `Sam did it` label, and the `Show rescinded` checkbox with its count (read-side); **plus the one Worker guard in §3.5a**, which is its own scope declaration and its own commit within the phase. Reports 5 and 6. | ~1 h |
+| **4** | **Child App scope — a separate session.** `byCourseThenLesson` and `subjectsView` sort their input before grouping, so the child's course headings follow the parent's order (§2.7). Two lines, two `child-cores.test.js` cases. | ~30 min |
+
+**Built so far:** Phase 1 (2026-08-25) — `subject-order-core.js` with 17 `node --test` cases, the
+`meta['subjectOrder']` record, the Settings → Subject order editor, and the three views of §1.6
+sorting through the comparator. The order is inert on Generate and Assignments until Phase 2.
 
 Phase 3b is independent of everything above it and is the cheapest fix in the slice — if the
-Assignments tab is what is hurting most, land 3b first and the rest after.
+Assignments tab is what is hurting most, land 3b first and the rest after. Its Worker half is
+independent of its client half and is the more urgent of the two: the stranding it prevents is
+live today, and does not wait for anything in this slice to ship.
 
-Phase 1 stands alone and is worth landing on its own — the order is inert until Phase 2, and
-Ray can enter it while Phase 2 is being built. Phase 3 depends only on Phase 1.
+Phase 1 stands alone and is worth landing on its own — Ray can enter the order and see it take
+effect on the three views §1.6 names while Phase 2 is being built. Phase 3 depends only on Phase 1.
+
+Phase 4 is last because it is worth the least on its own (the child's course headings become
+*deterministic* the moment it lands, but only become *the parent's order* once Phase 2 has
+committed a day) and because it is the one phase that is not a Management App session.
 
 ---
 
@@ -577,6 +737,9 @@ subjects, two courses in one subject, and chores on most days.
    cloud on a second browser profile brings the order with it.
 4. A course given a brand-new subject appears in the editor at the bottom, unprompted.
 5. `npm test` passes, including the new core file's cases.
+5a. The Course Template Library, Assigned Courses and the weekly view all present their subject
+    groups in the standing order, and an unlisted subject still appears after the listed ones
+    (§1.6). Clearing the order returns all three to alphabetical.
 
 **Phase 2**
 6. Propose a fortnight. Each day renders subject groups in the standing order, courses inside
@@ -590,11 +753,20 @@ subjects, two courses in one subject, and chores on most days.
 11. Collapse a course group, then use Relocate on another item: the collapsed group is still
     collapsed after the re-render.
 12. Expand all / Collapse all reach every group on the screen.
-13. Commit, then read the child's plan: the day's courses appear in the standing subject order.
+13. Commit, then read the child's plan: every activity's `sort_order` follows the canonical order,
+    and each course's cards are contiguous and internally in lesson-then-activity order.
+    **The order of the course *headings* is not expected to change until Phase 4** (§2.7) — check
+    it here so the difference is observed rather than assumed.
 14. Propose the same range again: already-live items still render frozen with `already assigned`,
     inside their groups, and Commit does not re-send them (§6.6 unchanged).
 15. A chores-only pass (FR-1a) still renders correctly — no empty subject groups, chores group
     present, School absent.
+15a. **The two-pass case, deliberately** (§2.5): commit a day, propose the same range again, pull
+    an activity forward onto that day so it lands *above* a live row, and commit. Then compare the
+    review screen's order against the child's plan for that day. They are expected to disagree for
+    the pulled row — confirm the disagreement is limited to that row's position relative to the
+    live ones, that the child still gathers each course into one group, and that the Assignments
+    view's Sort order field corrects it by hand.
 
 **Phase 3**
 16. Assignments opens with the batch list collapsed; the summary counts match; opening it and
@@ -620,6 +792,13 @@ subjects, two courses in one subject, and chores on most days.
 25. Look at a range containing shared chores claimed weeks ago, committed before this build: they
     read correctly with no migration and no re-commit.
 26. A shared chore **nobody** claimed still shows as outstanding on both children's rows (§7.8).
+26a. **The §3.5a guard.** Commit a batch containing a shared chore, have one child claim it, then
+    rescind that whole batch from the Assignments tab. The button's count, the confirm dialog and
+    the `Rescinded N rows` result all agree; the sibling's losing row is **not** rescinded; and
+    undoing the claim from the Child App afterwards still returns the chore to both children.
+26b. The same batch rescind still rescinds every genuinely outstanding row in it, and an
+    `includeCompleted` rescind still reaches a winner's completed row (§3.5a) — the guard costs
+    nothing that was legitimate.
 27. Assignments opens with no rescinded rows visible; the summary still names how many there are.
 28. Tick `Show rescinded (N)`: they appear struck-through and inert, N matches, and the toggle
     does not refetch.
@@ -627,17 +806,24 @@ subjects, two courses in one subject, and chores on most days.
     by one, and the summary agrees.
 30. A day whose every row is rescinded renders no day header at all while the box is unticked.
 
+**Phase 4** (Child App)
+31. On the child's device, a day with three courses renders its course headings in the parent's
+    subject order, not in an order that changes when the same rows are re-cached.
+32. Within a course, cards stay in lesson-then-activity order, and a card the child reorders stays
+    where they put it across a reload.
+33. The Completed view still gathers a course into one group when its rows arrive in completion
+    order (`groupByCourse` untouched — §2.7).
+34. `npm test` passes, including the two new `child-cores.test.js` cases.
+
 ---
 
 ## 7. Deferred, and the decisions worth flagging
 
-### 7.1 Adopting the standing order in the other subject-grouped views — deferred, cheap
+### 7.1 Adopting the standing order in the other subject-grouped views — **no longer deferred**
 
-`courses.js` (Course Template Library), `instances.js:616-619` (Assigned Courses) and
-`weekly.js:52-56` (the weekly view) all sort subjects alphabetically with `No subject` trailing.
-Each becomes one line once `SubjectOrderCore` exists. Left out of this slice because Ray asked
-for two screens and consistency across five is a separate call — but the inconsistency will be
-visible the moment Phase 1 lands, and this is a ~20-minute phase whenever it is wanted.
+Moved into Phase 1 by the design review; the reasoning is in §1.6. Kept as a numbered item
+because the Roadmap and this section's later items refer to §7 by number, and a hole reads as a
+lost decision.
 
 ### 7.2 Default open (Generate) vs. default closed (Assignments) — a judgement call
 
@@ -663,8 +849,9 @@ activity titles, the group is a small follow-up and the ordering it would need i
 
 ### 7.4 Renumbering a day's live rows at Commit — deferred, deliberately
 
-See §2.6. Not a bug this slice created and not one it should fix by having Commit write rows the
-parent did not touch.
+See §2.5, and acceptance check 15a, which now makes the divergence something the build observes
+rather than something Ray discovers. Not a bug this slice created, and not one it should fix by
+having Commit write rows the parent did not touch.
 
 ### 7.5 Subject as a real grouping level in the Child App — still open
 
@@ -710,6 +897,33 @@ not exist anywhere. If Ray would rather not see them at all, they ride the §3.7
 `Show rescinded and resolved-elsewhere`) and the default flips in one line. Flagged rather than
 assumed, because "instead of still displaying like assigned but incomplete" reads as *stop looking
 outstanding*, not necessarily *disappear*.
+
+---
+
+## 8. Design review, 2026-08-25 — what changed and why
+
+The slice was read against the shipped code the day after it was authored, before any of it was
+built. Six findings; all six are folded into the sections above rather than appended as errata,
+because a slice a builder reads top-to-bottom should not carry a correction in a footnote. This
+section is the record of what moved.
+
+| # | Finding | Verified against | Resolution |
+|---|---|---|---|
+| 1 | **§2.5's "the child inherits the subject order for free" is false.** The Child App never sorts its plan before grouping it: `loadState` is `getAll("assignments")` (IndexedDB key order — a UUID), `toState` does not sort, and `byCourseThenLesson` groups by first appearance. The child's course-heading order is arbitrary today and Phase 2 does not change it. | `child-app/js/db.js:343-349`, `assignment-core.js:148-160`, `planner-core.js:132-141`, `:277-293`, `planner-ui.js:323`, `:708` | §2.5 corrected; new **§2.7** with the two-line fix, the `groupByCourse` carve-out and a `[DECISION]` on which key orders the groups; new **Phase 4** (Child App scope, its own session); acceptance check 13 rewritten and checks 31–34 added. |
+| 2 | **`sortDayActivities` cannot reach the state it reads.** `walkIndex` is a local of `propose()` and the standing order is never loaded; `relocate` and `pullForward` hold only `session`, so the sort would work at Propose and mis-sort on exactly the two actions report 2 is about. | `packet.js:242`, `:395-418`, `:481`, `:533` | §2.1 gains the paragraph naming `session.walkIndex` and `session.subjectOrder`, and says why the order is read once per proposal rather than per render. |
+| 3 | **The batch rescind sweeps the rows §3.6 forbids sweeping.** `rescindBatch` posts `{ batchId }` and the Worker rescinds every `pending` row in the batch — a losing claim row included — stranding it exactly as §3.6 describes. §3.5 would additionally desynchronise the button's count from the server's result. | `assignments.js:634`, `worker/index.js:1372`, `:1410`, `:2576-2581` | **Not deferred** (Ray, in-session 2026-08-25). New **§3.5a**: the rescind statement gains `(claimed_by IS NULL OR claimed_by = child_id)` on the shared clause, all three selector branches. One Worker change, in Phase 3b; checks 26a–26b. |
+| 4 | **§3.6 point 2 overstates itself** — "hand the chore back to nobody" contradicts its own next sentence. | `worker/index.js:2576-2590` | Reworded to what actually happens: the chore comes back to the winner alone, which is the opposite of what release exists for. |
+| 5 | **§2.5's two-pass `sort_order` divergence had no acceptance check**, despite the slice admitting grouping makes it easier to hit. | §6.6 of the revamp slice; `packet.js:672-684` | Check **15a** added, which reproduces the divergence deliberately and bounds it. §7.4 points at it. |
+| 6 | **§7.1's deferral would ship a visible inconsistency** — the standing order honoured on two screens out of five, from the moment the editor exists. | `courses.js`, `instances.js:616-619`, `weekly.js:52-56` | Folded into **Phase 1** as §1.6; §7.1 kept as a pointer; check 5a added. |
+
+**What did not change.** The §3.6 decision itself (presentation over auto-rescind) survived the
+review intact and is stronger for §3.5a — the review's own finding 3 is that argument applied to
+a path the slice had not looked at. §3.4's renamed-course-splits-into-two-headers, §7.2's split
+default, and §7.6's refusal to build a subject vocabulary were all checked and left alone.
+
+**Still no CLAUDE.md amendment.** §3.5a narrows one existing route's reach by one row class and
+adds nothing; §2.7 sorts a list inside the Child App with a comparator that file already owns.
+No new table, route, credential class or column ownership, and no locked decision bends.
 
 ---
 
