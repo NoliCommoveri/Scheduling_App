@@ -398,7 +398,7 @@ The gesture itself is DOM and pointer behaviour, so it belongs in §9's manual c
 | Phase | Scope | Est. | Status |
 |---|---|---|---|
 | **1 — Pure layer** | `ChoresCore.unplacedForBlock` + §8's tests. | ~20 min | **Done** 2026-08-26 |
-| **2 — Gesture & sheet** | `attachSlotPress` in `buildColumn`, `quickPlaceSheetState` + `buildQuickPlaceSheet`, the render hook, the CSS reuse. | ~1.5 h | **Done** 2026-08-26 |
+| **2 — Gesture & sheet** | `attachSlotPress` in `buildColumn`, `quickPlaceSheetState` + `buildQuickPlaceSheet`, the render hook, the CSS reuse, **and `sw.js`'s `CACHE_NAME`** — the shell cache is cache-first, so the bump is what makes any of this reach the tablet. | ~1.5 h | **Done** 2026-08-26 |
 | **3 — Acceptance** | §8.1 on the tablet; this file's status line updated. | ~20 min | **Outstanding** — the tablet run |
 
 Total ~2 h — inside CLAUDE.md §V.A's 2–3 hour gate, and phases 1 and 2 are separately committable.
@@ -468,5 +468,5 @@ they look. Only worth revisiting if it is felt in use.
 
 | Date | Change |
 |---|---|
-| 2026-08-26 | **Built** (phases 1-2). `ChoresCore.unplacedForBlock` and its four tests; `attachSlotPress`, `unplacedChoresFor`, `slotPressed` and `buildQuickPlaceSheet` in `day-ui.js`; no CSS rules, only reuse. One thing the design did not name, added in the build and recorded in §6.1: the sheet swallows the opening long-press's own `click` in the capture phase, because §6.1's `pointerdown` rule protects the *backdrop* and a row cannot be protected the same way — a stray click on a row would place a chore nobody chose. No schema, no route, no `assignments` write, and no guardrail amendment, exactly as §10 said. |
+| 2026-08-26 | **Built** (phases 1-2). `ChoresCore.unplacedForBlock` and its four tests; `attachSlotPress`, `unplacedChoresFor`, `slotPressed` and `buildQuickPlaceSheet` in `day-ui.js`; no CSS rules, only reuse. One thing the design did not name, added in the build and recorded in §6.1: the sheet swallows the opening long-press's own `click` in the capture phase, because §6.1's `pointerdown` rule protects the *backdrop* and a row cannot be protected the same way — a stray click on a row would place a chore nobody chose. `wall-app/sw.js`'s `CACHE_NAME` goes to v21 — the worker is cache-first for the shell, so without the bump a tablet keeps serving the old `day-ui.js` and none of this exists as far as the family is concerned. No schema, no route, no `assignments` write, and no guardrail amendment, exactly as §10 said. |
 | 2026-08-26 | Written. Ray reported that placing an unscheduled chore is arm-then-aim (§0.1) and proposed two fixes: a per-block side tray, or a long-press on an open slot offering the chores hinted for that block. He chose the long-press (§0.3 records why the rail loses on §4.3's no-horizontal-scroll rule and on child attribution), long-press only with no plain-tap variant (§7.1), and the filtered list with a **Show all unscheduled** fallback (§2.3). Design only, no code — the same order §2.9 of `CLAUDE.md` set for Placement Scopes. |
