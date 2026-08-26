@@ -1,6 +1,8 @@
 # TDS Slice — Quick Place: long-press an empty slot to schedule a chore
 
-**Status:** **DESIGN ONLY — authorized by Ray in-session 2026-08-26, unbuilt.**
+**Status:** **BUILT — phases 1 and 2 landed 2026-08-26.** Authorized by Ray in-session
+2026-08-26. Phase 3's §8.1 acceptance run on the tablet is outstanding; items 1-6 and 8-12
+were exercised in a headless browser against the real `day-ui.js` first (see §9).
 **Extends:** `TDS_Slice_Wall_Calendar_Redesign.md` §3.4 (the unscheduled tray), §4.3/§4.4 (the grid
 and block modes), §8.1 (tap targets); `TDS_Slice_Wall_Placement_Scopes.md` §7.1 (a gesture writes
 the level already in force) and §2.1 (the first-placement gate).
@@ -241,6 +243,19 @@ does (`wall.css:1517`'s comment already records that reuse as the house pattern)
   gesture that opens this sheet is a long-press whose own `pointerup`/`click` arrive *after* the
   overlay is in the DOM. Its `pointerdown` fired before the overlay existed, so it cannot dismiss
   it. Plus a `Cancel` button.
+- **The rows need the same protection, and cannot get it the same way** *(added in the build,
+  2026-08-26)*. The `pointerdown` rule above saves the backdrop because the backdrop is dismissed
+  by a press. A row is activated by a **tap**, so it has no such trick available — and the opening
+  long-press's click is dispatched on whatever now sits under the release point, which on a
+  centred card is very often a row. Left alone, that places a chore nobody chose: exactly what
+  §3.6 says must never happen, and the same "sweet spot" failure the comment at `day-ui.js:2018`
+  was written about, with a write on the end of it.
+  So one guard covers the whole sheet, in the **capture phase** on the overlay: swallow a `click`
+  whose own `pointerdown` this overlay never saw. The opening press went down on the grid column
+  before the overlay existed, so its click reaches nothing — no row, no button, no backdrop; a
+  deliberate tap presses the overlay first and passes through. No timer, and nothing that can get
+  stuck armed. It is rebuilt with the sheet on every render, so a background poll resets it
+  harmlessly.
 - **Sheet state is module-scope** (`quickPlaceSheetState = { child, startMin, block, showAll }`) and
   **rebuilt on every render**, joining the five sheets that already do this in `render()`
   (`:2868-2872`). Same reason as always: a background poll re-render every 10 minutes must not close
@@ -380,13 +395,23 @@ The gesture itself is DOM and pointer behaviour, so it belongs in §9's manual c
 
 ## 9. Build phasing
 
-| Phase | Scope | Est. |
-|---|---|---|
-| **1 — Pure layer** | `ChoresCore.unplacedForBlock` + §8's tests. | ~20 min |
-| **2 — Gesture & sheet** | `attachSlotPress` in `buildColumn`, `quickPlaceSheetState` + `buildQuickPlaceSheet`, the render hook, the CSS reuse. | ~1.5 h |
-| **3 — Acceptance** | §8.1 on the tablet; this file's status line updated. | ~20 min |
+| Phase | Scope | Est. | Status |
+|---|---|---|---|
+| **1 — Pure layer** | `ChoresCore.unplacedForBlock` + §8's tests. | ~20 min | **Done** 2026-08-26 |
+| **2 — Gesture & sheet** | `attachSlotPress` in `buildColumn`, `quickPlaceSheetState` + `buildQuickPlaceSheet`, the render hook, the CSS reuse. | ~1.5 h | **Done** 2026-08-26 |
+| **3 — Acceptance** | §8.1 on the tablet; this file's status line updated. | ~20 min | **Outstanding** — the tablet run |
 
 Total ~2 h — inside CLAUDE.md §V.A's 2–3 hour gate, and phases 1 and 2 are separately committable.
+
+**On phase 3.** §8.1's checks are pointer and DOM behaviour, which is why they are a manual list
+and not `tests/` (CLAUDE.md §I.B). Before phase 2 was committed they were nonetheless driven once
+against the real `day-ui.js` in a headless browser — a throwaway harness that served `wall-app/`
+with the network, `Store` and `Toast` stubbed, and dispatched synthetic pointer events. It covered
+items 1-6 and 8-12, plus §7.5's block-virtual → real-clock conversion (a pick at 19:30 inside the
+expanded evening block writes 1170, not a virtual minute). **It is not a substitute for the tablet
+run and was not committed**: synthetic events cannot reproduce item 5, the real finger-scroll,
+which is the check §7.2 exists for. Still outstanding: item 5 on a real touchscreen, item 7 (a
+long-press on a school block), and the Undo half of item 2.
 
 ---
 
@@ -443,4 +468,5 @@ they look. Only worth revisiting if it is felt in use.
 
 | Date | Change |
 |---|---|
+| 2026-08-26 | **Built** (phases 1-2). `ChoresCore.unplacedForBlock` and its four tests; `attachSlotPress`, `unplacedChoresFor`, `slotPressed` and `buildQuickPlaceSheet` in `day-ui.js`; no CSS rules, only reuse. One thing the design did not name, added in the build and recorded in §6.1: the sheet swallows the opening long-press's own `click` in the capture phase, because §6.1's `pointerdown` rule protects the *backdrop* and a row cannot be protected the same way — a stray click on a row would place a chore nobody chose. No schema, no route, no `assignments` write, and no guardrail amendment, exactly as §10 said. |
 | 2026-08-26 | Written. Ray reported that placing an unscheduled chore is arm-then-aim (§0.1) and proposed two fixes: a per-block side tray, or a long-press on an open slot offering the chores hinted for that block. He chose the long-press (§0.3 records why the rail loses on §4.3's no-horizontal-scroll rule and on child attribution), long-press only with no plain-tap variant (§7.1), and the filtered list with a **Show all unscheduled** fallback (§2.3). Design only, no code — the same order §2.9 of `CLAUDE.md` set for Placement Scopes. |

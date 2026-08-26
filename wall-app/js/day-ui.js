@@ -129,6 +129,12 @@
     return Math.max(TOUCH_DRAG_SLOP_PX, rowHeightPx() + 8);
   }
   var LONG_PRESS_MS = 550; // held this long with no movement opens the duration sheet (§16 Phase 5b)
+  // Quick Place §7.2 — how far a press on EMPTY grid may travel before it is
+  // read as a scroll instead. Far tighter than `TOUCH_DRAG_SLOP_PX` (44) on
+  // purpose: a chip's long-press has to be told apart from a drag of that
+  // chip, and 44px is what that costs. A press on empty space has no drag to
+  // be told apart from — only a scroll — so any real movement cancels it.
+  var PRESS_CANCEL_PX = 10;
   var MAX_ADJUST_MIN = 8 * 60; // stepper ceiling; the Worker enforces no max besides "positive multiple of 15"
 
   function el(html) {
@@ -2169,6 +2175,254 @@
     currentRoot.appendChild(overlay);
   }
 
+  // ---- Quick Place — long-press an empty slot (TDS_Slice_Wall_Quick_Place.md) --
+  // Placing an unscheduled chore was arm-then-aim, and the two halves sit far
+  // apart: find it in the tray, tap to arm, scroll to the hour, tap again
+  // (§0.1). This inverts the gesture — press the time, and be offered the
+  // chores that belong there. The pressed point already carries both facts a
+  // placement needs: the COLUMN names the child (redesign §2.3, "the column a
+  // tap lands in names the child") and the Y names the minute, hence the
+  // block.
+  //
+  // Nothing new is written. A pick ends in `commitPlacement`, the same
+  // function every drag and every tap-to-place already ends in, so this owns
+  // no write path of its own: `wall_slots` and its override tables, and no
+  // `assignments` column at all (§1). Every existing gesture survives — the
+  // tray is still the only way to reach a chore whose hint is wrong (§2.3 is
+  // the escape hatch, not a replacement) and the only way to UN-place one.
+
+  // §2.1 — "unscheduled" means exactly what the tray means by it, resolved
+  // through the same two calls `layoutPerChildGrid`'s own `unplaced` test
+  // uses rather than a second rule that could drift from it.
+  //
+  // Recomputed on demand, never captured — the same discipline
+  // `buildAddSchoolSheet` keeps with `blocksNotOnDate`: a background poll
+  // re-render must not leave this sheet offering a chore that has since been
+  // placed from somewhere else.
+  //
+  // It inherits one consequence rather than choosing it (§2.1, §11.2):
+  // `choresForChild` deliberately keeps COMPLETED rows, so an
+  // unplaced-and-already-complete chore is offered here exactly as it is
+  // offered in the tray today. Matching the tray is the right call — two
+  // lists of "unscheduled" that disagree would be worse.
+  function unplacedChoresFor(state, childId, date) {
+    var slotsIdx = g.SlotsCore.indexSlots(state.slots);
+    var daysIdx = g.SlotsCore.indexDays(state.slotDays);
+    var wdIdx = g.SlotsCore.indexWeekdays(state.slotWeekdays);
+    return g.ChoresCore.choresForChild(state.rows, childId, date, state.today).filter(function (row) {
+      return g.SlotsCore.resolveChip(slotsIdx, wdIdx, daysIdx, row, date).startMin == null;
+    });
+  }
+
+  // §2 — one press resolves to three facts, all from things already on
+  // screen. Called by the recogniser below once the hold has survived
+  // `LONG_PRESS_MS`.
+  function slotPressed(child, clientY) {
+    // §7.5 — `current.range` is read at FIRE time, never from a closure,
+    // exactly as `attachGesture`'s onUp does and for the identical reason:
+    // `render()` sets it per render, and a handler bound during an earlier
+    // one must not measure against the old mode's window.
+    var bodyEl = currentRoot && currentRoot.querySelector(".day-grid-body");
+    if (!bodyEl || !current.range || !current.state) return;
+    // §6.2 — a child with nothing unscheduled gets no sheet and no toast. An
+    // empty modal on every stray press would be worse than the press doing
+    // nothing at all.
+    if (!unplacedChoresFor(current.state, child.id, current.date).length) return;
+    var virtual = startMinFromPointer(clientY, bodyEl, current.range.start, current.range.end);
+    var startMin = virtual % 1440; // block-virtual -> real clock minute (§4.4's night wrap)
+    quickPlaceSheetState = {
+      child: child,
+      startMin: startMin,
+      block: g.ChoresCore.blockFromStartMin(startMin),
+      showAll: false,
+    };
+    rerenderNow();
+  }
+
+  function closeQuickPlaceSheet() {
+    quickPlaceSheetState = null;
+    rerenderNow();
+  }
+
+  // §2.3 — the toggle is not sticky: it lives on the open sheet's state and
+  // dies with it, so every press opens filtered. The filter is the feature;
+  // showing everything is the escape hatch for a chore whose hint is wrong.
+  function quickPlaceShowAll() {
+    quickPlaceSheetState.showAll = true;
+    rerenderNow();
+  }
+
+  // §6.1 — a pick closes the sheet and goes straight to the one write path.
+  // `commitPlacement` reports it with the existing toast, warns on an overlap
+  // without refusing the placement (§3.6), and offers Undo alone: §2.4's
+  // gate means a chore with no `wall_slots` row resolves at `scope: null`, so
+  // the level this writes is always the standing one.
+  function quickPlacePick(row) {
+    var startMin = quickPlaceSheetState.startMin;
+    quickPlaceSheetState = null;
+    rerenderNow();
+    commitPlacement(row, startMin);
+  }
+
+  function buildQuickPlaceSheet() {
+    var s = quickPlaceSheetState;
+    var fmt = (g.Store.getSettings().timeFormat) || "24h";
+    var unplaced = unplacedChoresFor(current.state, s.child.id, current.date);
+    // Everything it had to offer was placed from somewhere else between
+    // renders. §6.2's rule for a press applies to a sheet that has emptied:
+    // nothing to offer, so nothing on screen.
+    if (!unplaced.length) { quickPlaceSheetState = null; return; }
+
+    var showAll = !!s.showAll;
+    var rows = showAll
+      // The tray's own order, on a copy — by block morning -> night, with
+      // `sort_order` surviving inside each block (the sort is stable).
+      ? unplaced.slice().sort(g.ChoresCore.compareBlockHint)
+      // §2.2 — untouched input order, which is the parent's `sort_order`.
+      // Within one block there is nothing to sort by that the parent has not
+      // already said.
+      : g.ChoresCore.unplacedForBlock(unplaced, s.block);
+
+    var overlay = el(
+      '<div class="duration-sheet-overlay quick-place-overlay">' +
+        '<div class="duration-sheet-card">' +
+          "<h2></h2>" +
+          '<ul class="school-picker-list"></ul>' +
+          '<div class="duration-sheet-actions"></div>' +
+        "</div>" +
+      "</div>"
+    );
+    // §6.1 — block, pressed time, child. The time goes through §11.3's
+    // formatter like every other clock on the wall, so a 12h household reads
+    // "8:15 am" here too. `ChoresCore.blockLabel`, not this file's
+    // `blockLabel` — that one names a SCHOOL block.
+    overlay.querySelector("h2").textContent =
+      g.ChoresCore.blockLabel(s.block) + " · " +
+      g.TimeCore.formatMinutes(s.startMin, fmt) + " — " + s.child.name;
+
+    var list = overlay.querySelector(".school-picker-list");
+    if (!rows.length) {
+      // §6.2 — there ARE unplaced chores, just none hinted for this block.
+      // The press was not wasted: "Show all unscheduled" is one tap below
+      // this line, which is the case §2.3 exists for.
+      var empty = el('<li class="school-picker-empty"></li>');
+      empty.textContent = "Nothing unscheduled for " + g.ChoresCore.blockLabel(s.block);
+      list.appendChild(empty);
+    }
+    rows.forEach(function (row) {
+      // A row is the whole tap target, title only — no time (they are all
+      // going to the pressed minute), no duration, no stars.
+      var li = el('<li class="overflow-sheet-row"><span class="strip-title"></span></li>');
+      li.querySelector(".strip-title").textContent = row.title;
+      if (showAll) {
+        // §2.3 — the badge is the whole point of showing an excluded chore:
+        // you can see that you are putting `Dishes · Evening` into the
+        // morning, and choose to. The tray's own badge (§3.4.1), not a
+        // second one.
+        var badge = el('<span class="day-tray-block"></span>');
+        badge.textContent = g.ChoresCore.blockHintLabel(row);
+        li.appendChild(badge);
+      }
+      li.addEventListener("click", function () { quickPlacePick(row); });
+      list.appendChild(li);
+    });
+
+    var actions = overlay.querySelector(".duration-sheet-actions");
+    if (!showAll) {
+      var allBtn = el('<button class="btn" type="button">Show all unscheduled</button>');
+      allBtn.addEventListener("click", quickPlaceShowAll);
+      actions.appendChild(allBtn);
+    }
+    var cancelBtn = el('<button class="btn ghost" type="button">Cancel</button>');
+    cancelBtn.addEventListener("click", closeQuickPlaceSheet);
+    actions.appendChild(cancelBtn);
+
+    // The gesture that opens THIS sheet is a long-press with the finger still
+    // down, so its `click` is dispatched after the overlay is already in the
+    // DOM — on whatever now sits under the release point. Every other sheet
+    // here meets that fact halfway, listening on `pointerdown` for the
+    // backdrop so the opening tap cannot dismiss what it just opened
+    // (`buildAddSchoolSheet`'s comment records why). This sheet cannot stop
+    // there: its ROWS are the content, and a stray click on one would place a
+    // chore nobody chose — the one thing §3.6 says must never happen.
+    //
+    // So one guard, in the capture phase, for the whole sheet: swallow a
+    // click whose own `pointerdown` this overlay never saw. The opening press
+    // went down on the grid column before this overlay existed, so its click
+    // reaches nothing; a deliberate tap presses the overlay first and passes
+    // through. No timer, and nothing to get stuck armed.
+    var sawDown = false;
+    overlay.addEventListener("pointerdown", function () { sawDown = true; }, true);
+    overlay.addEventListener("click", function (ev) {
+      if (!sawDown) ev.stopPropagation();
+    }, true);
+    overlay.addEventListener("pointerdown", function (ev) {
+      if (ev.target === overlay) closeQuickPlaceSheet(); // backdrop tap cancels
+    });
+
+    currentRoot.appendChild(overlay);
+  }
+
+  // §7 — the recogniser. Deliberately NOT `attachGesture`, and the reason is
+  // load-bearing: that one calls `ev.preventDefault()` and `setPointerCapture`
+  // on every pointerdown (:1166-1167). Correct for a chip — a chip must not
+  // scroll the page when you drag it — and fatal here, because a
+  // `.day-column` fills the entire scrollable body, so preventing its default
+  // kills touch scrolling of the day view outright (§7.2).
+  //
+  // This one is defined by what it does not do: no `preventDefault`, so the
+  // grid scrolls normally; no `setPointerCapture`, so the browser keeps the
+  // pointer and can hand it to the scroller; no ghost, no drag, no drop —
+  // there is nothing being dragged, only a timer and a cancel.
+  //
+  // `LONG_PRESS_MS` is reused, not re-tuned: one press duration across the
+  // whole app (§7.2).
+  function attachSlotPress(colEl, child) {
+    colEl.addEventListener("pointerdown", function (ev) {
+      // §7.3's three exclusions, all checked before the timer is even set.
+      if (ev.button != null && ev.button !== 0) return;
+      // An armed tray item means a placement is already in flight. The armed
+      // tap-to-place wins; Quick Place stands down entirely rather than
+      // racing it — one placement gesture at a time.
+      if (selectedForPlacement) return;
+      // A chip, its hit padding (which IS the chip's tap target, and covers
+      // the `+N` overflow tile), and a school block each carry their own
+      // long-press already — the adjust sheet and the block span editor.
+      // This is `attachGridTapToPlace`'s own exclusion idiom, extended by
+      // the school-block class. The time gutter needs no exclusion:
+      // `.day-gutter` is a SIBLING of the columns, not a descendant of one.
+      if (ev.target.closest(".day-chip, .day-chip-hit, .school-block-chip")) return;
+
+      var startX = ev.clientX, startY = ev.clientY;
+      var timer = setTimeout(function () {
+        timer = null;
+        cleanup();
+        // The press POSITION, not wherever the pointer has got to: movement
+        // cancels, so by the time this fires the two are within
+        // PRESS_CANCEL_PX of each other anyway.
+        slotPressed(child, startY);
+      }, LONG_PRESS_MS);
+
+      function cleanup() {
+        if (timer) { clearTimeout(timer); timer = null; }
+        document.removeEventListener("pointermove", onMove);
+        document.removeEventListener("pointerup", cleanup);
+        document.removeEventListener("pointercancel", cleanup);
+      }
+
+      // `pointercancel` is what actually fires on most touch scrollers once
+      // the browser takes the gesture over; the move check catches the rest.
+      function onMove(mv) {
+        var dx = mv.clientX - startX, dy = mv.clientY - startY;
+        if (Math.sqrt(dx * dx + dy * dy) > PRESS_CANCEL_PX) cleanup();
+      }
+
+      document.addEventListener("pointermove", onMove);
+      document.addEventListener("pointerup", cleanup);
+      document.addEventListener("pointercancel", cleanup);
+    });
+  }
+
   // ---- early/late strips (§4.3 — never hidden, never clamped; grid mode only,
   // since block mode's night block already covers everything outside 06:00-23:00) --
 
@@ -2418,6 +2672,15 @@
 
   function buildColumn(entry, rh, rangeStart, opts) {
     var col = el('<div class="day-column"></div>');
+
+    // Quick Place §7.4 — long-press empty space in this column to be offered
+    // the chores hinted for that block. Attached HERE, so it lands in grid
+    // mode and single-expanded-block mode, the two modes with a real time
+    // axis, and nowhere else: collapsed block mode builds its rows through
+    // `buildBlockRow`, and the events band and early/late strips are not
+    // columns. That is the same boundary Phase 5 drew for drag and
+    // tap-to-place, inherited rather than restated.
+    attachSlotPress(col, entry.child);
 
     // School blocks go down FIRST, so they sit behind the chore chips: a
     // block spans hours and a chore inside those hours has to be the thing
@@ -2779,6 +3042,7 @@
   var membershipSheetState = null; // school block membership picker: {block} while open, or null (§16 Phase 7)
   var addSchoolSheetState = null; // "+ School" fork: {child} while open, or null (Placement Scopes §6.3)
   var overflowSheetState = null; // same-slot overflow list: {items, child, opts} while open, or null (§9 display correction)
+  var quickPlaceSheetState = null; // Quick Place: {child, startMin, block, showAll} while open, or null (Quick Place §6.1)
 
   function setMode(mode) {
     dayMode = mode;
@@ -2823,6 +3087,10 @@
     if ((isNewDate || isNewMode) && membershipSheetState) membershipSheetState = null;
     if ((isNewDate || isNewMode) && addSchoolSheetState) addSchoolSheetState = null;
     if ((isNewDate || isNewMode) && overflowSheetState) overflowSheetState = null;
+    // The Quick Place sheet is scoped harder than most: it holds a startMin,
+    // which means nothing in another mode's coordinate space, and a child's
+    // unscheduled chores differ by date.
+    if ((isNewDate || isNewMode) && quickPlaceSheetState) quickPlaceSheetState = null;
 
     root.innerHTML = "";
 
@@ -2870,6 +3138,7 @@
     if (membershipSheetState) buildMembershipSheet();
     if (addSchoolSheetState) buildAddSchoolSheet();
     if (overflowSheetState) buildOverflowSheet();
+    if (quickPlaceSheetState) buildQuickPlaceSheet();
 
     var rh = rowHeightPx();
     if (result.body) {
@@ -2941,6 +3210,7 @@
     membershipSheetState = null;
     addSchoolSheetState = null;
     overflowSheetState = null;
+    quickPlaceSheetState = null;
   }
 
   g.DayUi = { render: render, stop: stop };

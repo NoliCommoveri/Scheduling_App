@@ -373,6 +373,7 @@ Ask explicitly, list the candidate readings, state which you are proceeding with
 | `docs/TDS_Slice_Online_Revamp.md` | **Controlling design.** Schema, API, auth, migrations, phasing. |
 | `docs/TDS_Slice_Wall_Display_App.md` | The Wall Display App: credential, roster, PIN gate, read/write paths, Worker routes, phasing. |
 | `docs/TDS_Slice_Wall_Placement_Scopes.md` | Placement scopes (weekday & occurrence) for chores and school blocks. **Design only — authorized 2026-08-23, unbuilt.** |
+| `docs/TDS_Slice_Wall_Quick_Place.md` | Quick Place: long-press an empty slot to be offered the unscheduled chores hinted for that block. `wall-app/` only — no schema, no route, no `assignments` write, no guardrail amendment. |
 | `docs/TDS_Slice_Grading_Assistant.md` | The Grading Assistant: rubric model, mechanics filter, media storage, Worker routes, prompt contract, phasing. |
 | `migrations/*.sql` | Schema history. Forward-only. |
 | `management-app/worker/index.js` | The API. |

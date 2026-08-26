@@ -1702,6 +1702,18 @@ button {
   border-bottom: none;
 }
 
+/* ---- Quick Place (TDS_Slice_Wall_Quick_Place.md §6.1) -----------------------
+   No rules of its own, deliberately, and stated here so the next reader does
+   not go looking for them. The sheet reuses
+   .duration-sheet-overlay/.duration-sheet-card/.duration-sheet-actions for the
+   modal, .school-picker-list for the scrolling list, .overflow-sheet-row for a
+   row (a 44px target with .strip-title taking the slack, already), and
+   .school-picker-empty for §6.2's "nothing hinted for this block" line. A
+   "Show all" row carries .day-tray-block — the tray's own badge (§3.4.1), not
+   a second one, which is the whole point of showing an excluded chore.
+   .quick-place-overlay marks the variant and styles nothing, exactly as
+   .school-picker-overlay does for the two sheets above. */
+
 /* ---- completion sheet (§16 Phase 6, §8.3) ----------------------------------
    Same overlay convention as the duration sheet and Settings — a full-screen
    scrim, one card centred on it. Lives outside day-ui.js's render target
