@@ -16,6 +16,10 @@
 // asserted through it rather than beside it: the month grid calls
 // EventsCore.eventsOn once per cell and carries no dedupe of its own, so
 // the month-window assertions below exercise that same function.
+// TDS_Slice_Wall_Quick_Place.md adds `ChoresCore.unplacedForBlock` (§8) — the
+// long-press recogniser and the sheet it opens are pointer and DOM behaviour,
+// so they stay in that slice's §8.1 manual checks, on the same boundary every
+// phase above has drawn.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -252,6 +256,46 @@ test('blockVirtualMin maps a real clock minute into a block\'s own coordinate sp
   const justBefore = ChoresCore.blockVirtualMin(23 * 60, 'night');
   const justAfter = ChoresCore.blockVirtualMin(0, 'night');
   assert.ok(justAfter > justBefore);
+});
+
+// ---------------------------------------------  Quick Place (§8, this slice)
+// The gesture that calls this is pointer/DOM behaviour and is exercised by
+// §8.1's manual checks; the filter it runs on is not, so it is tested here.
+
+test('unplacedForBlock filters on the hint chain, not on block_hint alone (§2.2)', () => {
+  const rows = [
+    { id: 'a', child_block_hint: 'evening', block_hint: 'morning' }, // the child's hint wins
+    { id: 'b', block_hint: 'morning' },
+    { id: 'c' },                                                     // neither -> 'morning'
+    { id: 'd', block_hint: 'nonsense' },                             // uncanonical -> 'morning'
+  ];
+  assert.deepEqual(ChoresCore.unplacedForBlock(rows, 'morning').map((r) => r.id), ['b', 'c', 'd']);
+  assert.deepEqual(ChoresCore.unplacedForBlock(rows, 'evening').map((r) => r.id), ['a']);
+  assert.deepEqual(ChoresCore.unplacedForBlock(rows, 'night'), []);
+});
+
+test('unplacedForBlock preserves input order, so the parent\'s sort_order survives (§2.2)', () => {
+  const rows = [
+    { id: 'third', block_hint: 'afternoon' },
+    { id: 'first', block_hint: 'afternoon' },
+    { id: 'skipped', block_hint: 'night' },
+    { id: 'second', block_hint: 'afternoon' },
+  ];
+  assert.deepEqual(
+    ChoresCore.unplacedForBlock(rows, 'afternoon').map((r) => r.id),
+    ['third', 'first', 'second']);
+});
+
+test('unplacedForBlock on an empty or absent list returns [], never a throw (§8.3)', () => {
+  assert.deepEqual(ChoresCore.unplacedForBlock([], 'morning'), []);
+  assert.deepEqual(ChoresCore.unplacedForBlock(null, 'morning'), []);
+  assert.deepEqual(ChoresCore.unplacedForBlock(undefined, 'morning'), []);
+});
+
+test('unplacedForBlock does not mutate its input', () => {
+  const rows = [{ id: 'a', block_hint: 'night' }, { id: 'b', block_hint: 'morning' }];
+  ChoresCore.unplacedForBlock(rows, 'morning');
+  assert.deepEqual(rows.map((r) => r.id), ['a', 'b']);
 });
 
 // ===========================================================  slots-core (§3.1, §3.5.1)

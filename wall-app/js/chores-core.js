@@ -112,6 +112,22 @@
     return CANON_BLOCKS.indexOf(effectiveBlockHint(a)) - CANON_BLOCKS.indexOf(effectiveBlockHint(b));
   }
 
+  // Quick Place §2.2 — the unplaced chores whose hint puts them in `block`.
+  // `rows` is already-unplaced rows: the caller resolved that, because it
+  // needs the slot indexes and this file has no placement index (§5). Pure
+  // and order-preserving, so the parent's `sort_order` survives the filter
+  // — within one block there is nothing to sort by that the parent has not
+  // already said (§2.2).
+  //
+  // The hint chain is `effectiveBlockHint`'s, never `blockForChip`'s: a
+  // candidate has no start_min by definition, so "the placement wins" cannot
+  // apply and is not consulted.
+  function unplacedForBlock(rows, block) {
+    return (rows || []).filter(function (row) {
+      return effectiveBlockHint(row) === block;
+    });
+  }
+
   // Which of the four blocks a real clock minute-of-day falls in (§4.4's
   // table). Not a planner-core mirror — the child app has no clock-time
   // concept to mirror here; this is new to the wall.
@@ -186,6 +202,7 @@
     blockLabel: blockLabel,
     blockHintLabel: blockHintLabel,
     compareBlockHint: compareBlockHint,
+    unplacedForBlock: unplacedForBlock,
     blockFromStartMin: blockFromStartMin,
     blockForChip: blockForChip,
     blockVirtualMin: blockVirtualMin,
