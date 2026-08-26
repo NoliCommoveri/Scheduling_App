@@ -131,7 +131,27 @@
 // `slots-core.js` gains the write-shape helpers (`planScopeWrite`,
 // `levelRow`, `overrideWrite`); wall.css gains the second stepper's label,
 // the scope row and the toast's wrapping.
-const CACHE_NAME = "wall-display-shell-v20";
+// v19, v20: Placement Scopes Phases 5a and 5b — the block sheets learn the
+// scope chain. BACKFILLED 2026-08-26: both phases bumped this constant
+// correctly and neither added its line here, so the log above stopped at v18
+// while the cache name ran ahead of it. Recorded rather than left as a gap,
+// the same way v2's entry records the files Phase 3 never added. 5a:
+// `school-core.js` gains `planWeekdayWrite`/`planDateWrite`, api.js the
+// weekday and date PUT/DELETEs, day-ui.js the write plumbing behind them.
+// 5b: the block sheet grows from "end time + label" into the block's whole
+// schedule (the weekday list, today's occurrence, the "+ School" fork),
+// `time-core.js` gains its date label, and wall.css gains the scrolling card
+// those rows need.
+// v21: Quick Place (TDS_Slice_Wall_Quick_Place.md) — long-press an empty
+// slot to be offered the unscheduled chores hinted for that block.
+// `chores-core.js` gains `unplacedForBlock`; `day-ui.js` gains the press
+// recogniser (`attachSlotPress` — deliberately not `attachGesture`, §7.2)
+// and the sheet; wall.css changes only by a comment recording that the sheet
+// adds no rules of its own. No new files. The bump is what makes this
+// visible at all: this worker is cache-first for the shell, so without it a
+// tablet keeps serving the old `day-ui.js` and the new gesture does not
+// exist as far as the family is concerned.
+const CACHE_NAME = "wall-display-shell-v21";
 
 const APP_SHELL = [
   "./",
