@@ -865,6 +865,22 @@ button {
   flex: 1 1 0;
   position: relative;
   border-left: 1px solid var(--panel-2);
+  /* Quick Place §7.2 — the browser has its own long-press, and it fires
+     FIRST. On a touchscreen a ~500ms hold starts a text-selection/callout
+     gesture, and the browser dispatches `pointercancel` when it takes the
+     gesture over — 50ms before `LONG_PRESS_MS` (550), so `attachSlotPress`'s
+     timer is cleared as if the finger had scrolled and the sheet never
+     opens. With a mouse none of that happens, which is why this survived
+     the headless run in §9 and died on the tablet.
+     Every other gesture surface here is already immune because it sets both
+     of these beside `touch-action: none`; this column is the one that
+     cannot take that third rule — it fills the scrollable body, and
+     `touch-action: none` would kill the day view's scrolling outright
+     (§7.2's load-bearing constraint). These two carry no such cost: nothing
+     on the grid is meant to be selected. */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 /* §8.1 — the transparent tap target a chore chip lives inside, reaching
