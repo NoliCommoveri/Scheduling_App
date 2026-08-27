@@ -151,7 +151,15 @@
 // visible at all: this worker is cache-first for the shell, so without it a
 // tablet keeps serving the old `day-ui.js` and the new gesture does not
 // exist as far as the family is concerned.
-const CACHE_NAME = "wall-display-shell-v21";
+// v22: Quick Place phase 3 — the tablet acceptance run's fix. The press
+// worked with a mouse and was dead under a finger, for two touch-only
+// reasons: `.day-column` was the one gesture surface in the app that left
+// `user-select`/`-webkit-touch-callout` on, so the browser's own ~500ms
+// long-press pre-empted ours at 550ms and cancelled the pointer; and
+// `PRESS_CANCEL_PX` was 10, below the drift of a hand holding still.
+// wall.css gains the two selection rules (never `touch-action` — §7.2) and
+// day-ui.js the wider threshold, a scroll-cancel, and a contextmenu guard.
+const CACHE_NAME = "wall-display-shell-v22";
 
 const APP_SHELL = [
   "./",

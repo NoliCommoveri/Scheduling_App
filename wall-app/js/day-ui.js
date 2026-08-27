@@ -130,11 +130,25 @@
   }
   var LONG_PRESS_MS = 550; // held this long with no movement opens the duration sheet (§16 Phase 5b)
   // Quick Place §7.2 — how far a press on EMPTY grid may travel before it is
-  // read as a scroll instead. Far tighter than `TOUCH_DRAG_SLOP_PX` (44) on
-  // purpose: a chip's long-press has to be told apart from a drag of that
-  // chip, and 44px is what that costs. A press on empty space has no drag to
-  // be told apart from — only a scroll — so any real movement cancels it.
-  var PRESS_CANCEL_PX = 10;
+  // read as a scroll instead. Still tighter than `TOUCH_DRAG_SLOP_PX` (44):
+  // a chip's long-press has to be told apart from a drag of that chip, and
+  // 44px is what that costs; a press on empty space has no drag to be told
+  // apart from, only a scroll.
+  //
+  // It was 10, and 10 is below the noise floor of a finger. A stationary
+  // hold on a capacitive tablet rolls several pixels over 550ms — the same
+  // imprecision §8.1's HIT_PAD was widened for ("still super hard to find
+  // the sweet spot") — so the press was being cancelled by the hand holding
+  // it still. Measured on the real day-ui.js: a 12px roll during the hold
+  // already killed the sheet.
+  //
+  // The scroll case does not need a tight number here, because two better
+  // signals already carry it: the browser starts scrolling at ~8 device px
+  // and dispatches `pointercancel` when it takes the gesture over, and the
+  // scroller's own `scroll` event fires (both wired below). This threshold
+  // only has to catch the leftover — a drag on a scroller already pinned at
+  // its limit, which scrolls nothing and so cancels nothing.
+  var PRESS_CANCEL_PX = 24;
   var MAX_ADJUST_MIN = 8 * 60; // stepper ceiling; the Worker enforces no max besides "positive multiple of 15"
 
   function el(html) {
@@ -2370,10 +2384,12 @@
   // `.day-column` fills the entire scrollable body, so preventing its default
   // kills touch scrolling of the day view outright (§7.2).
   //
-  // This one is defined by what it does not do: no `preventDefault`, so the
-  // grid scrolls normally; no `setPointerCapture`, so the browser keeps the
-  // pointer and can hand it to the scroller; no ghost, no drag, no drop —
-  // there is nothing being dragged, only a timer and a cancel.
+  // This one is defined by what it does not do ON POINTERDOWN: no
+  // `preventDefault`, so the grid scrolls normally; no `setPointerCapture`,
+  // so the browser keeps the pointer and can hand it to the scroller; no
+  // ghost, no drag, no drop — there is nothing being dragged, only a timer
+  // and a cancel. (It does prevent the `contextmenu` a touchscreen raises
+  // mid-hold — a different event, at no cost to scrolling. See below.)
   //
   // `LONG_PRESS_MS` is reused, not re-tuned: one press duration across the
   // whole app (§7.2).
@@ -2393,7 +2409,12 @@
       // `.day-gutter` is a SIBLING of the columns, not a descendant of one.
       if (ev.target.closest(".day-chip, .day-chip-hit, .school-block-chip")) return;
 
+      // A second finger must not arm a second timer against the first one's
+      // start point — one press at a time, like one placement at a time.
+      if (ev.isPrimary === false) return;
+
       var startX = ev.clientX, startY = ev.clientY;
+      var scroller = colEl.closest(".day-scroll");
       var timer = setTimeout(function () {
         timer = null;
         cleanup();
@@ -2408,18 +2429,36 @@
         document.removeEventListener("pointermove", onMove);
         document.removeEventListener("pointerup", cleanup);
         document.removeEventListener("pointercancel", cleanup);
+        if (scroller) scroller.removeEventListener("scroll", cleanup);
+        colEl.removeEventListener("contextmenu", swallowContextMenu);
       }
 
-      // `pointercancel` is what actually fires on most touch scrollers once
-      // the browser takes the gesture over; the move check catches the rest.
+      // The leftover case PRESS_CANCEL_PX still has to catch: a drag on a
+      // scroller already pinned at its limit scrolls nothing, so neither the
+      // `scroll` listener nor `pointercancel` ever fires for it.
       function onMove(mv) {
         var dx = mv.clientX - startX, dy = mv.clientY - startY;
         if (Math.sqrt(dx * dx + dy * dy) > PRESS_CANCEL_PX) cleanup();
       }
 
+      // The other half of the fix in `.day-column`'s CSS: a touchscreen
+      // long-press raises the selection/callout gesture before ours is due,
+      // and the browser cancels our pointer when it does. `user-select`
+      // and `-webkit-touch-callout` stop it being recognised at all; this
+      // stops the menu on the platforms that raise it anyway. Bound only
+      // while a press is pending, so a right-click anywhere else is
+      // untouched.
+      function swallowContextMenu(cm) { cm.preventDefault(); }
+
       document.addEventListener("pointermove", onMove);
       document.addEventListener("pointerup", cleanup);
       document.addEventListener("pointercancel", cleanup);
+      // The unambiguous scroll signal, and the reason PRESS_CANCEL_PX no
+      // longer has to be paranoid: the grid actually moved. Catches a fling
+      // whose `pointercancel` lags, and costs nothing when the finger is
+      // still — a stationary hold scrolls nothing, so this never fires.
+      if (scroller) scroller.addEventListener("scroll", cleanup);
+      colEl.addEventListener("contextmenu", swallowContextMenu);
     });
   }
 
