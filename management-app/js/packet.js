@@ -503,7 +503,17 @@ const Packet = (() => {
           // Suffix omitted for a chore with no `instances` (§2.4) — inst.id is
           // '' in that case, matching instance_key's schema default (§3.1).
           const occId = inst.id ? `CHR-${token}-${d.replace(/-/g, '')}-${inst.id}` : `CHR-${token}-${d.replace(/-/g, '')}`;
-          if (decisionItemIds.has(occId)) continue; // already reproduced/suppressed
+          // A prior decision suppresses this occurrence — it was reproduced
+          // above, or dropped on purpose. **Unless D1 says it was rescinded**
+          // (Rescind_Regeneration §2.2): a rescind un-assigns, and a chore
+          // occurrence is proposable again for ITS OWN DATE, which is the only
+          // date it can ever have. That is what makes "assign a fortnight,
+          // rescind it, then assign day by day" work — the day being proposed
+          // offers its own rescinded occurrence, while yesterday's stays gone
+          // because yesterday is not in the range and its id belongs to no
+          // other day. Step 2 skipped reproducing it, so exactly one of the two
+          // steps places it.
+          if (decisionItemIds.has(occId) && !committed.rescindedKeys.has(keyOf(d, 'chore', chore.id, inst.id))) continue;
           ensureDay(d).chores.push({
             kind: 'chore', id: occId, choreId: chore.id, instanceKey: inst.id,
             instanceLabel: inst.label, instanceBlockHint: inst.blockHint,
