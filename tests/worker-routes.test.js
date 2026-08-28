@@ -2585,3 +2585,59 @@ test('§8.5: /wall redirects to /wall-app/, alongside /kid', async () => {
   assert.equal(res.status, 302);
   assert.equal(new URL(res.headers.get('location')).pathname, '/wall-app/');
 });
+
+// ==========================  reassignable (TDS_Slice_Rescind_Regeneration.md)
+//
+// The route that tells Propose which school work was pulled back and never
+// re-assigned (§4). What the fake can check is the Worker's decisions: who gets
+// in, what it refuses to answer without, and what the statement asks for. The
+// three-case truth of §2.1 — rescinded-only returns, re-assigned does not,
+// re-assigned-and-completed does not — is `SUM(...) = 0` over real rows, which
+// this harness does not execute; it is §7.1's manual checks.
+
+test('§4: reassignable is parent-only — a device token and a wall token are both 401', async () => {
+  for (const token of [DEVICE_TOKEN, WALL_TOKEN]) {
+    const { env, statements } = makeEnv(wallResolver());
+    const res = await call(env, '/api/assignments/reassignable?childId=CH-1', { token });
+    assert.equal(res.status, 401, 'only the parent token may read the whole history');
+    assert.ok(!statements.some((s) => s.sql.includes('FROM assignments')));
+  }
+});
+
+test('§4: reassignable without a childId is 400 and reads nothing', async () => {
+  const { env, statements } = makeEnv();
+  const res = await call(env, '/api/assignments/reassignable', { token: PARENT_TOKEN });
+  assert.equal(res.status, 400);
+  assert.ok(!statements.some((s) => s.sql.includes('FROM assignments')));
+});
+
+test('§4: reassignable asks for one child\'s activities with no live row', async () => {
+  const { env, statements } = makeEnv((sql) =>
+    (sql.includes('HAVING SUM') ? { results: [{ source_id: 'ACT-1' }, { source_id: 'ACT-2' }] } : {})
+  );
+  const res = await call(env, '/api/assignments/reassignable?childId=CH-1', { token: PARENT_TOKEN });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { activityIds: ['ACT-1', 'ACT-2'] });
+
+  const select = statements.find((s) => s.sql.includes('FROM assignments'));
+  assert.deepEqual(select.args, ['CH-1'], 'scoped to the named child, and nothing else');
+  // §2.2 — a chore's identity contains its date, so a rescinded chore day is
+  // spent and has no walk to return to. The filter lives in the SQL so no
+  // caller can drop it.
+  assert.ok(select.sql.includes("kind = 'activity'"));
+  // §2.1 — "no live row anywhere", not "has a rescinded row".
+  assert.ok(select.sql.includes('HAVING SUM(CASE WHEN rescinded_at IS NULL THEN 1 ELSE 0 END) = 0'));
+  assert.ok(!statements.some((s) => /UPDATE|INSERT|DELETE/.test(s.sql)), 'a read, and only a read');
+});
+
+test('§4: a truncated reassignable answer says so', async () => {
+  const { env } = makeEnv((sql) =>
+    (sql.includes('HAVING SUM')
+      ? { results: Array.from({ length: 5001 }, (_, i) => ({ source_id: `ACT-${i}` })) }
+      : {})
+  );
+  const res = await call(env, '/api/assignments/reassignable?childId=CH-1', { token: PARENT_TOKEN });
+  const out = await res.json();
+  assert.equal(out.activityIds.length, 5000);
+  assert.equal(out.truncated, true);
+});

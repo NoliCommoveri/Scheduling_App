@@ -161,6 +161,19 @@ const Packet = (() => {
     return item.record.id;
   }
 
+  // The natural key of a prior decision, from its Generation Log row — the same
+  // key `loadCommittedKeys` builds from a D1 row, so the two can be compared.
+  // Used twice: by the log fallback below, and by Step 2 to recognise a
+  // decision the parent has since pulled back (Rescind_Regeneration §2.3).
+  // CHR-{token}-{YYYYMMDD}[-{instanceId}] (§2.4) — the fourth segment, when
+  // present, recovers the chore-occurrence instance.
+  function keyOfLogRow(row, allChores) {
+    if (row.instanceId) return keyOf(row.assignedDate, 'activity', row.itemId, '');
+    const parts = row.itemId.split('-');
+    const chore = allChores.find((c) => c.id === 'CHR-' + parts[1]);
+    return chore ? keyOf(row.assignedDate, 'chore', chore.id, parts[3] || '') : null;
+  }
+
   // D1 is asked first because it is the system of record and the only source
   // that knows about a **rescind**: pulling a batch back leaves its 'sent' log
   // rows behind, and those items must become assignable again. The Generation
@@ -170,19 +183,32 @@ const Packet = (() => {
   // which are re-derived each Propose rather than logged. The Worker's own
   // check is what stands behind both readings; this one exists so the screen
   // tells the truth before the parent presses Commit.
+  //
+  // "Must become assignable again" was written here and never wired to
+  // anything: this read answered one question (what is already live in the
+  // range) and the walk went on trusting the log. `loadReassignableActivities`
+  // below is the other half — TDS_Slice_Rescind_Regeneration.md §0.3.
   async function loadCommittedKeys(childId, from, to, logRows, allChores) {
     try {
       const { enabled } = await Sync.getConfig();
       if (enabled) {
+        // `includeRescinded=1` (Rescind_Regeneration §5): the rescinded rows are
+        // not live and must not join `keys`, but Step 2 needs to know they
+        // exist — a prior decision the parent pulled back is a hole in the
+        // range, and reproducing it would put it back on the day it was
+        // pulled from and re-commit it there.
         const result = await Sync.api(
-          `/api/assignments?childId=${encodeURIComponent(childId)}&from=${from}&to=${to}`
+          `/api/assignments?childId=${encodeURIComponent(childId)}&from=${from}&to=${to}&includeRescinded=1`
         );
         const keys = new Set();
+        const rescindedKeys = new Set();
         for (const row of (result && result.assignments) || []) {
           if (row.source_id == null) continue;
-          keys.add(keyOf(row.date, row.kind, row.source_id, row.instance_key));
+          const key = keyOf(row.date, row.kind, row.source_id, row.instance_key);
+          if (row.rescinded_at != null) rescindedKeys.add(key);
+          else keys.add(key);
         }
-        return { keys, source: 'plan' };
+        return { keys, rescindedKeys, source: 'plan' };
       }
     } catch {
       // Unreachable or rejected — fall through to the log rather than fail a
@@ -193,17 +219,31 @@ const Packet = (() => {
     for (const row of logRows) {
       if (row.assignedDate < from || row.assignedDate > to) continue;
       if (row.disposition !== 'sent') continue;
-      if (row.instanceId) {
-        keys.add(keyOf(row.assignedDate, 'activity', row.itemId, ''));
-      } else {
-        // CHR-{token}-{YYYYMMDD}[-{instanceId}] (§2.4) — the fourth segment,
-        // when present, recovers the chore-occurrence instance.
-        const parts = row.itemId.split('-');
-        const chore = allChores.find((c) => c.id === 'CHR-' + parts[1]);
-        if (chore) keys.add(keyOf(row.assignedDate, 'chore', chore.id, parts[3] || ''));
-      }
+      const key = keyOfLogRow(row, allChores);
+      if (key) keys.add(key);
     }
-    return { keys, source: 'log' };
+    // Empty on purpose: the log cannot see a rescind at all (§2.4), so the
+    // offline reading is "nothing was pulled back" — conservative in the same
+    // direction as `keys` itself.
+    return { keys, rescindedKeys: new Set(), source: 'log' };
+  }
+
+  // Which of this child's school activities were pulled back and never
+  // re-assigned (Rescind_Regeneration §2.1, §4). Returns null — not an empty
+  // Set — when the answer is unknown, so a caller cannot mistake "D1 says
+  // nothing came back" for "D1 was not asked". `source` is
+  // `loadCommittedKeys`'s: when that already fell back to the log there is no
+  // token or no network, and this read would fail the same way.
+  async function loadReassignableActivities(childId, source) {
+    if (source !== 'plan') return null;
+    try {
+      const result = await Sync.api(
+        `/api/assignments/reassignable?childId=${encodeURIComponent(childId)}`
+      );
+      return new Set((result && result.activityIds) || []);
+    } catch {
+      return null;
+    }
   }
 
   // ---- The canonical order of a day's activities (§2.1) ----
@@ -336,6 +376,23 @@ const Packet = (() => {
     );
     const decisionItemIds = new Set(logRows.map((r) => r.itemId)); // any sent/dropped decision (per-occurrence for chores)
 
+    // What D1 knows and the log cannot (Rescind_Regeneration §2). Read before
+    // any placement, because Step 2 and Step 3 both need correcting by it:
+    // `committed.keys` is what is already live in the range (§6.6, unchanged),
+    // `committed.rescindedKeys` is what was pulled back inside it, and
+    // `reassignable` is the school work pulled back anywhere in the child's
+    // history and never re-assigned — normally OUTSIDE this range, because the
+    // parent rescinds yesterday and proposes today.
+    const committed = await loadCommittedKeys(childId, coversFrom, coversTo, logRows, allChores);
+    const reassignable = await loadReassignableActivities(childId, committed.source);
+    // A rescind un-assigns (§2.1). The log still says `sent` — it is written at
+    // Commit and never again — so without this the walk steps over the work the
+    // parent just pulled back, for good. Deleting from the set rather than
+    // testing at the filter keeps Step 3's `pending` line reading as it did,
+    // and keeps `excludeFromGeneration` winning over a return (§1).
+    if (reassignable) for (const id of reassignable) sentActivityIds.delete(id);
+    const returned = (id) => !!(reassignable && reassignable.has(id));
+
     const rangeDates = eachDate(coversFrom, coversTo);
     const days = new Map();
     const ensureDay = (d) => {
@@ -369,6 +426,16 @@ const Packet = (() => {
       if (row.assignedDate < coversFrom || row.assignedDate > coversTo) continue;
       if (row.disposition !== 'sent') continue; // in-range dropped chore rows are suppressions — not re-proposed
       if (!(row.instanceId ? inc.school : inc.chores)) continue;
+      // A decision the parent has since rescinded is not reproduced
+      // (Rescind_Regeneration §2.3). Two tests, because two things can be true:
+      // the row was pulled back where the log says it is — which is what keeps
+      // a rescinded CHORE day off the screen and out of Commit — or its
+      // activity is owed again anywhere, which also catches a row the parent
+      // MOVED with PATCH (§6.5) before rescinding it, since a Move leaves the
+      // log's date behind.
+      const priorKey = keyOfLogRow(row, allChores);
+      if (priorKey && committed.rescindedKeys.has(priorKey)) continue;
+      if (row.instanceId && returned(row.itemId)) continue; // Step 3 re-places it at its walk position
       if (row.instanceId) {
         const record = await Storage.get('activities', row.itemId);
         if (!record) continue; // deleted since — cannot reproduce content
@@ -411,7 +478,11 @@ const Packet = (() => {
           const cost = profile.pacingMode === 'activityCount' ? 1 : durationOf(a);
           if (profile.pacingMode === 'activityCount' && load + 1 > profile.activitiesPerDay) break;
           if (profile.pacingMode === 'minutesBudget' && load + cost > profile.minutesPerDay) break;
-          placeActivity(dayObj, a, instance.id, d, 'walked');
+          // `returned` rather than `walked` so the review screen says why an
+          // item the parent pulled back is here again (§6). It is the same
+          // placement either way — the walk owes it, and it sits at its own
+          // position in the course, so work behind it moves later.
+          placeActivity(dayObj, a, instance.id, d, returned(a.id) ? 'returned' : 'walked');
           load += cost;
           idx++;
         }
@@ -454,7 +525,7 @@ const Packet = (() => {
     // Step 6 — Mark what is already live (§6.6). After every placement step,
     // so a reproduced item, a freshly walked one and a re-derived event are all
     // measured against the same set.
-    const committed = await loadCommittedKeys(childId, coversFrom, coversTo, logRows, allChores);
+    // `committed` was loaded above, before Step 2 needed it.
     let committedCount = 0;
     for (const [d, o] of days) {
       for (const list of [o.activities, o.chores, o.events]) {
@@ -494,6 +565,12 @@ const Packet = (() => {
       // child's plan, and whether that was read from the plan itself or
       // inferred from local history.
       committedCount, committedSource: committed.source,
+      // Which activities are in this proposal because they were rescinded and
+      // never re-assigned (§6). Empty on an offline Propose, which cannot know.
+      // The set, not a count: Review keeps rearranging the proposal — a
+      // returned item can be excluded, relocated or pulled forward — and the
+      // notice has to describe what is on screen now, not what Propose placed.
+      returnedIds: reassignable || new Set(),
       // Commit bookkeeping (see the [DECISION] above commit()). batchId is
       // minted on the first Commit attempt and reused by every retry of this
       // same proposal; partial records that some of it reached D1.
@@ -549,6 +626,19 @@ const Packet = (() => {
         'rescind it in the Assignments view — changing it here would leave the live row ' +
         'where it is and add a second copy.',
     };
+  }
+
+  // How many of the activities on screen are here because they were rescinded
+  // and never re-assigned (Rescind_Regeneration §6). Counted from the proposal
+  // rather than from placement, so excluding one, relocating it or pulling
+  // another forward all keep the notice honest.
+  function countReturned() {
+    if (!session || !session.returnedIds || !session.returnedIds.size) return 0;
+    let n = 0;
+    for (const day of session.days.values()) {
+      for (const it of day.activities) if (session.returnedIds.has(it.id)) n++;
+    }
+    return n;
   }
 
   function findItem(kind, date, id) {
@@ -1203,6 +1293,21 @@ const Packet = (() => {
           ? ' (read from this device\'s Generation Log — the live plan could not be reached, so the count may be stale).'
           : '.') +
         ' They are shown for context, are not editable here, and Commit will not send them again.';
+      root.appendChild(note);
+    }
+
+    // Rescind_Regeneration §6 — the parent decided this when they pressed
+    // Rescind; this is the proposal telling them it landed. Below the
+    // already-live notice on purpose: one says what Commit will leave alone,
+    // the other what it will send again.
+    const returnedCount = countReturned();
+    if (returnedCount) {
+      const note = document.createElement('p');
+      note.className = 'notice';
+      note.textContent =
+        `${returnedCount} ${returnedCount === 1 ? 'item is' : 'items are'} back in this proposal because ` +
+        `${returnedCount === 1 ? 'it was' : 'they were'} rescinded and never re-assigned. ` +
+        'They are placed at their position in the course, so work behind them moves later.';
       root.appendChild(note);
     }
 
