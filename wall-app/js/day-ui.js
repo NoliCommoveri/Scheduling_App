@@ -130,11 +130,27 @@
   }
   var LONG_PRESS_MS = 550; // held this long with no movement opens the duration sheet (§16 Phase 5b)
   // Quick Place §7.2 — how far a press on EMPTY grid may travel before it is
-  // read as a scroll instead. Far tighter than `TOUCH_DRAG_SLOP_PX` (44) on
-  // purpose: a chip's long-press has to be told apart from a drag of that
-  // chip, and 44px is what that costs. A press on empty space has no drag to
-  // be told apart from — only a scroll — so any real movement cancels it.
-  var PRESS_CANCEL_PX = 10;
+  // abandoned. A finger and a mouse get different numbers, for the same
+  // reason the three tolerances above do.
+  //
+  // The first build had ONE number, 10px, reasoned from "a press on empty
+  // space has no drag to be told apart from — only a scroll, so any real
+  // movement cancels it." Measured against a browser, that premise is wrong
+  // in the middle: with a 12px drift the grid does not scroll, fires no
+  // `pointercancel`, and is perfectly happy — 10px threw the press away on
+  // its own initiative. And per the tolerances note above, a tap on THIS
+  // tablet "routinely travels 15-30px between touchdown and lift", so the
+  // dead band sat exactly where a real finger lives: the gesture worked with
+  // synthetic events and almost never on the wall (§8.1's item 5, the one
+  // acceptance check that was never run on hardware).
+  //
+  // What actually tells a press from a scroll is the SCROLL, and the browser
+  // says so twice — `pointercancel`, and `.day-scroll` moving — both of
+  // which `attachSlotPress` now watches. That is what makes a finger radius
+  // this wide safe: it is a backstop for travel the scroller ignored (the
+  // grid already at its limit), not the scroll test itself.
+  var PRESS_CANCEL_PX = 10; // mouse/pen: precise, and a mouse that moves meant to
+  var TOUCH_PRESS_CANCEL_PX = 40; // finger: this tablet's own noise floor (TOUCH_TAP_ROLL_PX)
   var MAX_ADJUST_MIN = 8 * 60; // stepper ceiling; the Worker enforces no max besides "positive multiple of 15"
 
   function el(html) {
@@ -2394,12 +2410,30 @@
       if (ev.target.closest(".day-chip, .day-chip-hit, .school-block-chip")) return;
 
       var startX = ev.clientX, startY = ev.clientY;
+      // A finger is not a mouse — the same split `attachGesture` makes for
+      // its drag slop and tap roll, and for the same reason.
+      var cancelPx = ev.pointerType === "touch" ? TOUCH_PRESS_CANCEL_PX : PRESS_CANCEL_PX;
+      // THE scroll test. `startY` is a client coordinate, so a grid that
+      // scrolls under a stationary finger does not just mean "this was a
+      // scroll" — it means the minute under the press is no longer the
+      // minute this would place at. Read live rather than closed over:
+      // `render()` rebuilds `.day-scroll` wholesale on every poll.
+      var scroller = currentRoot && currentRoot.querySelector(".day-scroll");
+      var scrollTop0 = scroller ? scroller.scrollTop : 0;
+
+      function scrolled() {
+        return !!scroller && scroller.scrollTop !== scrollTop0;
+      }
+
       var timer = setTimeout(function () {
         timer = null;
         cleanup();
-        // The press POSITION, not wherever the pointer has got to: movement
-        // cancels, so by the time this fires the two are within
-        // PRESS_CANCEL_PX of each other anyway.
+        // Momentum can carry the grid on with no further pointermove, so the
+        // scroll test is re-run here and not only on the way in.
+        if (scrolled()) return;
+        // The press POSITION, not wherever the pointer has got to: nothing
+        // has scrolled, so the minute under `startY` is still the minute
+        // this places at.
         slotPressed(child, startY);
       }, LONG_PRESS_MS);
 
@@ -2410,11 +2444,15 @@
         document.removeEventListener("pointercancel", cleanup);
       }
 
-      // `pointercancel` is what actually fires on most touch scrollers once
-      // the browser takes the gesture over; the move check catches the rest.
+      // `pointercancel` is what fires on a touch scroller once the browser
+      // takes the gesture over, and it plus `scrolled()` are what actually
+      // decide this is a scroll. The distance check is only a backstop for
+      // travel the scroller ignored — a grid already at its limit, or a
+      // mouse dragged across it — which is why a finger may roll this far.
       function onMove(mv) {
+        if (scrolled()) { cleanup(); return; }
         var dx = mv.clientX - startX, dy = mv.clientY - startY;
-        if (Math.sqrt(dx * dx + dy * dy) > PRESS_CANCEL_PX) cleanup();
+        if (Math.sqrt(dx * dx + dy * dy) > cancelPx) cleanup();
       }
 
       document.addEventListener("pointermove", onMove);

@@ -151,7 +151,17 @@
 // visible at all: this worker is cache-first for the shell, so without it a
 // tablet keeps serving the old `day-ui.js` and the new gesture does not
 // exist as far as the family is concerned.
-const CACHE_NAME = "wall-display-shell-v21";
+// v22: Quick Place, the press recogniser corrected. `day-ui.js` only. v21's
+// `PRESS_CANCEL_PX` was one number, 10px, for finger and mouse alike; a
+// finger on this tablet "routinely travels 15-30px between touchdown and
+// lift" (day-ui.js's own tolerances note), and at 12px the browser neither
+// scrolls nor cancels — so the app was throwing away presses nothing else
+// objected to, and the gesture worked in a test harness and almost never on
+// the wall. A finger now gets 40px, a mouse keeps 10, and what actually
+// decides "this was a scroll" is the scroll itself: `pointercancel` plus
+// `.day-scroll` having moved, checked on the way in and again when the
+// timer fires.
+const CACHE_NAME = "wall-display-shell-v22";
 
 const APP_SHELL = [
   "./",

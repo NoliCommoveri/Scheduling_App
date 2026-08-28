@@ -1,8 +1,9 @@
 # TDS Slice — Quick Place: long-press an empty slot to schedule a chore
 
-**Status:** **BUILT — phases 1 and 2 landed 2026-08-26.** Authorized by Ray in-session
-2026-08-26. Phase 3's §8.1 acceptance run on the tablet is outstanding; items 1-6 and 8-12
-were exercised in a headless browser against the real `day-ui.js` first (see §9).
+**Status:** **BUILT — phases 1 and 2 landed 2026-08-26; the press recogniser corrected
+2026-08-28 (§7.2.1).** Authorized by Ray in-session 2026-08-26. Phase 3's §8.1 acceptance run on
+the tablet is outstanding; items 1-7 and 9-12 were exercised in a headless browser against the
+real `day-ui.js` (see §9).
 **Extends:** `TDS_Slice_Wall_Calendar_Redesign.md` §3.4 (the unscheduled tray), §4.3/§4.4 (the grid
 and block modes), §8.1 (tap targets); `TDS_Slice_Wall_Placement_Scopes.md` §7.1 (a gesture writes
 the level already in force) and §2.1 (the first-placement gate).
@@ -305,14 +306,45 @@ what it does *not* do:
 - **No ghost, no drag, no drop.** There is nothing being dragged; there is a timer and a cancel.
 
 ```js
-var PRESS_CANCEL_PX = 10; // a press that moves at all is a scroll — see below
+var PRESS_CANCEL_PX = 10;       // mouse/pen
+var TOUCH_PRESS_CANCEL_PX = 40; // finger
 ```
 
-Tighter than `TOUCH_DRAG_SLOP_PX` (44) on purpose. A chip's long-press tolerates 44px because it has
-to be told apart from a *drag* of that chip. This press has no drag to be told apart from, only a
-scroll, so any real movement is a scroll and cancels. `pointerup`, `pointercancel`, and movement
-past `PRESS_CANCEL_PX` all clear the timer; `pointercancel` is what actually fires on most touch
-scrollers once the browser takes the gesture over.
+**Corrected in the build, 2026-08-28 — §7.2.1 below is the reason.** The design said one number,
+10px, on the argument that "this press has no drag to be told apart from, only a scroll, so any real
+movement is a scroll and cancels." The premise is wrong in the middle, and the number it produced is
+what made this feature not work on the wall.
+
+What cancels a press, then: `pointerup` (a lift before the timer is a tap), `pointercancel` (the
+browser taking the gesture over — the honest scroll signal), `.day-scroll` having moved at all, and
+travel past the pointer type's radius. The last of those is a **backstop**, not the scroll test: it
+catches travel the scroller ignored, which is why a finger may roll as far as a tap may
+(`TOUCH_TAP_ROLL_PX`).
+
+### 7.2.1 Why 10px was wrong, measured
+
+`day-ui.js`'s own gesture-tolerance note records what a real finger does on this tablet: *"a tap
+there routinely travels 15-30px between touchdown and lift."* That is the paragraph that widened
+every other touch tolerance in the file (44px drag slop, 40px tap roll, a 140ms arm delay) after
+Ray reported taps moving chores instead of ticking them. This slice then set a 10px threshold
+underneath it.
+
+Driven against a browser at a range of drifts, holding for the full `LONG_PRESS_MS`:
+
+| Finger drift | Grid scrolled? | `pointercancel`? | v21 (10px) | v22 |
+|---|---|---|---|---|
+| 0–6px | no | no | opens | opens |
+| 12px | **no** | **no** | **cancels** | opens |
+| 18px+ | yes | yes | cancels | cancels |
+
+The middle row is the bug. At 12px nothing scrolled and the browser raised no objection — the app
+threw the press away on its own initiative, and it did so right where a real finger lives. Between
+that and the 30px a wobbly hold reaches, the gesture was being cancelled far more often than it
+fired, which is exactly what Ray reported. Synthetic pointer events have no jitter, so the §9
+harness saw none of it — this is precisely the failure §8.1's item 5 was reserved for.
+
+The floor is not arbitrary now: the browser decides. A press survives as long as the grid has not
+moved.
 
 `LONG_PRESS_MS` (550) is reused, not re-tuned — one press duration across the whole app.
 
@@ -383,6 +415,10 @@ The gesture itself is DOM and pointer behaviour, so it belongs in §9's manual c
 4. **Show all unscheduled** → the remaining chores appear with block badges; placing one works.
 5. **Scroll the grid with a finger starting on empty space** → the day scrolls and no sheet opens.
    *(The single most important check in this list — §7.2.)*
+5b. **Hold on empty space without meaning to move** — a normal, slightly wobbly hold, not a
+   surgically still one → the sheet opens. This is item 5's other half and the one §7.2.1 was
+   written about: the two together are what say the threshold sits between a hold and a scroll
+   rather than under both.
 6. Long-press a **placed chip** → the adjust sheet, not this one.
 7. Long-press a **school block** → its span editor, not this one.
 8. Arm a tray item, then long-press empty space → nothing opens; the armed placement still works.
@@ -400,6 +436,7 @@ The gesture itself is DOM and pointer behaviour, so it belongs in §9's manual c
 | **1 — Pure layer** | `ChoresCore.unplacedForBlock` + §8's tests. | ~20 min | **Done** 2026-08-26 |
 | **2 — Gesture & sheet** | `attachSlotPress` in `buildColumn`, `quickPlaceSheetState` + `buildQuickPlaceSheet`, the render hook, the CSS reuse, **and `sw.js`'s `CACHE_NAME`** — the shell cache is cache-first, so the bump is what makes any of this reach the tablet. | ~1.5 h | **Done** 2026-08-26 |
 | **3 — Acceptance** | §8.1 on the tablet; this file's status line updated. | ~20 min | **Outstanding** — the tablet run |
+| **2b — Press recogniser correction** | §7.2.1: a finger radius and a mouse radius; the scroll, not the distance, decides. `day-ui.js` + `sw.js`'s `CACHE_NAME` (v22). | ~30 min | **Done** 2026-08-28 |
 
 Total ~2 h — inside CLAUDE.md §V.A's 2–3 hour gate, and phases 1 and 2 are separately committable.
 
@@ -468,5 +505,6 @@ they look. Only worth revisiting if it is felt in use.
 
 | Date | Change |
 |---|---|
+| 2026-08-28 | **Fixed: the gesture did not work on the tablet.** Reported by Ray. `PRESS_CANCEL_PX` was a single 10px radius for finger and mouse alike, chosen from §7.2's reasoning that any movement on empty grid is a scroll. Measured, it is not: at 12px of drift the grid does not scroll and the browser fires no `pointercancel` — the app was cancelling presses on its own initiative, at a distance well under the 15-30px `day-ui.js`'s own tolerance note says a real finger on this tablet travels. So the gesture fired reliably under synthetic events and hardly ever under a thumb. A finger now gets 40px (`TOUCH_TAP_ROLL_PX`, the same split `attachGesture` makes) and a mouse keeps 10, and the scroll test is the scroll itself: `pointercancel` plus `.day-scroll` having moved, checked on pointermove and again when the timer fires — which also stops a press resolving to the wrong minute, since `startY` is a client coordinate. §7.2 rewritten with §7.2.1's measurements, §8.1 gains item 5b (the wobbly hold, item 5's other half), the phasing table gains 2b, and `sw.js`'s `CACHE_NAME` goes to v22 — without it a tablet keeps serving the v21 `day-ui.js`. No schema, no route, no `assignments` write, no guardrail amendment: `wall-app/` only, exactly as §10 said. |
 | 2026-08-26 | **Built** (phases 1-2). `ChoresCore.unplacedForBlock` and its four tests; `attachSlotPress`, `unplacedChoresFor`, `slotPressed` and `buildQuickPlaceSheet` in `day-ui.js`; no CSS rules, only reuse. One thing the design did not name, added in the build and recorded in §6.1: the sheet swallows the opening long-press's own `click` in the capture phase, because §6.1's `pointerdown` rule protects the *backdrop* and a row cannot be protected the same way — a stray click on a row would place a chore nobody chose. `wall-app/sw.js`'s `CACHE_NAME` goes to v21 — the worker is cache-first for the shell, so without the bump a tablet keeps serving the old `day-ui.js` and none of this exists as far as the family is concerned. No schema, no route, no `assignments` write, and no guardrail amendment, exactly as §10 said. |
 | 2026-08-26 | Written. Ray reported that placing an unscheduled chore is arm-then-aim (§0.1) and proposed two fixes: a per-block side tray, or a long-press on an open slot offering the chores hinted for that block. He chose the long-press (§0.3 records why the rail loses on §4.3's no-horizontal-scroll rule and on child attribution), long-press only with no plain-tap variant (§7.1), and the filtered list with a **Show all unscheduled** fallback (§2.3). Design only, no code — the same order §2.9 of `CLAUDE.md` set for Placement Scopes. |
