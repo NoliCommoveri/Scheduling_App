@@ -232,6 +232,11 @@ async function routeApi(request, env, ctx, url) {
   if (pathname === '/api/assignments' && method === 'GET') {
     return withParent(request, env, () => handleAssignmentsQuery(url, env));
   }
+  // Read-only, parent-only, and matched before the PATCH pattern below can see
+  // it — TDS_Slice_Rescind_Regeneration.md §4.
+  if (pathname === '/api/assignments/reassignable' && method === 'GET') {
+    return withParent(request, env, () => handleAssignmentsReassignable(url, env));
+  }
   if (pathname === '/api/assignments/rescind' && method === 'POST') {
     return withParent(request, env, () => handleAssignmentsRescind(request, env));
   }
@@ -1448,6 +1453,45 @@ async function handleAssignmentsRescind(request, env) {
 
   const rescinded = results.reduce((n, r) => n + ((r && r.meta && r.meta.changes) || 0), 0);
   return json({ rescinded });
+}
+
+// Rescind and regenerate (TDS_Slice_Rescind_Regeneration.md §4) — which of this
+// child's school activities were pulled back and never re-assigned.
+//
+// The one question Propose cannot answer from its own history. The Generation
+// Log is written at Commit and never again, so a rescind leaves a `sent` row
+// behind and the walk moves on for good (§0.2). D1 knows, but the fact usually
+// lives OUTSIDE the range being proposed — the parent rescinds yesterday and
+// proposes today — so `GET /api/assignments`, which is range-scoped and answers
+// with `SELECT *`, is the wrong shape twice over.
+//
+// "Reassignable" is *no live row anywhere*, not *has a rescinded row* (§2.1):
+// an activity rescinded on Monday and re-assigned on Wednesday is owed on a day
+// that exists, and returning it to the walk would place a second copy. A
+// completed row is live, so work the child actually did never comes back.
+//
+// `kind = 'activity'` is in the SQL rather than left to the caller: a chore's
+// identity contains its date (§2.2), so a rescinded chore day is spent and has
+// no walk to return to. Enforcing that here is what keeps the asymmetry from
+// being forgotten by a future caller.
+async function handleAssignmentsReassignable(url, env) {
+  const childId = url.searchParams.get('childId');
+  if (!childId) return json({ error: 'childId is required.' }, 400);
+
+  // One scan of the child's rows, grouped: a group with no live member is an
+  // activity every one of whose rows carries `rescinded_at`. Cheaper than a
+  // correlated NOT EXISTS per candidate, and it states §2.1's definition
+  // literally.
+  const { results } = await env.DB.prepare(
+    `SELECT source_id
+       FROM assignments
+      WHERE child_id = ?1 AND kind = 'activity' AND source_id IS NOT NULL
+      GROUP BY source_id
+     HAVING SUM(CASE WHEN rescinded_at IS NULL THEN 1 ELSE 0 END) = 0
+      LIMIT ${MAX_QUERY_ROWS + 1}`
+  ).bind(childId).all();
+
+  return json(capRows((results || []).map((r) => r.source_id), 'activityIds'));
 }
 
 async function handleAssignmentsQuery(url, env) {
