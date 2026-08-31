@@ -866,6 +866,16 @@ const Courses = (() => {
   // numbers instead of re-picking types the Course already declared. Blank
   // rows store nothing, and every other type stays one "Add target" away —
   // the suggestion is soft (Module 01 FR-3).
+  //
+  // Rows reorder with ↑/↓, and the order is the record's: `collect()` returns
+  // DOM order, normalizeOptionalLessonFields keeps it, and FR-P9 seeds Stage 1
+  // of the recipe "in target order" — so the order set here is the order the
+  // generated Activities are stamped in. The opening row set arrives in
+  // Activity Type table order (deliberately stable, independent of which
+  // source named a type first — RecipeCore.suggestedTargetTypeKeys); that is
+  // an opening position, not the teaching order of the Lesson, and without
+  // these arrows there was no way to say so short of removing and re-adding
+  // every row.
   function buildCountTargetsFieldset(activityTypes, existingTargets, suggestedKeys) {
     const fieldset = document.createElement('fieldset');
     fieldset.className = 'count-targets';
@@ -884,16 +894,46 @@ const Courses = (() => {
         })
         .join('');
 
+    // Moving a row is a DOM move, never a re-render: a <select>'s selection and
+    // a number input's value are element state, so they ride along untouched.
+    function refreshMoveButtons() {
+      const rows = Array.from(rowsEl.children);
+      rows.forEach((row, i) => {
+        row.querySelector('[data-action="move-target-up"]').disabled = i === 0;
+        row.querySelector('[data-action="move-target-down"]').disabled = i === rows.length - 1;
+      });
+    }
+
     function addRow(activityTypeKey, targetCount) {
       const row = document.createElement('div');
       row.className = 'count-target-row';
       row.innerHTML = `
         <select name="activityTypeKey">${typeOptions(activityTypeKey || '')}</select>
         <input type="number" name="targetCount" min="0" step="1" value="${targetCount ?? ''}">
-        <button type="button" data-action="remove-target">Remove</button>
+        <span class="count-target-controls">
+          <button type="button" data-action="move-target-up" aria-label="Move up">&uarr;</button>
+          <button type="button" data-action="move-target-down" aria-label="Move down">&darr;</button>
+          <button type="button" data-action="remove-target">Remove</button>
+        </span>
       `;
-      row.querySelector('[data-action="remove-target"]').addEventListener('click', () => row.remove());
+      row.querySelector('[data-action="remove-target"]').addEventListener('click', () => {
+        row.remove();
+        refreshMoveButtons();
+      });
+      row.querySelector('[data-action="move-target-up"]').addEventListener('click', () => {
+        const previous = row.previousElementSibling;
+        if (!previous) return;
+        rowsEl.insertBefore(row, previous);
+        refreshMoveButtons();
+      });
+      row.querySelector('[data-action="move-target-down"]').addEventListener('click', () => {
+        const next = row.nextElementSibling;
+        if (!next) return;
+        rowsEl.insertBefore(next, row);
+        refreshMoveButtons();
+      });
       rowsEl.appendChild(row);
+      refreshMoveButtons();
     }
 
     if (existingTargets && existingTargets.length) {
