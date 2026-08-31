@@ -147,18 +147,17 @@ const ExpanderCore = (() => {
     return new Uint8Array(await new Response(stream).arrayBuffer());
   }
 
-  // Walks the central directory rather than scanning local headers forward:
-  // a local header may declare zero sizes and defer them to a data descriptor
-  // after the payload, which cannot be parsed without already knowing where
-  // the payload ends. The central directory always carries the real sizes.
-  async function readZipEntries(buffer) {
-    const bytes = new Uint8Array(buffer);
+  // Preferred path: the central directory. A local header may declare zero
+  // sizes and defer them to a data descriptor after the payload, which cannot
+  // be located without already knowing where the payload ends; the central
+  // directory always carries the real sizes.
+  function readCentralDirectory(bytes) {
     let eocd = -1;
     const floor = Math.max(0, bytes.length - 0xffff - 22);
     for (let i = bytes.length - 22; i >= floor; i--) {
       if (u32(bytes, i) === 0x06054b50) { eocd = i; break; }
     }
-    if (eocd < 0) throw new Error('Not a .xlsx file — no ZIP end-of-central-directory record found.');
+    if (eocd < 0) return null;
 
     const count = u16(bytes, eocd + 10);
     let at = u32(bytes, eocd + 16);
@@ -180,9 +179,51 @@ const ExpanderCore = (() => {
       const localNameLen = u16(bytes, localAt + 26);
       const localExtraLen = u16(bytes, localAt + 28);
       const dataAt = localAt + 30 + localNameLen + localExtraLen;
+      if (dataAt + compSize > bytes.length) continue; // truncated payload
       entries.set(name, { method, raw: bytes.subarray(dataAt, dataAt + compSize) });
 
       at += 46 + nameLen + extraLen + commentLen;
+    }
+    return entries.size ? entries : null;
+  }
+
+  // Fallback: walk the local file headers from the front. Used only when the
+  // central directory is missing or unusable, which in practice means the file
+  // arrived truncated — an Android picker handing over a partial read of a
+  // cloud-hosted file is the case this was written for. The sheet XML sits near
+  // the front of every workbook, so a file cut short at the end is usually
+  // still readable this way.
+  //
+  // Entries whose sizes are deferred to a data descriptor (general-purpose bit
+  // 3) cannot be located this way and are skipped rather than guessed at.
+  function readLocalHeaders(bytes) {
+    const entries = new Map();
+    const decoder = new TextDecoder();
+    let at = 0;
+    while (at + 30 <= bytes.length && u32(bytes, at) === 0x04034b50) {
+      const flags = u16(bytes, at + 6);
+      const method = u16(bytes, at + 8);
+      const compSize = u32(bytes, at + 18);
+      const nameLen = u16(bytes, at + 26);
+      const extraLen = u16(bytes, at + 28);
+      const name = decoder.decode(bytes.subarray(at + 30, at + 30 + nameLen));
+      const dataAt = at + 30 + nameLen + extraLen;
+      if (flags & 0x08) break; // sizes deferred; cannot walk past this entry
+      if (dataAt + compSize > bytes.length) break; // truncated mid-payload
+      entries.set(name, { method, raw: bytes.subarray(dataAt, dataAt + compSize) });
+      at = dataAt + compSize;
+    }
+    return entries.size ? entries : null;
+  }
+
+  async function readZipEntries(buffer) {
+    const bytes = new Uint8Array(buffer);
+    const entries = readCentralDirectory(bytes) || readLocalHeaders(bytes);
+    if (!entries) {
+      throw new Error(
+        `This does not read as a .xlsx workbook (${bytes.length} bytes received). `
+        + 'If the file came from Google Drive or another cloud folder, download it to the device first and pick the local copy.'
+      );
     }
     return entries;
   }
@@ -292,7 +333,11 @@ const ExpanderCore = (() => {
     const shared = parseSharedStrings(await readZipText(entries, 'xl/sharedStrings.xml'));
     const path = await firstSheetPath(entries);
     const xml = await readZipText(entries, path);
-    if (!xml) throw new Error('Workbook contains no readable worksheet.');
+    if (!xml) {
+      throw new Error(
+        `Workbook has no readable worksheet at "${path}" (found: ${[...entries.keys()].join(', ') || 'nothing'}).`
+      );
+    }
     return parseSheet(xml, shared);
   }
 
@@ -302,6 +347,19 @@ const ExpanderCore = (() => {
   // neither input file is authored here and both arrive by hand.
   async function readGrid(file) {
     const buffer = await file.arrayBuffer();
+
+    // The picker's own metadata vs what actually arrived. On Android these
+    // disagree when a file is chosen from a cloud provider rather than local
+    // storage and the read comes back short — which presents as an unreadable
+    // workbook with no other clue. Caught here so the message names the real
+    // problem instead of blaming the file.
+    if (typeof file.size === 'number' && file.size > 0 && buffer.byteLength < file.size) {
+      throw new Error(
+        `Only ${buffer.byteLength} of ${file.size} bytes could be read. `
+        + 'This usually means the file was picked from a cloud folder — download it to the device and choose the local copy.'
+      );
+    }
+
     const head = new Uint8Array(buffer.slice(0, 4));
     const isZip = head[0] === 0x50 && head[1] === 0x4b && head[2] === 0x03 && head[3] === 0x04;
     if (isZip) return readXlsxGrid(buffer);
