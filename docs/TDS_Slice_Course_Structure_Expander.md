@@ -63,9 +63,11 @@ and stops there. Duration outliers (a 25-minute project PDF against the
 |---|---|
 | `management-app/js/expander-core.js` | Pure layer: workbook reading, the join, expansion. DOM-free, IO-free, no Storage. |
 | `management-app/js/expander.js` | The `#/expander` page. Reads files and stores, renders, downloads. Computes no row. |
-| `tests/management-expander-core.test.js` | `node --test`. 32 cases, including two real upstream artifacts. |
+| `tests/management-expander-core.test.js` | `node --test`. 37 cases, including four real upstream artifacts. |
 | `tests/fixtures/counts-general-science.xlsx` | A real counts workbook out of step 1. |
 | `tests/fixtures/page-map-math-level-e.csv` | A real page map out of step 2. |
+| `tests/fixtures/counts-math-level-h.xlsx` | A second real counts workbook — the one that failed in the field, kept as the regression. |
+| `tests/fixtures/page-map-math-level-h.csv` | Its page map, missing one whole unit the counts sheet has. |
 
 `tests/` is already excluded from the public asset bundle by `.assetsignore`, so
 the fixtures are not served. They are unrelated to the repo-root `fixtures/`
@@ -95,9 +97,11 @@ CLAUDE.md §0's vanilla-JS rule holds unchanged.
 
 Three details that are load-bearing:
 
-- **The central directory is walked, not the local headers.** A local header may
-  declare zero sizes and defer them to a data descriptor *after* the payload,
-  which cannot be located without already knowing where the payload ends.
+- **The central directory is the preferred path, not the local headers.** A
+  local header may declare zero sizes and defer them to a data descriptor
+  *after* the payload, which cannot be located without already knowing where
+  the payload ends. (§2.2a adds a local-header fallback for the case where the
+  central directory is gone because the file arrived truncated.)
 - **Every `<t>` in a cell is concatenated.** A run-formatted cell splits one
   visible string across several `<r><t>` children; taking only the first would
   silently truncate a lesson title at a stray italic.
@@ -107,6 +111,26 @@ Three details that are load-bearing:
 
 Both shared strings (`t="s"`) and inline strings (`t="inlineStr"`) are handled —
 the samples in hand use inline, most other producers use shared.
+
+### 2.2a A workbook that arrives damaged
+
+Reported from the field on Android: a file picked from a cloud folder rather
+than local storage can reach the page as a **short read** — the picker states
+the real size, the bytes stop early. The symptom is an unreadable workbook with
+no other clue, and the natural error blames the file.
+
+Three defences, in the order they fire:
+
+1. **`File.size` is compared against what actually arrived.** A shortfall is
+   reported as one — with both numbers and the fix (download it to the device
+   first) — rather than as a parse failure.
+2. **A missing or unusable central directory falls back to walking the local
+   file headers from the front.** The sheet XML sits near the front of every
+   workbook, so a file cut short at the end usually still reads in full. Entries
+   whose sizes are deferred to a data descriptor (general-purpose bit 3) cannot
+   be located this way and stop the walk rather than being guessed at.
+3. **Whatever is left says how many bytes it got**, so a report from a phone
+   carries enough to tell an environment problem from a parser one.
 
 ### 2.3 Neither file is read by column position
 
@@ -271,6 +295,9 @@ Automated — `npm test`, `tests/management-expander-core.test.js`:
 4. The real page-map fixture reads to 169 rows with `Points, Lines, and Rays`
    intact through the quoting.
 5. Run-formatted cells, shared strings, absent cells, XML entities.
+5a. §2.2a: a short read is named as such; a workbook with its central directory
+    chopped off still reads all 190 rows through the local-header walk; a file
+    that is not a workbook reports its byte count.
 6. Header lookup by name regardless of order/casing; a missing column is named.
 7. Emission order; titles per type; counts above one numbered.
 8. `pdf` row carries the span with a blank title; page columns blank elsewhere.
@@ -278,6 +305,9 @@ Automated — `npm test`, `tests/management-expander-core.test.js`:
 10. Lesson codes continue, pad, and stay in curriculum order.
 11. End to end on both fixtures, with the output re-parsed and the header
     checked against `CSV_COLUMNS`.
+11a. End to end on a second real course (Math Level H, 91 Lessons, 605 rows)
+     where a whole unit is present in the counts sheet and absent from the page
+     map — the join lands, and §4's warning names it.
 
 Manual, once, on the deployed app:
 

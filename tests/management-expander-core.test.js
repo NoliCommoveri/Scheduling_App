@@ -28,9 +28,14 @@ function fixture(name) {
   return readFileSync(new URL(`tests/fixtures/${name}`, repo));
 }
 
-// Stands in for a File: readGrid only ever calls .arrayBuffer().
-function fileOf(bytes) {
-  return { arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) };
+// Stands in for a File: readGrid reads .size and .arrayBuffer(). `declared`
+// lets a test claim a size larger than what arrives, which is the Android
+// short-read case §2.2 guards against.
+function fileOf(bytes, declared) {
+  return {
+    size: declared === undefined ? bytes.length : declared,
+    arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+  };
 }
 
 const TYPE_KEYS = ['video', 'pdf', 'practice-level', 'quiz', 'online-sim', 'test', 'project'];
@@ -117,6 +122,38 @@ test('shared strings, inline strings and numbers all read as text', () => {
 test('XML entities in a lesson title are unescaped once, not left raw', () => {
   const xml = '<sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Rock &amp; Roll &lt;i&gt;</t></is></c></row></sheetData>';
   assert.deepEqual(Core.parseSheet(xml, []), [['Rock & Roll <i>']]);
+});
+
+// ---- §2.2a damaged and truncated workbooks ----
+//
+// A file picked from a cloud folder on Android can reach the page as a short
+// read: the picker reports the real size, the bytes stop early. These three
+// cases are what that looks like from inside readGrid.
+
+test('a short read is named as such, not blamed on the file', async () => {
+  const full = fixture('counts-math-level-h.xlsx');
+  await assert.rejects(
+    () => Core.readGrid(fileOf(full.subarray(0, 9000), full.length)),
+    /Only 9000 of \d+ bytes could be read/,
+  );
+});
+
+test('a workbook missing its central directory still reads via local headers', async () => {
+  const full = fixture('counts-math-level-h.xlsx');
+  // Chop the central directory and EOCD off the end. The sheet XML sits near
+  // the front, so the forward walk should still recover every row.
+  const truncated = full.subarray(0, full.length - 1000);
+  const grid = await Core.readGrid(fileOf(truncated));
+  assert.deepEqual(grid[0], ['Unit Name', 'Lesson Name', 'Activity Type', 'Activity Count']);
+  assert.equal(grid.length, 190);
+});
+
+test('something that is not a workbook says so, with the byte count', async () => {
+  const junk = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 1, 2, 3, 4, 5, 6, 7, 8]);
+  await assert.rejects(
+    () => Core.readGrid(fileOf(junk)),
+    /does not read as a \.xlsx workbook \(12 bytes received\)/,
+  );
 });
 
 // ---- §2.3 header-addressed reading ----
@@ -422,4 +459,28 @@ test('counts joined to a real page map produce one pdf row per mapped lesson', a
   assert.deepEqual(parsed[0], Core.CSV_COLUMNS);
   assert.equal(parsed.length, rows.length + 1);
   assert.equal(parsed.some((r) => r[2] === 'Points, Lines, and Rays'), true);
+});
+
+test('the Math Level H pair joins, and the missing unit surfaces as a warning', async () => {
+  const counts = Core.readCounts(await Core.readGrid(fileOf(fixture('counts-math-level-h.xlsx'))));
+  const map = Core.readPageMap(await Core.readGrid(fileOf(fixture('page-map-math-level-h.csv'))));
+  assert.deepEqual(counts.errors, []);
+  assert.deepEqual(map.errors, []);
+
+  const { rows, warnings, lessons } = Core.expand({
+    counts: counts.rows, pageMap: map.rows, courseCode: 'MIAMATHH', startNumber: 1,
+    knownTypeKeys: TYPE_KEYS,
+  });
+
+  assert.equal(lessons.length, 91);
+  assert.equal(rows.filter((r) => r.activityType === 'pdf').length, 87);
+
+  // Unit 12 (Data Analysis) is in the counts sheet but absent from the page
+  // map, so its four lessons get every row except a pdf one — and are named.
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /Measures of Variation/);
+
+  // A single-page lesson repeats the number rather than leaving the end blank.
+  const first = rows.find((r) => r.activityType === 'pdf');
+  assert.deepEqual([first.pageRangeStart, first.pageRangeEnd], [4, 4]);
 });
