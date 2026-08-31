@@ -59,11 +59,19 @@ const ExpanderCore = (() => {
     ['readingpages', 'reading-pages'],
   ]);
 
-  // Emission order within a Lesson (TDS §3.2). Video opens, the PDF carries
-  // the lesson's page budget, practice levels climb, and the Quiz closes —
-  // with the Online Sim ahead of it, on the reading that a sim is practice and
-  // the assessment always comes last. A type absent from this list is emitted
-  // after these, in the order the counts sheet listed it.
+  // The FALLBACK emission order within a Lesson (TDS §3.2), used when the
+  // caller names none. Video opens, the PDF carries the lesson's page budget,
+  // practice levels climb, and the Quiz closes — with the Online Sim ahead of
+  // it, on the reading that a sim is practice and the assessment always comes
+  // last.
+  //
+  // This is MiAcademy's shape, and it is only a default. `expand()` takes a
+  // `typeOrder` from the caller, which the page seeds from the Course's own
+  // Curriculum (its `suggestedActivityTypes`, via RecipeCore) and lets the
+  // parent reorder — so a publisher that reads before it watches, or has no
+  // videos at all, is expressed rather than worked around. A type absent from
+  // the order is still emitted, after the ordered ones, in the order the counts
+  // sheet listed it: an unexpected type is never silently dropped.
   const TYPE_ORDER = ['video', 'pdf', 'practice-level', 'online-sim', 'quiz'];
 
   // Per-type defaults for the two columns the counts sheet cannot know
@@ -366,6 +374,187 @@ const ExpanderCore = (() => {
     return parseCsv(new TextDecoder().decode(buffer));
   }
 
+  // ---- Writing a workbook (§2.4) ----
+  //
+  // The proposal goes out as BOTH .csv and .xlsx. The CSV is what the importer
+  // and the LLM pass consume; the workbook exists because a CSV is miserable to
+  // edit on a phone, which is where the tuning actually happens.
+  //
+  // Writing a ZIP needs no compressor: entries are STORED (method 0), which is
+  // valid ZIP and which Excel, Sheets, Numbers and this module's own reader all
+  // accept. So there is still no library and no build step. The cost is size —
+  // a 600-row proposal lands around 100KB instead of 20KB — which does not
+  // matter for a file that exists to be opened once and edited.
+
+  const CRC_TABLE = (() => {
+    const table = new Int32Array(256);
+    for (let i = 0; i < 256; i++) {
+      let c = i;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      table[i] = c;
+    }
+    return table;
+  })();
+
+  function crc32(bytes) {
+    let c = -1;
+    for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+    return (c ^ -1) >>> 0;
+  }
+
+  function escapeXml(value) {
+    return String(value === undefined || value === null ? '' : value)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&apos;')
+      // Excel rejects a sheet carrying raw control characters. They cannot
+      // occur in curriculum text, but neither input file is authored here.
+      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
+  }
+
+  function columnLetter(index) {
+    let n = index + 1;
+    let out = '';
+    while (n > 0) {
+      const rem = (n - 1) % 26;
+      out = String.fromCharCode(65 + rem) + out;
+      n = Math.floor((n - 1) / 26);
+    }
+    return out;
+  }
+
+  // Numbers land as numbers so a phone's spreadsheet app right-aligns them and
+  // will not "helpfully" reformat a page number as a date. Everything else is
+  // an inline string, which keeps the writer to one file with no shared-string
+  // table to keep in sync.
+  const NUMERIC_COLUMNS = new Set(['lessonOrder', 'pageRangeStart', 'pageRangeEnd', 'expectedDurationMin']);
+
+  function sheetXml(rowObjects) {
+    const lines = [];
+    const cells = (values, rowNumber, numericByIndex) => values.map((value, i) => {
+      const text = value === undefined || value === null ? '' : String(value);
+      if (text === '') return ''; // omit the cell entirely; readers place by ref
+      const ref = `${columnLetter(i)}${rowNumber}`;
+      return numericByIndex(i)
+        ? `<c r="${ref}"><v>${escapeXml(text)}</v></c>`
+        : `<c r="${ref}" t="inlineStr"><is><t>${escapeXml(text)}</t></is></c>`;
+    }).join('');
+
+    lines.push(`<row r="1">${cells(CSV_COLUMNS, 1, () => false)}</row>`);
+    rowObjects.forEach((r, i) => {
+      const rowNumber = i + 2;
+      const values = CSV_COLUMNS.map((c) => r[c]);
+      lines.push(`<row r="${rowNumber}">${cells(values, rowNumber, (at) => NUMERIC_COLUMNS.has(CSV_COLUMNS[at]))}</row>`);
+    });
+
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+      + `<dimension ref="A1:${columnLetter(CSV_COLUMNS.length - 1)}${rowObjects.length + 1}"/>`
+      + '<sheetData>' + lines.join('') + '</sheetData></worksheet>';
+  }
+
+  // A fixed DOS timestamp (1980-01-01), so the same rows always produce the
+  // same bytes. A wall clock here would make every regenerate a different file
+  // for no benefit.
+  const DOS_TIME = 0;
+  const DOS_DATE = 0x0021;
+
+  function zipStored(files) {
+    const encoder = new TextEncoder();
+    const locals = [];
+    const centrals = [];
+    let offset = 0;
+
+    for (const [name, text] of files) {
+      const nameBytes = encoder.encode(name);
+      const data = encoder.encode(text);
+      const crc = crc32(data);
+
+      const local = new Uint8Array(30 + nameBytes.length + data.length);
+      const lv = new DataView(local.buffer);
+      lv.setUint32(0, 0x04034b50, true);
+      lv.setUint16(4, 20, true);          // version needed
+      lv.setUint16(6, 0, true);           // flags — no data descriptor
+      lv.setUint16(8, 0, true);           // method 0, stored
+      lv.setUint16(10, DOS_TIME, true);
+      lv.setUint16(12, DOS_DATE, true);
+      lv.setUint32(14, crc, true);
+      lv.setUint32(18, data.length, true);
+      lv.setUint32(22, data.length, true);
+      lv.setUint16(26, nameBytes.length, true);
+      lv.setUint16(28, 0, true);          // extra length
+      local.set(nameBytes, 30);
+      local.set(data, 30 + nameBytes.length);
+      locals.push(local);
+
+      const central = new Uint8Array(46 + nameBytes.length);
+      const cv = new DataView(central.buffer);
+      cv.setUint32(0, 0x02014b50, true);
+      cv.setUint16(4, 20, true);          // version made by
+      cv.setUint16(6, 20, true);          // version needed
+      cv.setUint16(8, 0, true);
+      cv.setUint16(10, 0, true);
+      cv.setUint16(12, DOS_TIME, true);
+      cv.setUint16(14, DOS_DATE, true);
+      cv.setUint32(16, crc, true);
+      cv.setUint32(20, data.length, true);
+      cv.setUint32(24, data.length, true);
+      cv.setUint16(28, nameBytes.length, true);
+      cv.setUint32(42, offset, true);     // local header offset
+      central.set(nameBytes, 46);
+      centrals.push(central);
+
+      offset += local.length;
+    }
+
+    const centralSize = centrals.reduce((n, c) => n + c.length, 0);
+    const eocd = new Uint8Array(22);
+    const ev = new DataView(eocd.buffer);
+    ev.setUint32(0, 0x06054b50, true);
+    ev.setUint16(8, centrals.length, true);
+    ev.setUint16(10, centrals.length, true);
+    ev.setUint32(12, centralSize, true);
+    ev.setUint32(16, offset, true);
+
+    const total = offset + centralSize + 22;
+    const out = new Uint8Array(total);
+    let at = 0;
+    for (const part of [...locals, ...centrals, eocd]) { out.set(part, at); at += part.length; }
+    return out;
+  }
+
+  // The minimum set of parts a workbook needs to open. No styles, no theme, no
+  // shared strings — every one of those is optional, and leaving them out keeps
+  // this to something that can be read at a glance.
+  function buildXlsx(rowObjects, sheetName) {
+    const name = escapeXml((sheetName || 'Course Structure').slice(0, 31));
+    return zipStored([
+      ['[Content_Types].xml',
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        + '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        + '<Default Extension="xml" ContentType="application/xml"/>'
+        + '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        + '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        + '</Types>'],
+      ['_rels/.rels',
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+        + '</Relationships>'],
+      ['xl/workbook.xml',
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        + '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+        + ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        + `<sheets><sheet name="${name}" sheetId="1" r:id="rId1"/></sheets></workbook>`],
+      ['xl/_rels/workbook.xml.rels',
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+        + '</Relationships>'],
+      ['xl/worksheets/sheet1.xml', sheetXml(rowObjects)],
+    ]);
+  }
+
   // ---- Header-addressed reading (§2.3) ----
 
   function squash(s) {
@@ -508,15 +697,14 @@ const ExpanderCore = (() => {
     return max + 1;
   }
 
-  // Two digits until the course outgrows them, then three — L01..L99, L100.
-  // Width is chosen from the highest number this batch will emit so every code
-  // in one file sorts as text the way it sorts as a number.
-  function lessonCode(n, width) {
-    return `L${String(n).padStart(width, '0')}`;
-  }
-
-  function codeWidth(highest) {
-    return Math.max(2, String(highest).length);
+  // Two digits until the number outgrows them, then three — L01..L99, L100.
+  //
+  // Padded PER NUMBER, not to the batch's widest. Widening the whole batch
+  // because it happens to cross 100 would mint L012 for lesson 12, which reads
+  // as neither 12 nor 012 and would sit beside an existing L11 in the same
+  // Course. Each code now names its own number, whatever else is in the file.
+  function lessonCode(n) {
+    return `L${String(n).padStart(2, '0')}`;
   }
 
   // ---- Expansion (§3.2/§3.3) ----
@@ -556,6 +744,7 @@ const ExpanderCore = (() => {
    * @param {string} opts.courseCode    the target Course Template's code
    * @param {number} opts.startNumber   first L-number to mint
    * @param {object} opts.defaults      per-typeKey { difficultyTier, expectedDurationMin }
+   * @param {Array}  opts.typeOrder     emission order within a Lesson; TYPE_ORDER if omitted
    * @param {Array}  opts.knownTypeKeys activityTypeKeys the app actually has
    * @returns {{ rows, warnings, lessons }}
    */
@@ -563,6 +752,9 @@ const ExpanderCore = (() => {
     const counts = opts.counts || [];
     const spans = pageRanges(opts.pageMap || []);
     const courseCode = opts.courseCode;
+    // Duplicates removed, first position wins — the order comes from a DOM list
+    // the parent can reorder, and a type listed twice would emit twice.
+    const order = [...new Set(opts.typeOrder && opts.typeOrder.length ? opts.typeOrder : TYPE_ORDER)];
     const startNumber = Number.isInteger(opts.startNumber) && opts.startNumber > 0 ? opts.startNumber : 1;
     const known = opts.knownTypeKeys ? new Set(opts.knownTypeKeys) : null;
     const warnings = [];
@@ -585,14 +777,13 @@ const ExpanderCore = (() => {
       lesson.types.set(typeKey, lesson.types.get(typeKey) + row.count);
     }
 
-    const width = codeWidth(startNumber + lessons.size - 1);
     const rows = [];
     const unknownTypes = new Set();
     const withoutPages = [];
     let n = startNumber;
 
     for (const lesson of lessons.values()) {
-      const code = lessonCode(n, width);
+      const code = lessonCode(n);
       const span = spans.get(lesson.key);
 
       // A PDF row is injected from the page map, never taken from the counts
@@ -605,8 +796,8 @@ const ExpanderCore = (() => {
       }
 
       const ordered = [
-        ...TYPE_ORDER.filter((t) => t === 'pdf' || lesson.types.has(t)),
-        ...lesson.seen.filter((t) => !TYPE_ORDER.includes(t)),
+        ...order.filter((t) => t === 'pdf' || lesson.types.has(t)),
+        ...lesson.seen.filter((t) => !order.includes(t)),
       ];
 
       for (const typeKey of ordered) {
@@ -651,6 +842,13 @@ const ExpanderCore = (() => {
         warnings.push(`Page map lesson "${span.lesson}" (pages ${span.start}-${span.end}) matches no lesson in the counts file — no rows were written for it.`);
       }
     }
+    // Removing `pdf` from the order while handing in a page map loses every
+    // page range in the file. Silent would be the worst outcome here: the
+    // proposal would look complete and simply have no PDF work in it.
+    if (spans.size > 0 && !order.includes('pdf')) {
+      warnings.push('A page map was supplied but "pdf" is not in the Activity order, so no page ranges were written. Add pdf to the order to place them.');
+    }
+
     // No page map at all is a choice, not a mismatch — say it once. Naming
     // every lesson there would bury the warnings that matter under a wall of
     // text on the most ordinary run of all (a course with no PDF).
@@ -676,6 +874,9 @@ const ExpanderCore = (() => {
     parseCsv,
     toCsv,
     csvCell,
+    buildXlsx,
+    crc32,
+    columnLetter,
     readGrid,
     readXlsxGrid,
     parseSheet,
@@ -687,7 +888,6 @@ const ExpanderCore = (() => {
     lessonKey,
     nextLessonNumber,
     lessonCode,
-    codeWidth,
     typeKeyFor,
     titleFor,
     expand,

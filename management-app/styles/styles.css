@@ -1841,3 +1841,27 @@ button.secondary {
   font-size: 0.9rem;
   margin: 0.25rem 0 0;
 }
+
+/* The Activity table's per-row controls. Tighter within a row than between
+   rows, so on a phone the arrows read as belonging to their line — the same
+   spacing rule .count-target-controls follows. */
+.expander-row-controls {
+  white-space: nowrap;
+}
+
+.expander-row-controls button {
+  padding: 0.2rem 0.45rem;
+  margin-left: 0.15rem;
+}
+
+.expander-defaults select,
+.expander-defaults input[type="number"] {
+  max-width: 100%;
+}
+
+/* The preview is six columns of real data and will not fit a phone; it scrolls
+   inside its own box rather than widening the page. */
+.expander-table-wrap {
+  overflow-x: auto;
+  margin-bottom: 0.75rem;
+}

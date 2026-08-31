@@ -351,10 +351,19 @@ test('codes are minted in curriculum order, padded to the batch width', () => {
   ]);
 });
 
-test('the code width grows past ninety-nine lessons', () => {
-  assert.equal(Core.codeWidth(95), 2);
-  assert.equal(Core.codeWidth(100), 3);
-  assert.equal(Core.lessonCode(7, 3), 'L007');
+// Padded per number, not to the batch's widest: a 91-lesson batch starting at
+// 12 must still mint L12, never L012 beside the Course's existing L11.
+test('codes pad to two digits, widening only for the numbers that need it', () => {
+  assert.deepEqual([1, 7, 12, 95, 99, 100, 233].map(Core.lessonCode),
+    ['L01', 'L07', 'L12', 'L95', 'L99', 'L100', 'L233']);
+});
+
+test('a batch crossing one hundred does not widen the codes below it', () => {
+  const counts = [];
+  for (let i = 0; i < 95; i++) counts.push({ unit: 'U1', lesson: `Lesson ${i}`, type: 'Video', count: 1 });
+  const { rows } = Core.expand({ counts, pageMap: [], courseCode: 'C', startNumber: 12, knownTypeKeys: TYPE_KEYS });
+  assert.equal(rows[0].lessonCode, 'L12');
+  assert.equal(rows[rows.length - 1].lessonCode, 'L106');
 });
 
 test('lessons keep curriculum order, never alphabetical or unit-sorted', () => {
@@ -483,4 +492,139 @@ test('the Math Level H pair joins, and the missing unit surfaces as a warning', 
   // A single-page lesson repeats the number rather than leaving the end blank.
   const first = rows.find((r) => r.activityType === 'pdf');
   assert.deepEqual([first.pageRangeStart, first.pageRangeEnd], [4, 4]);
+});
+
+// ---- §2.4 writing a workbook ----
+
+test('buildXlsx produces a ZIP this module can read back to the same grid', async () => {
+  const rows = [
+    {
+      courseCode: 'C', lessonCode: 'L01', lessonTitle: 'Points, Lines, and Rays', lessonOrder: 1,
+      activityType: 'video', title: 'Points, Lines, and Rays', required: 'TRUE',
+      pageRangeStart: '', pageRangeEnd: '', difficultyTier: 'D01', expectedDurationMin: 5, instructions: '',
+    },
+    {
+      courseCode: 'C', lessonCode: 'L01', lessonTitle: 'Points, Lines, and Rays', lessonOrder: 1,
+      activityType: 'pdf', title: '', required: 'TRUE',
+      pageRangeStart: 403, pageRangeEnd: 407, difficultyTier: 'D01', expectedDurationMin: 10, instructions: '',
+    },
+  ];
+  const bytes = Core.buildXlsx(rows);
+  const grid = await Core.readXlsxGrid(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+  assert.deepEqual(grid[0], Core.CSV_COLUMNS);
+  assert.equal(grid.length, 3);
+  // The comma-bearing title survives, and a blank cell stays in its column.
+  assert.equal(grid[1][2], 'Points, Lines, and Rays');
+  assert.deepEqual(grid[2].slice(4, 9), ['pdf', '', 'TRUE', '403', '407']);
+});
+
+// The two formats differ in one way, by design: a CSV row always carries all
+// twelve fields, while the workbook omits empty cells entirely — which is how
+// .xlsx represents a blank, and why a reader must place cells by their `r=`
+// reference. The header row still declares all twelve columns, so a spreadsheet
+// app shows the full width. What must match is every addressed value.
+test('the workbook and the CSV carry identical values in every column', async () => {
+  const counts = countsRows(
+    ['U1', 'Show, Don’t Tell', 'Video', 1],
+    ['U1', 'Show, Don’t Tell', 'Practice Level', 2],
+    ['U1', 'Show, Don’t Tell', 'Quiz', 1],
+  );
+  const { rows } = Core.expand({
+    counts, pageMap: pageRows('U1', 'Show, Don’t Tell', 5, 9), courseCode: 'C', startNumber: 1,
+    knownTypeKeys: TYPE_KEYS,
+  });
+  const bytes = Core.buildXlsx(rows);
+  const fromCsv = Core.parseCsv(Core.toCsv(rows));
+  const fromXlsx = await Core.readXlsxGrid(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+
+  assert.equal(fromXlsx.length, fromCsv.length);
+  const pad = (row) => Core.CSV_COLUMNS.map((_, i) => (row[i] === undefined ? '' : row[i]));
+  fromCsv.forEach((row, i) => assert.deepEqual(pad(fromXlsx[i]), pad(row), `row ${i}`));
+
+  // And the counts reader addresses both by header name, so it sees the same
+  // thing either way — the property that actually matters downstream.
+  assert.deepEqual(fromXlsx[0], Core.CSV_COLUMNS);
+});
+
+test('a value that would break the sheet XML is escaped, not emitted raw', async () => {
+  const rows = [{
+    courseCode: 'C', lessonCode: 'L01', lessonTitle: 'Rock & Roll <i> "quoted"', lessonOrder: 1,
+    activityType: 'video', title: "Ampersand & angle >", required: 'TRUE',
+    pageRangeStart: '', pageRangeEnd: '', difficultyTier: 'D01', expectedDurationMin: 5, instructions: '',
+  }];
+  const bytes = Core.buildXlsx(rows);
+  const grid = await Core.readXlsxGrid(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+  assert.equal(grid[1][2], 'Rock & Roll <i> "quoted"');
+  assert.equal(grid[1][5], 'Ampersand & angle >');
+});
+
+test('the same rows always produce the same bytes', () => {
+  const rows = [{
+    courseCode: 'C', lessonCode: 'L01', lessonTitle: 'A', lessonOrder: 1,
+    activityType: 'video', title: 'A', required: 'TRUE',
+    pageRangeStart: '', pageRangeEnd: '', difficultyTier: 'D01', expectedDurationMin: 5, instructions: '',
+  }];
+  assert.deepEqual(Core.buildXlsx(rows), Core.buildXlsx(rows));
+});
+
+test('crc32 matches the known ZIP check value', () => {
+  assert.equal(Core.crc32(new TextEncoder().encode('123456789')), 0xcbf43926);
+});
+
+test('columnLetter runs past Z the way a spreadsheet does', () => {
+  assert.deepEqual([0, 11, 25, 26, 27].map(Core.columnLetter), ['A', 'L', 'Z', 'AA', 'AB']);
+});
+
+// ---- §3.2a a caller-supplied Activity order ----
+
+test('typeOrder decides emission order, replacing the MiAcademy default', () => {
+  const counts = countsRows(
+    ['U1', 'L', 'Video', 1],
+    ['U1', 'L', 'Practice Level', 2],
+    ['U1', 'L', 'Quiz', 1],
+  );
+  const { rows } = Core.expand({
+    counts, pageMap: pageRows('U1', 'L', 1, 4), courseCode: 'C', startNumber: 1,
+    typeOrder: ['pdf', 'quiz', 'video', 'practice-level'],
+    knownTypeKeys: TYPE_KEYS,
+  });
+  assert.deepEqual(rows.map((r) => r.activityType), [
+    'pdf', 'quiz', 'video', 'practice-level', 'practice-level',
+  ]);
+});
+
+test('a type in the counts sheet but absent from the order is written last, not dropped', () => {
+  const counts = countsRows(['U1', 'L', 'Quiz', 1], ['U1', 'L', 'Video', 1]);
+  const { rows } = Core.expand({
+    counts, pageMap: [], courseCode: 'C', startNumber: 1,
+    typeOrder: ['video'], knownTypeKeys: TYPE_KEYS,
+  });
+  assert.deepEqual(rows.map((r) => r.activityType), ['video', 'quiz']);
+});
+
+test('dropping pdf from the order while supplying a page map is warned about', () => {
+  const counts = countsRows(['U1', 'L', 'Video', 1]);
+  const { rows, warnings } = Core.expand({
+    counts, pageMap: pageRows('U1', 'L', 10, 20), courseCode: 'C', startNumber: 1,
+    typeOrder: ['video', 'quiz'], knownTypeKeys: TYPE_KEYS,
+  });
+  assert.equal(rows.some((r) => r.activityType === 'pdf'), false);
+  assert.equal(warnings.some((w) => w.includes('"pdf" is not in the Activity order')), true);
+});
+
+test('an order listing a type twice emits it once, at its first position', () => {
+  const counts = countsRows(['U1', 'L', 'Video', 1], ['U1', 'L', 'Quiz', 1]);
+  const { rows } = Core.expand({
+    counts, pageMap: [], courseCode: 'C', startNumber: 1,
+    typeOrder: ['video', 'quiz', 'video'], knownTypeKeys: TYPE_KEYS,
+  });
+  assert.deepEqual(rows.map((r) => r.activityType), ['video', 'quiz']);
+});
+
+test('an empty order falls back to the MiAcademy default rather than emitting nothing', () => {
+  const counts = countsRows(['U1', 'L', 'Quiz', 1], ['U1', 'L', 'Video', 1]);
+  const { rows } = Core.expand({
+    counts, pageMap: [], courseCode: 'C', startNumber: 1, typeOrder: [], knownTypeKeys: TYPE_KEYS,
+  });
+  assert.deepEqual(rows.map((r) => r.activityType), ['video', 'quiz']);
 });

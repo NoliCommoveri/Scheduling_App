@@ -63,7 +63,7 @@ and stops there. Duration outliers (a 25-minute project PDF against the
 |---|---|
 | `management-app/js/expander-core.js` | Pure layer: workbook reading, the join, expansion. DOM-free, IO-free, no Storage. |
 | `management-app/js/expander.js` | The `#/expander` page. Reads files and stores, renders, downloads. Computes no row. |
-| `tests/management-expander-core.test.js` | `node --test`. 37 cases, including four real upstream artifacts. |
+| `tests/management-expander-core.test.js` | `node --test`. 48 cases, including four real upstream artifacts. |
 | `tests/fixtures/counts-general-science.xlsx` | A real counts workbook out of step 1. |
 | `tests/fixtures/page-map-math-level-e.csv` | A real page map out of step 2. |
 | `tests/fixtures/counts-math-level-h.xlsx` | A second real counts workbook — the one that failed in the field, kept as the regression. |
@@ -132,6 +132,37 @@ Three defences, in the order they fire:
 3. **Whatever is left says how many bytes it got**, so a report from a phone
    carries enough to tell an environment problem from a parser one.
 
+### 2.4 Writing a workbook
+
+The proposal goes out as **both `.csv` and `.xlsx`**, identical rows. The CSV is
+what the importer and the LLM pass consume; the workbook exists because a CSV is
+miserable to edit on a phone, which is where the tuning actually happens.
+
+Writing a ZIP needs no compressor: entries are **STORED** (method 0), which is
+valid ZIP and which Excel, Sheets, Numbers and this module's own reader all
+accept. Still no library, still no build step. The cost is size — a 600-row
+proposal is ~280KB rather than ~60KB — which does not matter for a file that
+exists to be opened once and edited.
+
+Five parts, the minimum a workbook needs to open: `[Content_Types].xml`,
+`_rels/.rels`, `xl/workbook.xml`, `xl/_rels/workbook.xml.rels`,
+`xl/worksheets/sheet1.xml`. No styles, no theme, no shared strings — all
+optional, and leaving them out keeps the writer readable at a glance.
+
+Two details:
+
+- **`lessonOrder`, the page columns and `expectedDurationMin` are written as
+  numbers**, everything else as inline strings, so a phone's spreadsheet app
+  right-aligns them and will not reformat a page number as a date.
+- **Empty cells are omitted entirely**, which is how `.xlsx` represents a blank.
+  A CSV row therefore always carries twelve fields where a sheet row may carry
+  fewer; the header row still declares all twelve, so the full width shows. This
+  is why a reader must place cells by their `r=` reference (§2.2) rather than by
+  arrival order.
+
+The bytes are deterministic — a fixed 1980-01-01 DOS timestamp — so the same
+rows always produce the same file.
+
 ### 2.3 Neither file is read by column position
 
 Both inputs come from an LLM reading screenshots and a PDF. Column order is not
@@ -166,13 +197,34 @@ expects.
 
 ### 3.2 Row order within a Lesson
 
+**The order is the Course's, not this module's.** `expand()` takes a
+`typeOrder`; the page seeds it from the Course's own Curriculum — its
+`suggestedActivityTypes`, resolved through `RecipeCore.suggestedTargetTypeKeys`,
+the same helper the Lesson recipe uses (FR-P9) — and lets the parent reorder it
+with ↑/↓ before generating. So the expander and the recipe agree about what a
+publisher's Lessons are made of, and a curriculum that reads before it watches,
+or has no videos at all, is expressed rather than worked around.
+
+When no order is given, the fallback is MiAcademy's shape:
+
 ```
 video → pdf → practice-level → online-sim → quiz
 ```
 
 Video opens, the PDF carries the page budget, practice levels climb, the Online
-Sim sits with the practice, and the assessment closes. A type not in this list
-is emitted after these, in the order the counts sheet listed it.
+Sim sits with the practice, and the assessment closes. That sequence is now a
+default, not a rule.
+
+Three properties hold whatever the order:
+
+- **A type in the counts sheet but absent from the order is still emitted**,
+  after the ordered ones, in the sheet's own order. An unexpected type is never
+  silently dropped.
+- **A type listed twice emits once**, at its first position.
+- **Removing `pdf` from the order while supplying a page map is warned about** —
+  it discards every page range in the file, and the proposal would otherwise look
+  complete with no PDF work in it. The page seeds `pdf` into the list even when
+  the Curriculum does not name it, precisely so this takes a deliberate removal.
 
 Lessons themselves keep **first-appearance order** — the counts sheet is already
 in curriculum order, and that order is not recoverable by sorting (unit numbers
@@ -209,9 +261,13 @@ and zero would silently drop the row.
 
 ### 3.4 Lesson codes
 
-`L` + the number, zero-padded to the width of the highest number in the batch —
-two digits until a course outgrows them, then three (`L01`…`L99`, `L100`), so
-codes in one file sort as text the way they sort as numbers.
+`L` + the number, zero-padded to two digits, widening only for numbers that
+need it — `L01`…`L99`, then `L100`.
+
+Padded **per number, not to the batch's widest**. A 91-Lesson batch starting at
+12 crosses 100, and widening the whole file for that would mint `L012` for
+Lesson 12 — which reads as neither 12 nor 012, and would sit beside the Course's
+existing `L11`.
 
 Numbering **continues from the Lessons the Course already has**: the next free
 `L`-number, computed from the existing codes, shown on the page and editable.
@@ -254,7 +310,15 @@ as a Lesson the child never gets.
 ## 5. The page (`#/expander`)
 
 Under the **Library** hub, beside Course Templates. Three numbered sections —
-Course, Files, Defaults — then Generate.
+Course, Files, Activities — then Generate.
+
+**The Activities table is both the order and the defaults.** One row per
+Activity Type, carrying its tier and its minutes, moved into teaching sequence
+with the same ↑/↓ controls the count-target rows use
+(`courses.js`, `buildCountTargetsFieldset`). Two separate lists would have been
+two places to say the same thing. Rows can be added and removed; changing a
+row's type adopts that type's default duration unless one has been typed by
+hand. The seed and the hint above it both change with the selected Course.
 
 The result panel shows: a count of Lessons and rows with the code range, a tally
 per Activity Type, the warnings (or an explicit "no mismatches"), the **first
@@ -262,7 +326,9 @@ Lesson** as a sanity check that the join landed, and the download button. The
 blank `pdf` title renders as *(blank — for the LLM to name)* so the preview is
 not mistaken for a half-finished file.
 
-Downloads as `{courseCode}_lesson_activity_import_proposed.csv`.
+Downloads as `{courseCode}_lesson_activity_import_proposed.csv` **and `.xlsx`** —
+same rows, two buttons. The workbook is the one to edit on a phone; the CSV is
+what Bulk Import reads.
 
 With no Course Templates yet, the page says so and links to `#/courses` instead
 of offering a form that could only produce a rejected file.
@@ -308,12 +374,23 @@ Automated — `npm test`, `tests/management-expander-core.test.js`:
 11a. End to end on a second real course (Math Level H, 91 Lessons, 605 rows)
      where a whole unit is present in the counts sheet and absent from the page
      map — the join lands, and §4's warning names it.
+12. §2.4: the written workbook reads back through this module's own reader to
+    the same grid; every addressed value matches the CSV; XML-hostile text is
+    escaped; the bytes are deterministic; CRC-32 matches the standard check
+    value; column letters run past Z.
+13. §3.2: a supplied order replaces the default; an unlisted type is written
+    last; a duplicate emits once; an empty order falls back; dropping `pdf`
+    against a page map warns.
+14. §3.4: a 95-Lesson batch starting at 12 mints `L12`…`L106`, not `L012`.
 
 Manual, once, on the deployed app:
 
-12. `#/expander` renders under Library with the Course Template list populated.
-13. Choosing a Course with existing Lessons shows the correct next number.
-14. A generated file imports cleanly at `#/courses` → Bulk Import once its `pdf`
+15. `#/expander` renders under Library with the Course Template list populated.
+16. Choosing a Course with existing Lessons shows the correct next number, and
+    an Activities table seeded from that Course's Curriculum.
+17. Reordering the Activities table changes the order of the generated rows.
+18. The downloaded `.xlsx` opens on a phone and shows the same rows as the CSV.
+19. A generated file imports cleanly at `#/courses` → Bulk Import once its `pdf`
     titles are filled in — and is **rejected** with a per-row message if they
     are not, which is the intended safety net.
 
@@ -325,6 +402,12 @@ Manual, once, on the deployed app:
   and Lessons carry a flat course-wide order. The unit column is used only for
   the join key. If units ever need to survive into the app, that is a Course
   Template question, not an expander one.
+- **The workbook is an output, not an input to Bulk Import.** The importer
+  reads CSV only. Editing the `.xlsx` on a phone and then importing it means
+  going back through the LLM pass (which returns CSV) or exporting to CSV by
+  hand. Teaching `importActivitiesCsv()` to read a workbook is a small change in
+  `courses.js` — this module's reader is already there — but it belongs to that
+  module and was not in scope here.
 - **`online-sim` titles are the Lesson name.** The counts sheet gives a type and
   a count but no name; the real names in the sample (`Writing to Inform:
   Research`) came from the screenshots. Renaming them is part of the step-4 pass.
