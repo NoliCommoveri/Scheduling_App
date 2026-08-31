@@ -1717,3 +1717,95 @@ button.secondary {
 .duration-row .duration-row-state {
   font-variant-numeric: tabular-nums;
 }
+
+/* ---- Course Structure Expander (#/expander) ----
+   docs/TDS_Slice_Course_Structure_Expander.md §5. A form, a tuning table and a
+   one-Lesson preview. Deliberately reuses .error/.success and the .bulk-import
+   action row's flex-wrap rule rather than inventing a second visual language
+   for what is the same kind of page as Course Templates' bulk import. */
+
+.expander-hint {
+  margin: 0 0 0.75rem;
+  font-size: 0.9rem;
+  color: #555;
+}
+
+.expander-inputs h2 {
+  margin: 1.25rem 0 0.5rem;
+  font-size: 1rem;
+}
+
+.expander-inputs label {
+  display: block;
+  margin-bottom: 0.5rem;
+}
+
+/* Same wrap-not-squeeze rule as .bulk-import-actions, for the same reason. */
+.expander-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.expander-defaults,
+.expander-preview {
+  border-collapse: collapse;
+  width: 100%;
+  margin-bottom: 0.75rem;
+}
+
+.expander-defaults th,
+.expander-defaults td,
+.expander-preview th,
+.expander-preview td {
+  border: 1px solid #ddd;
+  padding: 0.35rem 0.5rem;
+  text-align: left;
+  font-size: 0.9rem;
+}
+
+.expander-defaults input[type="number"] {
+  width: 6rem;
+}
+
+/* The tally reads as a sentence fragment, not a bulleted list — it is a count
+   per type, scanned once to confirm the join produced what was expected. */
+.expander-tally {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0.25rem 0 0.5rem;
+  padding: 0;
+  font-size: 0.9rem;
+}
+
+.expander-warnings {
+  border-left: 3px solid #c8890b;
+  padding: 0.25rem 0 0.25rem 0.75rem;
+  margin: 0.75rem 0;
+}
+
+.expander-warnings h3 {
+  margin: 0 0 0.35rem;
+  font-size: 0.95rem;
+}
+
+.expander-warnings ul {
+  margin: 0;
+  padding-left: 1.25rem;
+  font-size: 0.9rem;
+}
+
+/* A blank pdf title is the expander working correctly, not a gap — it reads as
+   an instruction rather than an omission so the preview is not mistaken for a
+   half-finished file. */
+.expander-blank {
+  color: #777;
+}
+
+.expander-next {
+  font-size: 0.9rem;
+  margin: 0.25rem 0 0;
+}

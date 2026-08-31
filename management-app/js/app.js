@@ -16,6 +16,7 @@ const App = (() => {
     '#/tiers': () => Tiers.render(root),
     '#/activity-types': () => ActivityTypes.render(root),
     '#/courses': () => Courses.render(root),
+    '#/expander': () => Expander.render(root),
     '#/children': () => Children.render(root),
     '#/assigned-courses': () => Instances.render(root),
     '#/chores': () => Chores.render(root),
@@ -60,6 +61,7 @@ const App = (() => {
       label: 'Library',
       links: [
         ['#/courses', 'Course Templates'],
+        ['#/expander', 'Expander'],
         ['#/curriculum', 'Curriculum'],
         ['#/activity-types', 'Activity Types'],
         ['#/tiers', 'Tiers'],
