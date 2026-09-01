@@ -36,19 +36,10 @@
     return stamp + "-" + hh + mm;
   }
 
-  // Whole-day difference b - a, both YYYY-MM-DD, compared at local midnight
-  // (Module 8 FR-7's 7-day reminder threshold).
-  function daysBetween(a, b) {
-    var da = new Date(a + "T00:00:00");
-    var db = new Date(b + "T00:00:00");
-    return Math.round((db - da) / 86400000);
-  }
-
   g.DateUtil = {
     localISODate: localISODate,
     today: today,
     addDays: addDays,
-    filenameTimestamp: filenameTimestamp,
-    daysBetween: daysBetween
+    filenameTimestamp: filenameTimestamp
   };
 })(typeof window !== "undefined" ? window : globalThis);

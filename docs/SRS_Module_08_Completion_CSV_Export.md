@@ -64,7 +64,7 @@ Turns resolved Activity Records (completed or waived) into the Completion CSV th
 
 **FR-6 — No duplicate rows across exports.** An already-exported record is never included in a later export. Each eligible record appears in exactly one CSV file over its lifetime (barring a wipe-preservation edge case, which doesn't apply here since exported records are wipe-eligible, not wipe-preserved).
 
-**FR-7 — End-of-week reminder.** If **7 or more device-local days** have passed since the last successful export, **and** at least one eligible-but-unexported record exists, the app surfaces a reminder. The reminder can be dismissed for the current session but reappears on the next app open as long as the condition still holds — it clears permanently (until it next applies) once an export succeeds or there's simply nothing left to export.
+**FR-7 — End-of-week reminder. REPEALED 2026-08-10; removed from the code 2026-09-01.** The retirement banner at the top of this file repealed it the day CSV stopped being transport, but the banner itself stayed in `planner-ui.js` for another three weeks, nudging the child weekly to hand-carry data that `POST /api/completions` had already delivered to D1. `Export.reminderState()` and the `.reminder-banner` styles are deleted; manual export (the Menu's "Export completions") is unchanged, and so is everything below about *what* an export contains. The original text follows, for the record: If **7 or more device-local days** have passed since the last successful export, **and** at least one eligible-but-unexported record exists, the app surfaces a reminder. The reminder can be dismissed for the current session but reappears on the next app open as long as the condition still holds — it clears permanently (until it next applies) once an export succeeds or there's simply nothing left to export.
 
 **FR-8 — Recovery note companion file.** Every successful export additionally writes a small, human-readable recovery note as a separate file alongside the CSV, over the same manual-save path: device-local date, `currentStreak` (Module 7), and per-category `{ categoryId, themeDisplayName, balance }` (Module 6's Reward Ledger). The note is named `recovery_{childSlug}_{YYYYMMDD-HHmm}.txt`, sharing the CSV's exact timestamp stem (Interchange Contract §7) — so the pair is unmistakable by eye in a Drive folder months later. The CSV contract (§3's eleven columns) is untouched — the note is not part of it. Note-write failure is independent of the CSV export: it never blocks the export, never prevents `exported` flags from being set (FR-4/FR-5 unchanged), and surfaces only a retriable notice. The note is write-only — no module in either app ever reads it back (Domain Model §3.7, §5.9).
 
@@ -75,7 +75,7 @@ Turns resolved Activity Records (completed or waived) into the Completion CSV th
 | Eligibility | Only `complete` or `waived`, not-yet-exported records ever appear in a CSV. |
 | Empty export | Triggering export with zero eligible records is a harmless no-op (a clear "nothing to export" message, no empty file, no error). |
 | Atomicity | A partial/failed write must not mark any record as exported. |
-| Reminder trigger | 7+ device-local days since last successful export, with ≥1 eligible record outstanding. |
+| Reminder trigger | ~~7+ device-local days since last successful export, with ≥1 eligible record outstanding.~~ Repealed with FR-7; no reminder is computed or shown. |
 | Column completeness | Every row — Activity or Chore — carries all eleven columns in the fixed order (§3); no per-row omission. |
 | Note-write independence | A failed recovery-note write never unmarks or blocks the CSV export; the CSV's success alone governs `exported` flags. |
 
@@ -96,7 +96,7 @@ No PIN. This is explicitly the child's own action (Architecture Evaluation §13)
 3. Simulating a failed export leaves every record's `exported` flag unset, and a subsequent successful export includes those same records.
 4. Re-triggering export immediately after a successful one produces an empty/no-op result if nothing new has resolved since.
 5. A record only becomes wipe-eligible once it is both resolved (complete/waived) and exported — resolved-but-not-yet-exported records are still protected from the wipe (§3.6a).
-6. The end-of-week reminder appears once 7+ days pass with outstanding eligible records, and does not appear if everything eligible has already been exported.
+6. ~~The end-of-week reminder appears once 7+ days pass with outstanding eligible records, and does not appear if everything eligible has already been exported.~~ Repealed with FR-7 — the replacement check is that **no** banner appears on the Today view however long it has been since an export, and that the Menu's "Export completions" still produces the CSV and the recovery note.
 7. No PIN prompt ever appears anywhere in the export flow.
 8. A successful export produces both files — the CSV and the recovery note — in the same operation.
 9. Simulating a failed recovery-note write leaves the CSV export fully successful: every included record is still marked exported, and only a retriable notice about the note surfaces.

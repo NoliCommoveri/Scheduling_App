@@ -444,6 +444,49 @@ test('onToday: due today, or overdue and required (§2.1 roll-forward)', () => {
   assert.equal(PlannerCore.onToday(future, TODAY, nothingResolved), false);
 });
 
+test('unrecordedOverdue: past school work with nothing recorded (Ray, 2026-09-01)', () => {
+  const d = (o) => AssignmentCore.decorate(row(o));
+
+  // The whole point of the rule: a deferral is an answer, an absence is not.
+  const ignored = d({ id: 'x1', date: '2026-08-09' });
+  const deferred = d({ id: 'x2', date: '2026-08-09', deferred_to: '2026-08-14' });
+  assert.deepEqual(
+    PlannerCore.unrecordedOverdue([ignored, deferred], TODAY, nothingResolved).map((r) => r.id),
+    ['x1']
+  );
+
+  // Unlike onToday, `required` is not a gate — an optional activity never rolls
+  // forward, so it is exactly the work this prompt exists to surface.
+  const optional = d({ id: 'x3', date: '2026-08-09' });
+  const required = d({ id: 'x4', date: '2026-08-09', payload: JSON.stringify({ required: true }) });
+  assert.equal(PlannerCore.unrecordedOverdue([optional, required], TODAY, nothingResolved).length, 2);
+
+  // Today and the future are not overdue; a resolved row is answered.
+  const todayRow = d({ id: 'x5', date: TODAY });
+  const future = d({ id: 'x6', date: '2026-08-20' });
+  assert.equal(PlannerCore.unrecordedOverdue([todayRow, future], TODAY, nothingResolved).length, 0);
+  assert.equal(PlannerCore.unrecordedOverdue([ignored], TODAY, (id) => id === 'x1').length, 0);
+
+  // Activities only — a missed chore day is spent, not revisited.
+  const chore = d({ id: 'x7', date: '2026-08-09', kind: 'chore' });
+  const event = d({ id: 'x8', date: '2026-08-09', kind: 'event' });
+  assert.equal(PlannerCore.unrecordedOverdue([chore, event], TODAY, nothingResolved).length, 0);
+});
+
+test('earliestUnrecordedDate returns the oldest unanswered day, else null', () => {
+  const d = (o) => AssignmentCore.decorate(row(o));
+  const rows = [
+    d({ id: 'x1', date: '2026-08-10' }),
+    d({ id: 'x2', date: '2026-08-07' }),
+    d({ id: 'x3', date: '2026-08-09' }),
+  ];
+  assert.equal(PlannerCore.earliestUnrecordedDate(rows, TODAY, nothingResolved), '2026-08-07');
+
+  // Resolving the earliest day walks the prompt forward to the next one.
+  assert.equal(PlannerCore.earliestUnrecordedDate(rows, TODAY, (id) => id === 'x2'), '2026-08-09');
+  assert.equal(PlannerCore.earliestUnrecordedDate([], TODAY, nothingResolved), null);
+});
+
 test('onToday drops a resolved row, and follows a deferral off the day', () => {
   const item = AssignmentCore.decorate(row());
   assert.equal(PlannerCore.onToday(item, TODAY, (id) => id === 'a1'), false);
