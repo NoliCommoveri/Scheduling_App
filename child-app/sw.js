@@ -117,7 +117,30 @@
 // left on v18 keeps the arbitrary heading order — the cards inside a course
 // were always right, so this is a wrong-looking screen rather than a broken
 // one, but it is the whole of what the phase delivers and it is cache-first.
-const CACHE_NAME = "daily-plan-shell-v19";
+// v20: three changes (2026-09-01). No file added or removed; planner-core.js,
+// planner-ui.js, export.js, date-util.js, plan-sync.js and style.css changed
+// contents.
+//   1. The overdue prompt — unrecorded past school work gets a banner and a
+//      jump to the earliest unanswered day. planner-core.js carries the rule
+//      (`unrecordedOverdue`), planner-ui.js the banner that calls it. A device
+//      left on v19 has neither, and this is the whole of what the change
+//      delivers: it is invisible rather than broken, the v10/v19 case.
+//   2. The weekly export banner is removed, and with it `Export.reminderState`
+//      and `DateUtil.daysBetween` — its only caller and that helper's only
+//      caller in this app. This is the set hazard v7 named, not a cosmetic
+//      bump: the old `export.js` calls `g.DateUtil.daysBetween`, which the new
+//      `date-util.js` no longer defines, so the two halves are only safe
+//      together. Within a cache generation they always are (activate deletes
+//      every other CACHE_NAME before claiming clients), which is exactly why
+//      the generation has to change when a function moves between two shell
+//      files.
+//   3. plan-sync.js widens PAST_DAYS from 7 to 14, so the cache holds
+//      today−14..today+14. The overdue prompt in (1) can only name a day whose
+//      rows are on the device, so this is what gives it a fortnight to look
+//      back over rather than a week. A device left on v19 keeps the 7-day
+//      window and would under-report overdue work even if it somehow had the
+//      new planner-core.js — another reason these land together.
+const CACHE_NAME = "daily-plan-shell-v20";
 
 const APP_SHELL = [
   "./",

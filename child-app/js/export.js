@@ -33,8 +33,8 @@
         var includedRecords = [];
         eligible.forEach(function (rec) {
           var assignmentRow = assignments[rec.activityId];
-          // Fallen out of the local `assignments` cache window (§8.3's
-          // today−7..today+14) before this device got around to exporting it —
+          // Fallen out of the local `assignments` cache window (plan-sync.js's
+          // PAST_DAYS/FUTURE_DAYS) before this device got around to exporting —
           // skip defensively rather than report a row with nothing to say.
           if (!assignmentRow) return;
           rows.push(C.buildRow(rec, assignmentRow, child.name, semester.label));
