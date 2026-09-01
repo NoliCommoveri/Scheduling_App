@@ -17,12 +17,24 @@
   // WebSockets, no push. At a kid's usage pattern the difference is invisible.
   var POLL_MS = 60000;
 
-  // §5.5's default window (today−7 … today+14), computed on this side rather
-  // than left to the server's default so the client can tell when the window
-  // itself has moved. That matters: the window slides every day, and a `since`
-  // delta would silently skip rows that entered the window without being
-  // touched. See the windowMoved branch in run().
-  var PAST_DAYS = 7;
+  // The sync window (today−14 … today+14), computed on this side rather than
+  // left to the server's default so the client can tell when the window itself
+  // has moved. That matters: the window slides every day, and a `since` delta
+  // would silently skip rows that entered the window without being touched.
+  // See the windowMoved branch in run().
+  //
+  // PAST_DAYS was 7 — §5.5's default — until Ray widened it to 14 on
+  // 2026-09-01, alongside the overdue prompt. The prompt can only name a day
+  // whose rows are actually on the device, so the cache window is the real
+  // bound on how far back it can look, and a week was short of a fortnight's
+  // catch-up. The server's own default is still 7; this client has always sent
+  // an explicit from/to (see run()), so the two never had to agree and no
+  // Worker change is implied by this one.
+  //
+  // Cost: a full fetch covers 29 days instead of 22. Still one full fetch per
+  // day, still far under the Worker's 5000-row cap (validation.js
+  // MAX_QUERY_ROWS) at this household's volume.
+  var PAST_DAYS = 14;
   var FUTURE_DAYS = 14;
 
   var inFlight = null;
@@ -148,11 +160,16 @@
           //   it again — not even to say it was rescinded. Holding a copy the
           //   device can no longer verify is worse than holding none, and it
           //   would grow without bound. The visible cost is that work still
-          //   pending more than a week past its date stops appearing in the
-          //   overdue rollup; past that point rescheduling it is a parent act
-          //   (PATCH /api/assignments/:id, §6.5), not something the kid's
-          //   planner should keep nagging about from unverifiable data.
+          //   pending past the window's start stops appearing in the overdue
+          //   rollup and in the overdue prompt; past that point rescheduling it
+          //   is a parent act (PATCH /api/assignments/:id, §6.5), not something
+          //   the kid's planner should keep nagging about from unverifiable
+          //   data.
           // Locked for: Phase 3B. The TDS does not specify a cache policy.
+          // Amended 2026-09-01: the cutoff itself moved from 7 days to 14
+          //   (PAST_DAYS above). The policy is unchanged — a full fetch still
+          //   prunes, a delta still leaves the cache alone — only how much
+          //   history it keeps.
           return ingest(plan.assignments || [], windowMoved ? win : null).then(function (counts) {
             return record(meta, {
               lastVersion: serverVersion !== null ? serverVersion : (haveVersion ? meta.lastVersion : 0),
