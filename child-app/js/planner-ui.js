@@ -172,6 +172,8 @@
       bar.appendChild(tabs);
 
       if (isPreviewingOtherDay()) bar.appendChild(previewBanner());
+      var overdue = overdueBanner();
+      if (overdue) bar.appendChild(overdue);
 
       // The end-of-week export banner used to live here (SRS Module 8 FR-7:
       // 7+ days since the last export, with eligible records outstanding).
@@ -283,6 +285,50 @@
       var back = node("button", "btn ghost small", "Back to today");
       back.onclick = backToToday;
       banner.appendChild(back);
+      return banner;
+    }
+
+    // ---------- overdue prompt (Ray, 2026-09-01) ----------
+    //
+    // School work on a past day that was never answered — not completed, not
+    // waived, not deferred. PlannerCore.unrecordedOverdue owns the rule and
+    // says at length why it is not onToday's overdue arm.
+    //
+    // This moves nothing. It is a signpost to a day, which is why it pairs with
+    // Preview another day rather than replacing it: Ray navigates back to the
+    // day and resolves the work in place, so the assigned `date` stays the fact
+    // it always was.
+    //
+    // Measured against the REAL device date, never state.today — previewing
+    // 12 August must not make the 13th retroactively overdue.
+    function overdueRows() {
+      if (!state.data) return [];
+      return g.PlannerCore.unrecordedOverdue(
+        state.data.rows, g.DateUtil.localISODate(new Date()), state.isResolved
+      );
+    }
+
+    function overdueBanner() {
+      var rows = overdueRows();
+      if (!rows.length) return null;
+      var earliest = rows[0].date;
+      // Already standing on the day it would send them to — the work is on
+      // screen, so a button offering to go there is noise. Resolve that day and
+      // the banner returns pointing at the next one, which is the walk forward.
+      if (state.today === earliest) return null;
+
+      var days = Object.create(null);
+      rows.forEach(function (r) { days[r.date] = true; });
+      var dayCount = Object.keys(days).length;
+
+      var banner = node("div", "overdue-banner");
+      banner.appendChild(node("span", null,
+        "You have " + rows.length + " overdue task" + (rows.length === 1 ? "" : "s") +
+        (dayCount > 1 ? " across " + dayCount + " days" : "") +
+        " — reschedule or mark them complete."));
+      var go = node("button", "btn small", "Go to " + formatDateLabel(earliest));
+      go.onclick = function () { state.today = earliest; render(); };
+      banner.appendChild(go);
       return banner;
     }
 

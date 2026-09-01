@@ -192,6 +192,51 @@
     return due < today && row.required === true; // overdue rollup (§2.1)
   }
 
+  // Unrecorded overdue school work — the Overdue prompt's rule (Ray, 2026-09-01).
+  //
+  // Deliberately NOT onToday's overdue arm, and the difference is the point:
+  //
+  //  - onToday asks "what belongs on today's list", so it reads
+  //    effectiveDueDate and a deferral moves the row to its new day. This asks
+  //    "which past day was left unanswered", so it reads the row's own `date`
+  //    and treats a deferral as an answer. Ray's words: a deferral is a
+  //    PIN-gated act, so the parent already knows the work is not being done on
+  //    its assigned day. That is a decision, not a gap.
+  //  - onToday gates on `required === true`. This does not. An optional
+  //    activity never rolls forward at all, so it is exactly the work that
+  //    goes missing without something pointing at it.
+  //
+  // Activities only: chores are per-day occurrences that a missed day spends
+  // (Rescind_Regeneration §2.2a), and a chore left un-ticked on Tuesday is not
+  // a thing anyone returns to Tuesday to answer. School work is.
+  //
+  // Nothing here changes a row. `date` is read, never written — this is a
+  // read-time derivation like every other view in this file, and the prompt it
+  // feeds navigates to a day rather than moving work onto one.
+  //
+  // `rows` is the plannable set (DB.loadState), so complete/waived/rescinded
+  // rows are already gone; isResolved additionally catches a completion this
+  // device recorded but has not yet drained. Returns the rows, ascending by
+  // date then id — the caller wants the earliest date and a count.
+  function unrecordedOverdue(rows, today, isResolved) {
+    isResolved = isResolved || function () { return false; };
+    return (rows || []).filter(function (r) {
+      if (r.kind !== "activity") return false;
+      if (r.deferred_to) return false;      // an approved move, not a gap
+      if (!r.date || r.date >= today) return false;
+      return !isResolved(r.id);
+    }).sort(function (a, b) {
+      if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+      return a.id < b.id ? -1 : (a.id > b.id ? 1 : 0);
+    });
+  }
+
+  // The earliest day carrying unrecorded school work, or null if there is none.
+  function earliestUnrecordedDate(rows, today, isResolved) {
+    var list = unrecordedOverdue(rows, today, isResolved);
+    return list.length ? list[0].date : null;
+  }
+
   function eventTouches(row, today) {
     var start = row.startDate || row.date;
     var end = row.endDate || row.date;
@@ -315,6 +360,8 @@
     effectiveSortKey: effectiveSortKey,
     byPosition: byPosition,
     onToday: onToday,
+    unrecordedOverdue: unrecordedOverdue,
+    earliestUnrecordedDate: earliestUnrecordedDate,
     eventKey: eventKey,
     groupByCourse: groupByCourse,
     assembleToday: assembleToday,
