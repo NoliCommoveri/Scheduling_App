@@ -73,11 +73,7 @@
       // layout is verifiable). All date logic reads this as "today".
       today: g.DateUtil.localISODate(new Date()),
       isResolved: function () { return false; },
-      reminderInfo: { show: false },
       upload: { pending: 0, error: null },
-      // SRS Module 8 FR-7: dismissed only for this session — reappears on the
-      // next app open as long as the condition still holds.
-      reminderDismissed: false,
       // Which collapsible groups the child has opened (FR-13), keyed by
       // groupKey below. Absent means collapsed: every group starts shut, and
       // the map only ever records a deliberate tap. It lives on `state` rather
@@ -90,22 +86,21 @@
     };
 
     function reload() {
-      return Promise.all([g.DB.loadState(), g.DB.getAll("activityRecords"), g.Export.reminderState(), g.Reward.gatherDisplay(), g.PlanSync.status(), g.Outbox.status(), g.DB.loadAssignmentIndex()]).then(function (r) {
+      return Promise.all([g.DB.loadState(), g.DB.getAll("activityRecords"), g.Reward.gatherDisplay(), g.PlanSync.status(), g.Outbox.status(), g.DB.loadAssignmentIndex()]).then(function (r) {
         state.data = r[0];
         state.records = r[1]; // activityRecords — drives the daily completion visual
         var resolved = Object.create(null);
         r[1].forEach(function (rec) { resolved[rec.activityId] = true; });
         state.isResolved = function (id) { return !!resolved[id]; };
-        state.reminderInfo = r[2];
-        state.rewards = r[3];
-        state.sync = r[4]; // Online Revamp §8.3 — link state, for the empty state and Settings
-        state.upload = r[5]; // Online Revamp §8.4 — how much is still queued to go up
+        state.rewards = r[2];
+        state.sync = r[3]; // Online Revamp §8.3 — link state, for the empty state and Settings
+        state.upload = r[4]; // Online Revamp §8.4 — how much is still queued to go up
         // Every cached row by id, resolved ones included — the Completed view's
         // join source. Not state.data.rows: see renderCompleted.
-        state.rowsById = r[6];
+        state.rowsById = r[5];
         // Shared Chores §6.2/§6.3 — this device's own child id, for telling a
         // self-held claim from a sibling's claimed row.
-        state.selfChildId = r[4].childId || null;
+        state.selfChildId = r[3].childId || null;
         render();
       });
     }
@@ -178,20 +173,15 @@
 
       if (isPreviewingOtherDay()) bar.appendChild(previewBanner());
 
-      if (state.reminderInfo.show && !state.reminderDismissed) {
-        var reminder = node("div", "reminder-banner");
-        reminder.appendChild(node("span", null, "It's been a week or more since your last export — " + state.reminderInfo.eligibleCount + " item" + (state.reminderInfo.eligibleCount === 1 ? "" : "s") + " ready to send."));
-        var reminderActions = node("div", "reminder-actions");
-        var exportNowBtn = node("button", "btn small", "Export now");
-        exportNowBtn.onclick = doExport;
-        var dismissBtn = node("button", "btn ghost small", "Dismiss");
-        dismissBtn.onclick = function () { state.reminderDismissed = true; render(); };
-        reminderActions.appendChild(exportNowBtn);
-        reminderActions.appendChild(dismissBtn);
-        reminder.appendChild(reminderActions);
-        bar.appendChild(reminder);
-      }
-
+      // The end-of-week export banner used to live here (SRS Module 8 FR-7:
+      // 7+ days since the last export, with eligible records outstanding).
+      // It is gone. Module 8's own retirement banner repealed the reminder on
+      // 2026-08-10 — completions reach the parent over POST /api/completions
+      // now, so nothing downstream is waiting on an export having happened and
+      // a weekly nudge was asking the child to hand-carry data that D1 already
+      // has. Export survives as a manual, parent-facing convenience report:
+      // the Menu's "Export completions" item (openMenu below) is the only way
+      // in, and it is unchanged.
       return bar;
     }
 
@@ -1841,7 +1831,6 @@
       g.Export.exportCompletions().then(function (res) {
         if (!res.ok) { toast("Export failed — nothing was marked sent. Try again.", true); return; }
         if (res.empty) { toast("Nothing to export right now.", false); return; }
-        state.reminderDismissed = false; // FR-7: clears once an export succeeds
         var msg = "Exported " + res.count + " item" + (res.count === 1 ? "" : "s") + ".";
         if (!res.noteOk) msg += " (Recovery note couldn't be saved — try exporting again later.)";
         toast(msg, !res.noteOk);

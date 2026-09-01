@@ -122,29 +122,10 @@
     });
   }
 
-  // FR-7: end-of-week reminder. lastSuccessfulExportDate is derived, never
-  // stored — max(date) over any exported:true record, or "never" if none.
-  //
-  // Eligibility is narrowed to records this export can actually carry.
-  // gatherEligible skips a record whose assignment has fallen out of the local
-  // cache window (see its comment); counting it here anyway would raise a
-  // banner promising N items and then export nothing.
-  function reminderState() {
-    return Promise.all([g.DB.getAll("activityRecords"), loadAssignmentMap()]).then(function (r) {
-      var all = r[0];
-      var assignments = r[1];
-      var exportable = all.filter(function (rec) {
-        return C.isEligible(rec) && !!assignments[rec.activityId];
-      });
-      var eligibleCount = exportable.length;
-      if (eligibleCount === 0) return { show: false };
-      var exportedDates = all.filter(function (rec) { return rec.exported === true; }).map(function (rec) { return rec.date; }).sort();
-      if (exportedDates.length === 0) return { show: true, eligibleCount: eligibleCount };
-      var lastExport = exportedDates[exportedDates.length - 1];
-      var days = g.DateUtil.daysBetween(lastExport, g.DateUtil.today());
-      return { show: days >= 7, eligibleCount: eligibleCount };
-    });
-  }
-
-  g.Export = { exportCompletions: exportCompletions, reminderState: reminderState };
+  // `reminderState` used to sit beside this — the FR-7 end-of-week nudge, a
+  // derived "7+ days since the last export with work outstanding". Removed with
+  // the banner it fed (planner-ui.js): Module 8's retirement repealed the
+  // reminder when completions moved to POST /api/completions, and nothing else
+  // ever called it. Export itself is untouched and stays manual, from the Menu.
+  g.Export = { exportCompletions: exportCompletions };
 })(typeof window !== "undefined" ? window : globalThis);

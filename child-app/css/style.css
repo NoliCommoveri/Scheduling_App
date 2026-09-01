@@ -166,12 +166,6 @@ button { font-family: inherit; cursor: pointer; }
 }
 .preview-banner .btn.ghost { border-color: var(--danger); color: var(--danger); flex-shrink: 0; }
 
-/* ---------- End-of-week reminder banner (Module 8 FR-7) ---------- */
-.reminder-banner {
-  margin-top: 12px; background: var(--primary-soft); border: 1px solid var(--primary);
-  border-radius: 12px; padding: 12px 14px; font-size: 14px; font-weight: 600; color: var(--ink);
-}
-.reminder-actions { display: flex; gap: 8px; margin-top: 10px; }
 .btn {
   border: none; border-radius: 12px; font-weight: 700; font-size: 15px;
   padding: 12px 18px; min-height: var(--tap);
