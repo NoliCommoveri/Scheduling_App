@@ -1865,3 +1865,19 @@ button.secondary {
   overflow-x: auto;
   margin-bottom: 0.75rem;
 }
+
+/* ---- Completed Courses (Mgmt SRS 04 FR-16) ----
+   Same resting-state treatment as an archived child: dimmed, never red, every
+   control still reachable. */
+.completed-courses {
+  margin: 1.5rem 0;
+}
+
+.completed-courses > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.course-completed {
+  opacity: 0.6;
+}
