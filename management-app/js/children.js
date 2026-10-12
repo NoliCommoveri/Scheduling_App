@@ -297,8 +297,11 @@ const Children = (() => {
     root.appendChild(coursesHeading);
 
     const count = document.createElement('p');
+    const done = instances.filter(Instances.isCompleted).length;
+    const inProgress = instances.length - done;
     count.textContent = instances.length
-      ? `${instances.length} Course${instances.length === 1 ? '' : 's'} assigned.`
+      ? `${inProgress} Course${inProgress === 1 ? '' : 's'} in progress` +
+        (done ? `, ${done} completed.` : '.')
       : 'No Courses assigned yet.';
     root.appendChild(count);
 

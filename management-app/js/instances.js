@@ -34,6 +34,7 @@ const Instances = (() => {
   let viewKeysInstanceId = null; // when set, the Course's bulk answer-key page
   let editActivityId = null; // when set, the Lesson detail shows the Activity edit form
   let filterChildId = ''; // '' = every child
+  let showCompleted = false; // FR-16: the Completed section starts collapsed
 
   // Which subject buckets are expanded. Keyed by subject text only, never by
   // child: a parent who likes "Math" open tends to like it open for every
@@ -303,6 +304,36 @@ const Instances = (() => {
         t.objectStore('courses').delete(instanceId);
       }
     );
+  }
+
+  // ---- Completed (FR-16, TDS_Slice_Completed_Courses.md) ----
+  //
+  // A view state, not a lifecycle. `completedAt` (YYYY-MM-DD) is a sparse
+  // field on the Instance record — absent means in progress — and it rides
+  // the `records` mirror like every other Course field. Nothing reads it but
+  // the list below: Propose, the weekly view and reporting are unchanged, so
+  // marking a course complete can never lose or withhold work. Children's
+  // archive (`active`, children.js) is the precedent this mirrors.
+
+  // Local calendar date, the same construction as pacing.js's todayISO.
+  function todayISO() {
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  }
+
+  function isCompleted(instance) {
+    return !!(instance && instance.completedAt);
+  }
+
+  async function setInstanceCompleted(instanceId, completed) {
+    const existing = await Storage.get('courses', instanceId);
+    if (!existing) return { error: 'Course not found.' };
+    const record = { ...existing };
+    if (completed) record.completedAt = todayISO();
+    else delete record.completedAt;
+    await Storage.put('courses', record);
+    return { record };
   }
 
   // ---- Instance Course-level fields (FR-13) ----
@@ -657,11 +688,16 @@ const Instances = (() => {
           </div>
           <div class="row-actions">
             <button data-action="open">Open</button>
+            <button data-action="complete">Mark complete</button>
             <button data-action="delete">Un-assign</button>
           </div>
         `;
         item.querySelector('[data-action="open"]').addEventListener('click', () => {
           viewInstanceId = inst.id;
+          render(root);
+        });
+        item.querySelector('[data-action="complete"]').addEventListener('click', async () => {
+          await setInstanceCompleted(inst.id, true);
           render(root);
         });
         item.querySelector('[data-action="delete"]').addEventListener('click', async () => {
@@ -679,6 +715,62 @@ const Instances = (() => {
       groupsEl.appendChild(details);
     }
     return groupsEl;
+  }
+
+  // FR-16 — the completed Courses, out of the way but one click from back.
+  // Flat rather than subject-grouped: this is a shelf of finished work, not a
+  // page anything gets edited from, and a second tier of nested <details>
+  // inside a collapsed one buries the Reopen button for no gain.
+  function buildCompletedSection(root, completed, children) {
+    const childName = (id) => {
+      const c = children.find((ch) => ch.id === id);
+      return c ? c.name : '(no child record)';
+    };
+    const sorted = completed.slice().sort(
+      (a, b) =>
+        childName(a.childId).localeCompare(childName(b.childId)) ||
+        String(a.name).localeCompare(String(b.name))
+    );
+
+    const details = document.createElement('details');
+    details.className = 'completed-courses';
+    details.open = showCompleted;
+    details.addEventListener('toggle', () => {
+      showCompleted = details.open;
+    });
+    const summary = document.createElement('summary');
+    summary.textContent = `Completed Courses (${completed.length})`;
+    details.appendChild(summary);
+
+    const list = document.createElement('ul');
+    list.className = 'instance-list';
+    for (const inst of sorted) {
+      const item = document.createElement('li');
+      item.className = 'list-row course-completed';
+      // The child's name is shown even when the page is filtered to one
+      // child: the flat list has no per-child heading to carry it.
+      item.innerHTML = `
+        <div class="row-text">
+          <span class="row-title instance-name">${escapeHtml(inst.name)}</span>
+          <span class="row-meta">${escapeHtml(childName(inst.childId))} · completed ${escapeHtml(inst.completedAt)}</span>
+        </div>
+        <div class="row-actions">
+          <button data-action="open">Open</button>
+          <button data-action="reopen">Reopen</button>
+        </div>
+      `;
+      item.querySelector('[data-action="open"]').addEventListener('click', () => {
+        viewInstanceId = inst.id;
+        render(root);
+      });
+      item.querySelector('[data-action="reopen"]').addEventListener('click', async () => {
+        await setInstanceCompleted(inst.id, false);
+        render(root);
+      });
+      list.appendChild(item);
+    }
+    details.appendChild(list);
+    return details;
   }
 
   async function renderList(root) {
@@ -719,13 +811,22 @@ const Instances = (() => {
     });
     root.appendChild(filterForm);
 
-    const instances = filterChildId ? await listForChild(filterChildId) : await listAll();
+    const everyInstance = filterChildId ? await listForChild(filterChildId) : await listAll();
+    // FR-16: completed Courses leave the main list and wait in their own
+    // collapsed section below it. Everything else on the page only ever sees
+    // the in-progress ones.
+    const instances = everyInstance.filter((i) => !isCompleted(i));
+    const completed = everyInstance.filter(isCompleted);
 
     if (instances.length === 0) {
       const empty = document.createElement('p');
-      empty.textContent = filterChildId
-        ? 'No Courses assigned to this child yet.'
-        : 'No Courses assigned yet. Assign one below.';
+      if (completed.length) {
+        empty.textContent = 'Every assigned Course here is marked complete.';
+      } else {
+        empty.textContent = filterChildId
+          ? 'No Courses assigned to this child yet.'
+          : 'No Courses assigned yet. Assign one below.';
+      }
       root.appendChild(empty);
     } else if (filterChildId) {
       root.appendChild(await buildSubjectGroups(root, instances));
@@ -763,6 +864,8 @@ const Instances = (() => {
         root.appendChild(await buildSubjectGroups(root, orphans));
       }
     }
+
+    if (completed.length) root.appendChild(buildCompletedSection(root, completed, children));
 
     const activeChildren = Children.activeOnly(children);
     const stampForm = document.createElement('form');
@@ -835,6 +938,25 @@ const Instances = (() => {
     whose.className = 'instance-child';
     whose.textContent = child ? `Assigned to ${child.name}` : 'Assigned to (no child record)';
     root.appendChild(whose);
+
+    // FR-16 — the same toggle the list carries, so a course can be closed
+    // out from the page you finished it on.
+    const completion = document.createElement('p');
+    completion.className = 'instance-completion';
+    const completionBtn = document.createElement('button');
+    completionBtn.type = 'button';
+    if (isCompleted(instance)) {
+      completion.appendChild(document.createTextNode(`Marked complete ${instance.completedAt}. `));
+      completionBtn.textContent = 'Reopen';
+    } else {
+      completionBtn.textContent = 'Mark complete';
+    }
+    completionBtn.addEventListener('click', async () => {
+      await setInstanceCompleted(instance.id, !isCompleted(instance));
+      render(root);
+    });
+    completion.appendChild(completionBtn);
+    root.appendChild(completion);
 
     const editForm = document.createElement('form');
     editForm.innerHTML = `
@@ -1843,5 +1965,6 @@ const Instances = (() => {
     listAll,
     stampCourse,
     deleteInstance,
+    isCompleted,
   };
 })();

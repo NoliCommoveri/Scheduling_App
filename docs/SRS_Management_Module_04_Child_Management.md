@@ -94,6 +94,8 @@ Neither is blocked. Both are warned. The app cannot verify either condition with
 
 **Template isolation is unaffected** — the panel reads and writes rows beneath the Course it is rendered on and no other, so the Instance's copy diverges from the template's exactly as FR-10's single-Activity edit does. **No FR-12 divergence warning is required**: `expectedDurationMin` is snapshotted onto the assignment row at Commit (Mgmt SRS 08), so a change here moves future Propose runs only and never touches, recalls, or contradicts anything already delivered to the child's device. See `TDS_Slice_Course_Duration_Bulk_Edit.md`.
 
+**FR-16 — Mark an Instance complete, and reopen it.** The parent may mark any assigned Course complete from its list row or its detail page. A completed Instance leaves the Assigned Courses list and appears in a collapsed **Completed Courses** section beneath it, from which it can be opened or reopened. The mark is a sparse `completedAt` date on the Instance record. It is **view-only**: Packet Generation, reporting and every other consumer ignore it, so marking a Course complete never withholds or removes work. See `TDS_Slice_Completed_Courses.md`.
+
 ## 5. Validation rules
 
 | Rule | Detail |
@@ -147,3 +149,4 @@ No *additional* per-action PIN. The Management App requires its own `launchPin` 
 17. No UI path anywhere offers `excludeFromGeneration` on a template Activity.
 18. Bulk-setting a duration on an Instance (FR-15) writes only rows with `state: instance` beneath that Instance; the source template's Activities are byte-identical afterward, and so is every Instance stamped from the same template for a sibling.
 19. A Propose run under a `minutesBudget` Pacing Profile, taken before and after a bulk duration save, packs a different number of Activities into a day — the durations reach generation; an assignment already committed keeps the duration it was sent with.
+20. Marking an Instance complete (FR-16) moves it into the Completed Courses section and changes nothing a Propose run produces; reopening it removes `completedAt` from the record entirely.
